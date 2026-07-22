@@ -640,6 +640,39 @@ int pass_dead_function_elimination(AsmNode *head) {
         snprintf(worklist[worklist_size++], sizeof(worklist[0]), "%s", funcs[0].name);
     }
 
+    /* =========================================
+       Global scan for pointer directives 
+       ========================================= */
+    for (AsmNode *node = head; node != NULL; node = node->next) {
+        if (str_case_eq(node->mnemonic, "pointer")) {
+            char args_copy[512];
+            // Copy the full raw string to avoid corrupting the AST during tokenization
+            snprintf(args_copy, sizeof(args_copy), "%s", node->raw);
+            
+            // Tokenize to isolate the labels
+            char *token = strtok(args_copy, " ,\t\n\r");
+            
+            // Ensure the first token is "pointer" before parsing the rest
+            if (token && str_case_eq(token, "pointer")) {
+                token = strtok(NULL, " ,\t\n\r");
+                
+                while (token != NULL) {
+                    // Find the matching function and mark it reachable
+                    for (int f = 0; f < func_count; f++) {
+                        if (str_case_eq(funcs[f].name, token) && !funcs[f].reachable) {
+                            funcs[f].reachable = true;
+                            if (worklist_size < MAX_FUNCTIONS) {
+                                snprintf(worklist[worklist_size++], sizeof(worklist[0]), "%s", funcs[f].name);
+                            }
+                        }
+                    }
+                    // Grab the next label in the comma-separated list
+                    token = strtok(NULL, " ,\t\n\r");
+                }
+            }
+        }
+    }
+
     while (worklist_size > 0) {
         char current_label[128];
         snprintf(current_label, sizeof(current_label), "%s", worklist[--worklist_size]);
