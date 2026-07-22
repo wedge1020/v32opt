@@ -552,34 +552,58 @@ int pass_inline_trivial_functions(AsmNode *head) {
 // Pass: Reachability-Based Dead Function Elimination (DFE)
 // Bounded non-overlapping ranges prevent double-free crashes
 // -------------------------------------------------------------------
+// -------------------------------------------------------------------
+// Pass: Reachability-Based Dead Function Elimination (DFE)
+// Fully supports __function_ prefixes and prevents internal label splits
+// -------------------------------------------------------------------
 int pass_dead_function_elimination(AsmNode *head) {
     FunctionDef funcs[MAX_FUNCTIONS];
     int func_count = 0;
 
     AsmNode *curr = head ? head->next : NULL;
 
-    // STEP 1: Catalog top-level function labels
+    // STEP 1: Catalog non-overlapping functions
     while (curr) {
         if (curr->type == OP_LABEL) {
             char line_copy[128];
             strncpy(line_copy, curr->raw, sizeof(line_copy) - 1);
             char *lbl = trim(line_copy);
 
-            // Ignore local labels (.L1) and return labels (_return:)
-            if (lbl[0] != '.' && !strstr(lbl, "_return:")) {
-                char func_name[64] = {0};
-                strncpy(func_name, lbl, sizeof(func_name) - 1);
-                char *colon = strchr(func_name, ':');
-                if (colon) *colon = '\0';
-                trim(func_name);
+            // Ignore local labels (.L1, .loop) and return labels (_return:)
+            if (lbl[0] == '.' || lbl[0] == '@' || strstr(lbl, "_return:")) {
+                curr = curr->next;
+                continue;
+            }
 
-                if (strlen(func_name) > 0 && func_count < MAX_FUNCTIONS) {
-                    strncpy(funcs[func_count].name, func_name, 63);
-                    funcs[func_count].start_node = curr;
-                    funcs[func_count].end_node = NULL;
-                    funcs[func_count].reachable = false;
-                    func_count++;
+            char func_name[64] = {0};
+            strncpy(func_name, lbl, sizeof(func_name) - 1);
+            char *colon = strchr(func_name, ':');
+            if (colon) *colon = '\0';
+            trim(func_name);
+
+            // Scan forward to find the terminating RET / RETI instruction
+            AsmNode *scan = curr->next;
+            AsmNode *ret_node = NULL;
+
+            while (scan) {
+                if (str_case_eq(scan->mnemonic, "RET") || str_case_eq(scan->mnemonic, "RETI")) {
+                    ret_node = scan;
+                    break;
                 }
+                scan = scan->next;
+            }
+
+            if (ret_node && func_count < MAX_FUNCTIONS) {
+                strncpy(funcs[func_count].name, func_name, 63);
+                funcs[func_count].start_node = curr;
+                funcs[func_count].end_node = ret_node;
+                funcs[func_count].reachable = false;
+                func_count++;
+
+                // CRITICAL FIX: Skip past RET so internal function labels 
+                // aren't cataloged as separate functions
+                curr = ret_node->next;
+                continue;
             }
         }
         curr = curr->next;
@@ -587,39 +611,33 @@ int pass_dead_function_elimination(AsmNode *head) {
 
     if (func_count == 0) return 0;
 
-    // STEP 2: Set strict non-overlapping boundaries for each function
-    for (int i = 0; i < func_count; i++) {
-        if (i + 1 < func_count) {
-            funcs[i].end_node = funcs[i + 1].start_node->prev;
-        } else {
-            // Last function in file extends to the AST tail
-            AsmNode *last = funcs[i].start_node;
-            while (last && last->next) {
-                last = last->next;
-            }
-            funcs[i].end_node = last;
-        }
-    }
-
-    // STEP 3: Identify root entry points (main / _start)
+    // STEP 2: Mark root entry points (including Vircon32 __function_main)
     char worklist[MAX_FUNCTIONS][64];
     int worklist_size = 0;
 
-    int entry_idx = -1;
     for (int i = 0; i < func_count; i++) {
-        if (str_case_eq(funcs[i].name, "main") || str_case_eq(funcs[i].name, "_start")) {
-            entry_idx = i;
-            break;
+        if (str_case_eq(funcs[i].name, "__function_main") ||
+            str_case_eq(funcs[i].name, "main")            ||
+            str_case_eq(funcs[i].name, "_start")          ||
+            str_case_eq(funcs[i].name, "start")           ||
+            str_case_eq(funcs[i].name, "__start")         ||
+            strstr(funcs[i].name, "ISR") != NULL          ||
+            strstr(funcs[i].name, "interrupt") != NULL) 
+        {
+            funcs[i].reachable = true;
+            if (worklist_size < MAX_FUNCTIONS) {
+                strncpy(worklist[worklist_size++], funcs[i].name, 63);
+            }
         }
     }
-    if (entry_idx == -1 && func_count > 0) entry_idx = 0;
 
-    if (entry_idx >= 0) {
-        funcs[entry_idx].reachable = true;
-        strncpy(worklist[worklist_size++], funcs[entry_idx].name, 63);
+    // Fallback: If no standard entry point is matched, preserve the first label
+    if (worklist_size == 0 && func_count > 0) {
+        funcs[0].reachable = true;
+        strncpy(worklist[worklist_size++], funcs[0].name, 63);
     }
 
-    // STEP 4: Transitive Reachability Analysis
+    // STEP 3: Reachability Analysis (Transitive Closure)
     while (worklist_size > 0) {
         char current_label[64];
         strncpy(current_label, worklist[--worklist_size], 63);
@@ -657,7 +675,7 @@ int pass_dead_function_elimination(AsmNode *head) {
         }
     }
 
-    // STEP 5: Safely sweep unreachable function ranges
+    // STEP 4: Sweep Unreachable Subroutines
     int eliminated_funcs = 0;
     for (int i = 0; i < func_count; i++) {
         if (!funcs[i].reachable) {
