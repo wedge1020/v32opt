@@ -298,9 +298,28 @@ void write_vircon32_asm(const char *filename, AsmNode *head) {
     }
 
     AsmNode *curr = (head && head->type == OP_OTHER && head->raw[0] == '\0') ? head->next : head;
+    bool last_was_blank = false;
 
     while (curr) {
-        fprintf(fp, "%s\n", curr->raw);
+        // Check if current line is blank or whitespace-only
+        char line_copy[128];
+        strncpy(line_copy, curr->raw, sizeof(line_copy) - 1);
+        line_copy[sizeof(line_copy) - 1] = '\0';
+        char *trimmed = trim(line_copy);
+
+        bool is_blank = (strlen(trimmed) == 0);
+
+        if (is_blank) {
+            // Only output a single blank line, skip consecutive empty lines
+            if (!last_was_blank) {
+                fprintf(fp, "\n");
+                last_was_blank = true;
+            }
+        } else {
+            fprintf(fp, "%s\n", curr->raw);
+            last_was_blank = false;
+        }
+
         curr = curr->next;
     }
 
@@ -600,8 +619,7 @@ int pass_dead_function_elimination(AsmNode *head) {
                 funcs[func_count].reachable = false;
                 func_count++;
 
-                // CRITICAL FIX: Skip past RET so internal function labels 
-                // aren't cataloged as separate functions
+                // Skip past RET so internal function labels aren't cataloged separately
                 curr = ret_node->next;
                 continue;
             }
@@ -611,18 +629,20 @@ int pass_dead_function_elimination(AsmNode *head) {
 
     if (func_count == 0) return 0;
 
-    // STEP 2: Mark root entry points (including Vircon32 __function_main)
+    // STEP 2: Mark root entry points (including global initializers & main)
     char worklist[MAX_FUNCTIONS][64];
     int worklist_size = 0;
 
     for (int i = 0; i < func_count; i++) {
-        if (str_case_eq(funcs[i].name, "__function_main") ||
-            str_case_eq(funcs[i].name, "main")            ||
-            str_case_eq(funcs[i].name, "_start")          ||
-            str_case_eq(funcs[i].name, "start")           ||
-            str_case_eq(funcs[i].name, "__start")         ||
-            strstr(funcs[i].name, "ISR") != NULL          ||
-            strstr(funcs[i].name, "interrupt") != NULL) 
+        if (str_case_eq(funcs[i].name, "__function_main")              ||
+            str_case_eq(funcs[i].name, "main")                         ||
+            str_case_eq(funcs[i].name, "_start")                       ||
+            str_case_eq(funcs[i].name, "start")                        ||
+            str_case_eq(funcs[i].name, "__start")                      ||
+            str_case_eq(funcs[i].name, "__global_scope_initialization")||
+            strstr(funcs[i].name, "global_scope") != NULL              ||
+            strstr(funcs[i].name, "ISR")          != NULL              ||
+            strstr(funcs[i].name, "interrupt")    != NULL) 
         {
             funcs[i].reachable = true;
             if (worklist_size < MAX_FUNCTIONS) {
