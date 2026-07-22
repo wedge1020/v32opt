@@ -431,25 +431,30 @@ int pass_store_to_load_forwarding(AsmNode *head) {
 // -------------------------------------------------------------------
 // Pass: Trivial Leaf Function Inlining
 // -------------------------------------------------------------------
-
 int pass_inline_trivial_functions(AsmNode *head) {
     InlineCandidate candidates[MAX_INLINE_CANDIDATES];
     int candidate_count = 0;
 
     AsmNode *curr = head ? head->next : NULL;
 
-    // Catalog candidates
+    // STEP 1: Catalog Inlinable Functions
     while (curr) {
         if (curr->type == OP_LABEL && candidate_count < MAX_INLINE_CANDIDATES) {
+            // FIX 1: Properly trim label before stripping colon
             char func_name[64] = {0};
-            strncpy(func_name, curr->raw, sizeof(func_name) - 1);
+            char line_copy[128];
+            strncpy(line_copy, curr->raw, sizeof(line_copy) - 1);
+            char *trimmed_lbl = trim(line_copy);
+
+            strncpy(func_name, trimmed_lbl, sizeof(func_name) - 1);
             char *colon = strchr(func_name, ':');
             if (colon) *colon = '\0';
+            trim(func_name);
 
             AsmNode *scan = curr->next;
             while (scan && (scan->type == OP_OTHER || scan->type == OP_LABEL)) scan = scan->next;
 
-            // Skip standard frame setup (PUSH BP / MOV BP, SP)
+            // FIX 2: Frame setup is now OPTIONAL
             if (scan && scan->type == OP_PUSH && str_case_eq(scan->dst_op.reg, "BP")) {
                 scan = scan->next;
                 if (scan && scan->type == OP_MOV && str_case_eq(scan->dst_op.reg, "BP") && str_case_eq(scan->src_op.reg, "SP")) {
@@ -467,11 +472,13 @@ int pass_inline_trivial_functions(AsmNode *head) {
                     continue;
                 }
 
+                // Epilogue detection
                 if (scan->type == OP_MOV && str_case_eq(scan->dst_op.reg, "SP") && str_case_eq(scan->src_op.reg, "BP")) break;
-                if (strcmp(scan->mnemonic, "RET") == 0) break;
+                if (str_case_eq(scan->mnemonic, "RET")) break;
 
-                if (strcmp(scan->mnemonic, "CALL") == 0 || strcmp(scan->mnemonic, "JMP") == 0 ||
-                    strcmp(scan->mnemonic, "JT") == 0   || strcmp(scan->mnemonic, "JF") == 0) {
+                // Reject if contains control flow or calls
+                if (str_case_eq(scan->mnemonic, "CALL") || str_case_eq(scan->mnemonic, "JMP") ||
+                    str_case_eq(scan->mnemonic, "JT")   || str_case_eq(scan->mnemonic, "JF")) {
                     valid_candidate = false;
                     break;
                 }
@@ -498,24 +505,25 @@ int pass_inline_trivial_functions(AsmNode *head) {
         curr = curr->next;
     }
 
-    // Replace CALL instructions
+    // STEP 2: Replace CALL sites
     int inlined_calls = 0;
     curr = head ? head->next : NULL;
 
     while (curr) {
         AsmNode *next_node = curr->next;
 
-        if (strcmp(curr->mnemonic, "CALL") == 0) {
+        if (str_case_eq(curr->mnemonic, "CALL")) {
             char target_label[64] = {0};
-            strncpy(target_label, curr->dst_op.raw, sizeof(target_label) - 1);
+            strncpy(target_label, trim(curr->dst_op.raw), sizeof(target_label) - 1);
 
             for (int c = 0; c < candidate_count; c++) {
-                if (strcmp(target_label, candidates[c].name) == 0) {
+                // FIX 3: Case-insensitive label comparison
+                if (str_case_eq(target_label, candidates[c].name)) {
                     AsmNode *insertion_point = curr->prev;
 
                     for (int b = 0; b < candidates[c].body_count; b++) {
                         AsmNode *inlined_ins = clone_node(candidates[c].body_nodes[b]);
-                        
+
                         inlined_ins->prev = insertion_point;
                         inlined_ins->next = curr;
                         if (insertion_point) insertion_point->next = inlined_ins;
@@ -540,35 +548,45 @@ int pass_inline_trivial_functions(AsmNode *head) {
 // -------------------------------------------------------------------
 // Pass: Reachability-Based Dead Function Elimination (DFE)
 // -------------------------------------------------------------------
-
 int pass_dead_function_elimination(AsmNode *head) {
     FunctionDef funcs[MAX_FUNCTIONS];
     int func_count = 0;
 
-    // Step 1: Catalog subroutine definitions (Label to RET)
     AsmNode *curr = head ? head->next : NULL;
+
+    // STEP 1: Catalog functions safely across local labels
     while (curr) {
         if (curr->type == OP_LABEL) {
-            char lbl[64] = {0};
-            strncpy(lbl, curr->raw, sizeof(lbl) - 1);
-            char *colon = strchr(lbl, ':');
+            char line_copy[128];
+            strncpy(line_copy, curr->raw, sizeof(line_copy) - 1);
+            char *lbl = trim(line_copy);
+
+            // Ignore local/return labels
+            if (lbl[0] == '.' || strstr(lbl, "_return:")) {
+                curr = curr->next;
+                continue;
+            }
+
+            char func_name[64] = {0};
+            strncpy(func_name, lbl, sizeof(func_name) - 1);
+            char *colon = strchr(func_name, ':');
             if (colon) *colon = '\0';
+            trim(func_name);
 
             AsmNode *scan = curr->next;
             AsmNode *ret_node = NULL;
 
+            // Scan continuously until a RET instruction is found
             while (scan) {
-                if (scan->type == OP_LABEL && !strstr(scan->raw, "_return")) {
-                    break; // Met another function start boundary
-                }
-                if (strcmp(scan->mnemonic, "RET") == 0) {
+                if (str_case_eq(scan->mnemonic, "RET")) {
                     ret_node = scan;
+                    break;
                 }
                 scan = scan->next;
             }
 
             if (ret_node && func_count < MAX_FUNCTIONS) {
-                strncpy(funcs[func_count].name, lbl, 63);
+                strncpy(funcs[func_count].name, func_name, 63);
                 funcs[func_count].start_node = curr;
                 funcs[func_count].end_node = ret_node;
                 funcs[func_count].reachable = false;
@@ -580,7 +598,7 @@ int pass_dead_function_elimination(AsmNode *head) {
 
     if (func_count == 0) return 0;
 
-    // Step 2: Mark root entry points (main, _start, or first label)
+    // STEP 2: Reachability graph construction
     char worklist[MAX_FUNCTIONS][64];
     int worklist_size = 0;
 
@@ -598,14 +616,14 @@ int pass_dead_function_elimination(AsmNode *head) {
         strncpy(worklist[worklist_size++], funcs[entry_idx].name, 63);
     }
 
-    // Step 3: Transitive Reachability Closure
+    // STEP 3: Transitive closure
     while (worklist_size > 0) {
         char current_label[64];
         strncpy(current_label, worklist[--worklist_size], 63);
 
         FunctionDef *fn = NULL;
         for (int i = 0; i < func_count; i++) {
-            if (strcmp(funcs[i].name, current_label) == 0) {
+            if (str_case_eq(funcs[i].name, current_label)) {
                 fn = &funcs[i];
                 break;
             }
@@ -615,15 +633,15 @@ int pass_dead_function_elimination(AsmNode *head) {
         for (AsmNode *node = fn->start_node; node != NULL; node = node->next) {
             char target_label[64] = {0};
 
-            if (strcmp(node->mnemonic, "CALL") == 0 || strcmp(node->mnemonic, "JMP") == 0 ||
-                strcmp(node->mnemonic, "JT") == 0   || strcmp(node->mnemonic, "JF") == 0) 
+            if (str_case_eq(node->mnemonic, "CALL") || str_case_eq(node->mnemonic, "JMP") ||
+                str_case_eq(node->mnemonic, "JT")   || str_case_eq(node->mnemonic, "JF"))
             {
-                strncpy(target_label, node->dst_op.raw, sizeof(target_label) - 1);
+                strncpy(target_label, trim(node->dst_op.raw), sizeof(target_label) - 1);
             }
 
             if (strlen(target_label) > 0) {
                 for (int f = 0; f < func_count; f++) {
-                    if (strcmp(funcs[f].name, target_label) == 0 && !funcs[f].reachable) {
+                    if (str_case_eq(funcs[f].name, target_label) && !funcs[f].reachable) {
                         funcs[f].reachable = true;
                         if (worklist_size < MAX_FUNCTIONS) {
                             strncpy(worklist[worklist_size++], funcs[f].name, 63);
@@ -636,7 +654,7 @@ int pass_dead_function_elimination(AsmNode *head) {
         }
     }
 
-    // Step 4: Sweep unreachable function nodes
+    // STEP 4: Sweep unreachable subroutines
     int eliminated_funcs = 0;
     for (int i = 0; i < func_count; i++) {
         if (!funcs[i].reachable) {
