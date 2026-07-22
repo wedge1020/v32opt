@@ -1014,28 +1014,93 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
 // -------------------------------------------------------------------
 // Main Entry Point
 // -------------------------------------------------------------------
-
 int main(int argc, char **argv) {
     if (argc < 2) {
-        printf("Usage: %s <input.asm> [output.asm] [--dot cfg.dot]\n", argv[0]);
+        printf("Usage: %s <input.asm> [output.asm] [options]\n", argv[0]);
+        printf("Options:\n");
+        printf("  -v                  Verbose output (show pass statistics)\n");
+        printf("  --dot <cfg.dot>     Export Control Flow Graph to DOT format\n");
+        printf("  -O0                 Disable all optimizations\n");
+        printf("  -O1                 Enable local optimizations (peephole, algebraic, forwarding)\n");
+        printf("  -O2                 Enable -O1 + global optimizations (DCE, constant folding) [Default]\n");
+        printf("  -O3                 Enable -O2 + aggressive optimizations (function inlining)\n");
+        printf("  -Opeephole          Enable peephole optimization explicitly\n");
+        printf("  -Oalgebraic         Enable algebraic simplifications explicitly\n");
+        printf("  -Oforwarding        Enable store-to-load forwarding explicitly\n");
+        printf("  -Oinline            Enable function inlining explicitly\n");
+        printf("  -Odce               Enable dead function elimination explicitly\n");
+        printf("  -Oconstant_folding  Enable constant folding explicitly\n");
         return 1;
     }
 
     char *inFile = argv[1];
     char outFile[256] = {0};
     char dotFile[256] = {0};
-    
+
+    // Default config is roughly equivalent to -O2
+    OptConfig config = {
+        .verbose = false,
+        .enable_peephole = true,
+        .enable_algebraic = true,
+        .enable_forwarding = true,
+        .enable_inline = false,
+        .enable_dce = true,
+        .enable_constant_folding = true
+    };
+
     int out_idx = 0;
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--dot") == 0 && i + 1 < argc) {
             snprintf(dotFile, sizeof(dotFile), "%s", argv[i+1]);
-            i++; 
-        } else if (out_idx == 0) {
+            i++;
+        } else if (strcmp(argv[i], "-v") == 0) {
+            config.verbose = true;
+        } else if (strcmp(argv[i], "-O0") == 0) {
+            config.enable_peephole = false;
+            config.enable_algebraic = false;
+            config.enable_forwarding = false;
+            config.enable_inline = false;
+            config.enable_dce = false;
+            config.enable_constant_folding = false;
+        } else if (strcmp(argv[i], "-O1") == 0) {
+            config.enable_peephole = true;
+            config.enable_algebraic = true;
+            config.enable_forwarding = true;
+            config.enable_inline = false;
+            config.enable_dce = false;
+            config.enable_constant_folding = false;
+        } else if (strcmp(argv[i], "-O2") == 0) {
+            config.enable_peephole = true;
+            config.enable_algebraic = true;
+            config.enable_forwarding = true;
+            config.enable_inline = false;
+            config.enable_dce = true;
+            config.enable_constant_folding = true;
+        } else if (strcmp(argv[i], "-O3") == 0) {
+            config.enable_peephole = true;
+            config.enable_algebraic = true;
+            config.enable_forwarding = true;
+            config.enable_inline = true;
+            config.enable_dce = true;
+            config.enable_constant_folding = true;
+        } else if (strcmp(argv[i], "-Opeephole") == 0) {
+            config.enable_peephole = true;
+        } else if (strcmp(argv[i], "-Oalgebraic") == 0) {
+            config.enable_algebraic = true;
+        } else if (strcmp(argv[i], "-Oforwarding") == 0) {
+            config.enable_forwarding = true;
+        } else if (strcmp(argv[i], "-Oinline") == 0) {
+            config.enable_inline = true;
+        } else if (strcmp(argv[i], "-Odce") == 0) {
+            config.enable_dce = true;
+        } else if (strcmp(argv[i], "-Oconstant_folding") == 0) {
+            config.enable_constant_folding = true;
+        } else if (out_idx == 0 && argv[i][0] != '-') {
             snprintf(outFile, sizeof(outFile), "%s", argv[i]);
             out_idx = i;
         }
     }
-    
+
     if (strlen(outFile) == 0) {
         snprintf(outFile, sizeof(outFile), "%s", inFile);
         char *ext = strrchr(outFile, '.');
@@ -1051,37 +1116,63 @@ int main(int argc, char **argv) {
     int total_opts = 0;
     int opts_in_pass = 0;
 
+    if (config.verbose) printf("--- Starting Optimization Phase 1: Local Passes ---\n");
+
     // Phase 1: Iterative Peephole, Inlining & Local Optimizations
     do {
         opts_in_pass = 0;
-        opts_in_pass += pass_peephole_window2(program_ast);
-        opts_in_pass += pass_algebraic_simplifications(program_ast);
-        opts_in_pass += pass_store_to_load_forwarding(program_ast);
-        opts_in_pass += pass_inline_trivial_functions(program_ast);
-        opts_in_pass += pass_dead_function_elimination(program_ast);
+        int p_opts = 0, a_opts = 0, f_opts = 0, i_opts = 0, d_opts = 0;
 
+        if (config.enable_peephole)   p_opts = pass_peephole_window2(program_ast);
+        if (config.enable_algebraic)  a_opts = pass_algebraic_simplifications(program_ast);
+        if (config.enable_forwarding) f_opts = pass_store_to_load_forwarding(program_ast);
+        if (config.enable_inline)     i_opts = pass_inline_trivial_functions(program_ast);
+        if (config.enable_dce)        d_opts = pass_dead_function_elimination(program_ast);
+
+        opts_in_pass = p_opts + a_opts + f_opts + i_opts + d_opts;
         total_opts += opts_in_pass;
         passes++;
+
+        if (config.verbose && opts_in_pass > 0) {
+            printf("Pass %d applied %d optimizations:\n", passes, opts_in_pass);
+            if (p_opts > 0) printf("  - Peephole: %d\n", p_opts);
+            if (a_opts > 0) printf("  - Algebraic: %d\n", a_opts);
+            if (f_opts > 0) printf("  - Forwarding: %d\n", f_opts);
+            if (i_opts > 0) printf("  - Inlined funcs: %d\n", i_opts);
+            if (d_opts > 0) printf("  - Dead funcs removed: %d\n", d_opts);
+        }
     } while (opts_in_pass > 0);
 
     // Phase 2: Build CFG & Perform Global Data-Flow Analysis
-    ControlFlowGraph *cfg = build_cfg(program_ast);
-    propagate_constants_cfg(cfg);
-    
-    int global_folds = fold_constants_cfg(cfg);
-    total_opts += global_folds;
+    int global_folds = 0;
+    ControlFlowGraph *cfg = NULL;
 
-    if (strlen(dotFile) > 0) {
-        export_cfg_to_dot(dotFile, cfg);
-        printf("CFG exported to '%s'.\n", dotFile);
+    if (config.enable_constant_folding) {
+        if (config.verbose) printf("--- Starting Optimization Phase 2: Global Data-Flow ---\n");
+        cfg = build_cfg(program_ast);
+        propagate_constants_cfg(cfg);
+
+        global_folds = fold_constants_cfg(cfg);
+        total_opts += global_folds;
+
+        if (config.verbose && global_folds > 0) {
+            printf("  - Global constant folds: %d\n", global_folds);
+        }
     }
 
-    printf("Optimization complete: %d total optimizations (%d global folds) in %d passes.\n", 
-           total_opts, global_folds, passes);
+    if (strlen(dotFile) > 0) {
+        if (!cfg) cfg = build_cfg(program_ast); // Ensure CFG exists for export if requested
+        export_cfg_to_dot(dotFile, cfg);
+        if (config.verbose) printf("CFG exported to '%s'.\n", dotFile);
+    }
+
+    if (config.verbose || total_opts > 0) {
+        printf("\nOptimization complete: %d total optimizations applied.\n", total_opts);
+    }
 
     write_vircon32_asm(outFile, program_ast);
 
-    free_cfg(cfg);
+    if (cfg) free_cfg(cfg);
     free(program_ast);
     return 0;
 }
