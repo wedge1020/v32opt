@@ -4,6 +4,10 @@
 #include <stdbool.h>
 #include <ctype.h>
 
+#define MAX_INLINE_CANDIDATES 64
+#define MAX_BODY_INS 8
+#define MAX_FUNCTIONS 256
+
 // -------------------------------------------------------------------
 // Enums & Data Structures
 // -------------------------------------------------------------------
@@ -82,8 +86,21 @@ typedef struct {
     int cap_blocks;
 } ControlFlowGraph;
 
+typedef struct {
+    char name[64];
+    AsmNode *body_nodes[MAX_BODY_INS];
+    int body_count;
+} InlineCandidate;
+
+typedef struct {
+    char name[64];
+    AsmNode *start_node; // Label node
+    AsmNode *end_node;   // Terminating RET node
+    bool reachable;
+} FunctionDef;
+
 // -------------------------------------------------------------------
-// String Parsing & Helper Utilities
+// String Parsing & AST Utilities
 // -------------------------------------------------------------------
 
 static char* trim(char *str) {
@@ -103,7 +120,6 @@ static bool str_case_eq(const char *s1, const char *s2) {
     return *s1 == *s2;
 }
 
-// Maps register string to 0-15 index (R0-R13 -> 0-13, BP -> 14, SP -> 15)
 int get_reg_index(const char *reg_str) {
     if (!reg_str || strlen(reg_str) == 0) return -1;
     if (str_case_eq(reg_str, "SP") || str_case_eq(reg_str, "R15")) return 15;
@@ -122,10 +138,8 @@ Operand parse_operand(const char *str) {
 
     strncpy(op.raw, str, sizeof(op.raw) - 1);
 
-    // Indirect / Memory addressing: [REG+OFF], [REG-OFF], [REG]
     if (str[0] == '[' && str[strlen(str) - 1] == ']') {
         op.mode = MODE_INDIRECT;
-
         char inner[32] = {0};
         strncpy(inner, str + 1, strlen(str) - 2);
 
@@ -145,12 +159,10 @@ Operand parse_operand(const char *str) {
             op.offset = 0;
         }
     } 
-    // Immediate constant
     else if (isdigit((unsigned char)str[0]) || (str[0] == '-' && isdigit((unsigned char)str[1]))) {
         op.mode = MODE_IMMEDIATE;
         op.immediate = atoi(str);
     } 
-    // Direct Register
     else {
         op.mode = MODE_REG;
         strncpy(op.reg, str, sizeof(op.reg) - 1);
@@ -180,6 +192,14 @@ void remove_node(AsmNode *node) {
     if (node->prev) node->prev->next = node->next;
     if (node->next) node->next->prev = node->prev;
     free(node);
+}
+
+static AsmNode* clone_node(AsmNode *src) {
+    AsmNode *dst = (AsmNode*)calloc(1, sizeof(AsmNode));
+    memcpy(dst, src, sizeof(AsmNode));
+    dst->prev = NULL;
+    dst->next = NULL;
+    return dst;
 }
 
 // -------------------------------------------------------------------
@@ -299,7 +319,6 @@ int pass_peephole_window2(AsmNode *head) {
         AsmNode *n1 = curr;
         AsmNode *n2 = curr->next;
 
-        // Pattern A: IEQ / INE followed by CIB on same destination register
         if ((n1->type == OP_IEQ || n1->type == OP_INE) && 
              n2->type == OP_CIB && 
              n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
@@ -310,7 +329,6 @@ int pass_peephole_window2(AsmNode *head) {
             continue;
         }
 
-        // Pattern B: Redundant Double Inversion (BNOT R0 -> BNOT R0)
         if (n1->type == OP_BNOT && n2->type == OP_BNOT && 
             n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
             strcmp(n1->dst_op.reg, n2->dst_op.reg) == 0) 
@@ -323,7 +341,6 @@ int pass_peephole_window2(AsmNode *head) {
             continue;
         }
 
-        // Pattern C: Redundant PUSH/POP pair on same register
         if (n1->type == OP_PUSH && n2->type == OP_POP && 
             n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
             strcmp(n1->dst_op.reg, n2->dst_op.reg) == 0) 
@@ -349,7 +366,6 @@ int pass_algebraic_simplifications(AsmNode *head) {
     while (curr != NULL) {
         AsmNode *next = curr->next;
 
-        // Self-Move Elimination: MOV R0, R0
         if (curr->type == OP_MOV && 
             curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_REG && 
             strcmp(curr->dst_op.reg, curr->src_op.reg) == 0) 
@@ -360,7 +376,6 @@ int pass_algebraic_simplifications(AsmNode *head) {
             continue;
         }
 
-        // Addition/Subtraction by Zero: IADD R0, 0
         if ((curr->type == OP_IADD || curr->type == OP_ISUB) && 
             curr->src_op.mode == MODE_IMMEDIATE && curr->src_op.immediate == 0) 
         {
@@ -370,7 +385,6 @@ int pass_algebraic_simplifications(AsmNode *head) {
             continue;
         }
 
-        // Strength Reduction: IMUL R0, 2  -->  IADD R0, R0
         if (curr->type == OP_IMUL && 
             curr->src_op.mode == MODE_IMMEDIATE && curr->src_op.immediate == 2) 
         {
@@ -395,7 +409,6 @@ int pass_store_to_load_forwarding(AsmNode *head) {
         AsmNode *n1 = curr;
         AsmNode *n2 = curr->next;
 
-        // Match Pattern: MOV [REG+OFF], R_src  followed by  MOV R_dst, [REG+OFF]
         if (n1->type == OP_MOV && n2->type == OP_MOV &&
             n1->dst_op.mode == MODE_INDIRECT && n1->src_op.mode == MODE_REG &&
             n2->dst_op.mode == MODE_REG      && n2->src_op.mode == MODE_INDIRECT) 
@@ -413,6 +426,235 @@ int pass_store_to_load_forwarding(AsmNode *head) {
     }
 
     return optimizations;
+}
+
+// -------------------------------------------------------------------
+// Pass: Trivial Leaf Function Inlining
+// -------------------------------------------------------------------
+
+int pass_inline_trivial_functions(AsmNode *head) {
+    InlineCandidate candidates[MAX_INLINE_CANDIDATES];
+    int candidate_count = 0;
+
+    AsmNode *curr = head ? head->next : NULL;
+
+    // Catalog candidates
+    while (curr) {
+        if (curr->type == OP_LABEL && candidate_count < MAX_INLINE_CANDIDATES) {
+            char func_name[64] = {0};
+            strncpy(func_name, curr->raw, sizeof(func_name) - 1);
+            char *colon = strchr(func_name, ':');
+            if (colon) *colon = '\0';
+
+            AsmNode *scan = curr->next;
+            while (scan && (scan->type == OP_OTHER || scan->type == OP_LABEL)) scan = scan->next;
+
+            // Skip standard frame setup (PUSH BP / MOV BP, SP)
+            if (scan && scan->type == OP_PUSH && str_case_eq(scan->dst_op.reg, "BP")) {
+                scan = scan->next;
+                if (scan && scan->type == OP_MOV && str_case_eq(scan->dst_op.reg, "BP") && str_case_eq(scan->src_op.reg, "SP")) {
+                    scan = scan->next;
+                }
+            }
+
+            AsmNode *core_nodes[MAX_BODY_INS];
+            int core_count = 0;
+            bool valid_candidate = true;
+
+            while (scan) {
+                if (scan->type == OP_LABEL) {
+                    scan = scan->next;
+                    continue;
+                }
+
+                if (scan->type == OP_MOV && str_case_eq(scan->dst_op.reg, "SP") && str_case_eq(scan->src_op.reg, "BP")) break;
+                if (strcmp(scan->mnemonic, "RET") == 0) break;
+
+                if (strcmp(scan->mnemonic, "CALL") == 0 || strcmp(scan->mnemonic, "JMP") == 0 ||
+                    strcmp(scan->mnemonic, "JT") == 0   || strcmp(scan->mnemonic, "JF") == 0) {
+                    valid_candidate = false;
+                    break;
+                }
+
+                if (core_count < MAX_BODY_INS) {
+                    core_nodes[core_count++] = scan;
+                } else {
+                    valid_candidate = false;
+                    break;
+                }
+
+                scan = scan->next;
+            }
+
+            if (valid_candidate && core_count > 0 && core_count <= MAX_BODY_INS) {
+                strncpy(candidates[candidate_count].name, func_name, 63);
+                candidates[candidate_count].body_count = core_count;
+                for (int i = 0; i < core_count; i++) {
+                    candidates[candidate_count].body_nodes[i] = core_nodes[i];
+                }
+                candidate_count++;
+            }
+        }
+        curr = curr->next;
+    }
+
+    // Replace CALL instructions
+    int inlined_calls = 0;
+    curr = head ? head->next : NULL;
+
+    while (curr) {
+        AsmNode *next_node = curr->next;
+
+        if (strcmp(curr->mnemonic, "CALL") == 0) {
+            char target_label[64] = {0};
+            strncpy(target_label, curr->dst_op.raw, sizeof(target_label) - 1);
+
+            for (int c = 0; c < candidate_count; c++) {
+                if (strcmp(target_label, candidates[c].name) == 0) {
+                    AsmNode *insertion_point = curr->prev;
+
+                    for (int b = 0; b < candidates[c].body_count; b++) {
+                        AsmNode *inlined_ins = clone_node(candidates[c].body_nodes[b]);
+                        
+                        inlined_ins->prev = insertion_point;
+                        inlined_ins->next = curr;
+                        if (insertion_point) insertion_point->next = inlined_ins;
+                        curr->prev = inlined_ins;
+
+                        insertion_point = inlined_ins;
+                    }
+
+                    remove_node(curr);
+                    inlined_calls++;
+                    break;
+                }
+            }
+        }
+
+        curr = next_node;
+    }
+
+    return inlined_calls;
+}
+
+// -------------------------------------------------------------------
+// Pass: Reachability-Based Dead Function Elimination (DFE)
+// -------------------------------------------------------------------
+
+int pass_dead_function_elimination(AsmNode *head) {
+    FunctionDef funcs[MAX_FUNCTIONS];
+    int func_count = 0;
+
+    // Step 1: Catalog subroutine definitions (Label to RET)
+    AsmNode *curr = head ? head->next : NULL;
+    while (curr) {
+        if (curr->type == OP_LABEL) {
+            char lbl[64] = {0};
+            strncpy(lbl, curr->raw, sizeof(lbl) - 1);
+            char *colon = strchr(lbl, ':');
+            if (colon) *colon = '\0';
+
+            AsmNode *scan = curr->next;
+            AsmNode *ret_node = NULL;
+
+            while (scan) {
+                if (scan->type == OP_LABEL && !strstr(scan->raw, "_return")) {
+                    break; // Met another function start boundary
+                }
+                if (strcmp(scan->mnemonic, "RET") == 0) {
+                    ret_node = scan;
+                }
+                scan = scan->next;
+            }
+
+            if (ret_node && func_count < MAX_FUNCTIONS) {
+                strncpy(funcs[func_count].name, lbl, 63);
+                funcs[func_count].start_node = curr;
+                funcs[func_count].end_node = ret_node;
+                funcs[func_count].reachable = false;
+                func_count++;
+            }
+        }
+        curr = curr->next;
+    }
+
+    if (func_count == 0) return 0;
+
+    // Step 2: Mark root entry points (main, _start, or first label)
+    char worklist[MAX_FUNCTIONS][64];
+    int worklist_size = 0;
+
+    int entry_idx = -1;
+    for (int i = 0; i < func_count; i++) {
+        if (str_case_eq(funcs[i].name, "main") || str_case_eq(funcs[i].name, "_start")) {
+            entry_idx = i;
+            break;
+        }
+    }
+    if (entry_idx == -1 && func_count > 0) entry_idx = 0;
+
+    if (entry_idx >= 0) {
+        funcs[entry_idx].reachable = true;
+        strncpy(worklist[worklist_size++], funcs[entry_idx].name, 63);
+    }
+
+    // Step 3: Transitive Reachability Closure
+    while (worklist_size > 0) {
+        char current_label[64];
+        strncpy(current_label, worklist[--worklist_size], 63);
+
+        FunctionDef *fn = NULL;
+        for (int i = 0; i < func_count; i++) {
+            if (strcmp(funcs[i].name, current_label) == 0) {
+                fn = &funcs[i];
+                break;
+            }
+        }
+        if (!fn) continue;
+
+        for (AsmNode *node = fn->start_node; node != NULL; node = node->next) {
+            char target_label[64] = {0};
+
+            if (strcmp(node->mnemonic, "CALL") == 0 || strcmp(node->mnemonic, "JMP") == 0 ||
+                strcmp(node->mnemonic, "JT") == 0   || strcmp(node->mnemonic, "JF") == 0) 
+            {
+                strncpy(target_label, node->dst_op.raw, sizeof(target_label) - 1);
+            }
+
+            if (strlen(target_label) > 0) {
+                for (int f = 0; f < func_count; f++) {
+                    if (strcmp(funcs[f].name, target_label) == 0 && !funcs[f].reachable) {
+                        funcs[f].reachable = true;
+                        if (worklist_size < MAX_FUNCTIONS) {
+                            strncpy(worklist[worklist_size++], funcs[f].name, 63);
+                        }
+                    }
+                }
+            }
+
+            if (node == fn->end_node) break;
+        }
+    }
+
+    // Step 4: Sweep unreachable function nodes
+    int eliminated_funcs = 0;
+    for (int i = 0; i < func_count; i++) {
+        if (!funcs[i].reachable) {
+            AsmNode *sweep_curr = funcs[i].start_node;
+            AsmNode *sweep_end  = funcs[i].end_node;
+
+            while (sweep_curr) {
+                AsmNode *next = sweep_curr->next;
+                bool is_last = (sweep_curr == sweep_end);
+                remove_node(sweep_curr);
+                if (is_last) break;
+                sweep_curr = next;
+            }
+            eliminated_funcs++;
+        }
+    }
+
+    return eliminated_funcs;
 }
 
 // -------------------------------------------------------------------
@@ -525,7 +767,6 @@ ControlFlowGraph* build_cfg(AsmNode *head) {
         curr = curr->next;
     }
 
-    // Connect Control Flow Edges
     for (int i = 0; i < cfg->num_blocks; i++) {
         BasicBlock *block = cfg->blocks[i];
         AsmNode *term = block->last_ins;
@@ -545,7 +786,7 @@ ControlFlowGraph* build_cfg(AsmNode *head) {
             if (i + 1 < cfg->num_blocks) add_edge(block, cfg->blocks[i + 1]);
         }
         else if (strcmp(term->mnemonic, "RET") == 0 || strcmp(term->mnemonic, "HLT") == 0) {
-            // Terminates execution sequence
+            // End of execution path
         }
         else {
             if (i + 1 < cfg->num_blocks) add_edge(block, cfg->blocks[i + 1]);
@@ -706,7 +947,6 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
         BlockState current = block->in_state;
 
         for (AsmNode *node = block->first_ins; node != NULL; node = node->next) {
-            // Fold constant register inputs: MOV R_dst, R_src -> MOV R_dst, <constant>
             if (node->type == OP_MOV && node->src_op.mode == MODE_REG) {
                 int src_reg = get_reg_index(node->src_op.reg);
                 if (src_reg >= 0 && current.regs[src_reg].type == VAL_CONST) {
@@ -719,7 +959,6 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
                 }
             }
 
-            // Advance state tracking through current block
             if (node->type == OP_MOV) {
                 int dst_reg = get_reg_index(node->dst_op.reg);
                 if (dst_reg >= 0) {
@@ -757,12 +996,14 @@ int main(int argc, char **argv) {
     int total_opts = 0;
     int opts_in_pass = 0;
 
-    // Phase 1: Iterative Peephole & Local Optimization Engine
+    // Phase 1: Iterative Peephole, Inlining & Local Optimizations
     do {
         opts_in_pass = 0;
         opts_in_pass += pass_peephole_window2(program_ast);
         opts_in_pass += pass_algebraic_simplifications(program_ast);
         opts_in_pass += pass_store_to_load_forwarding(program_ast);
+        opts_in_pass += pass_inline_trivial_functions(program_ast);
+        opts_in_pass += pass_dead_function_elimination(program_ast);
 
         total_opts += opts_in_pass;
         passes++;
@@ -775,7 +1016,6 @@ int main(int argc, char **argv) {
     int global_folds = fold_constants_cfg(cfg);
     total_opts += global_folds;
 
-    // Optional DOT Graphviz export
     if (argc >= 5 && strcmp(argv[3], "--dot") == 0) {
         export_cfg_to_dot(argv[4], cfg);
         printf("CFG exported to '%s'.\n", argv[4]);
