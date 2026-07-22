@@ -26,16 +26,16 @@ typedef enum {
 
 typedef struct {
     AddressingMode mode;
-    char reg[16];     // Base register name ("R0", "BP", "SP")
-    int offset;       // Displacement offset (+4, -8, 0)
-    int immediate;    // Numeric value if MODE_IMMEDIATE
-    char raw[32];     // Original operand string representation
+    char reg[32];     
+    int offset;       
+    int immediate;    
+    char raw[128];    
 } Operand;
 
 typedef struct AsmNode {
     OpType type;
-    char raw[128];
-    char mnemonic[16];
+    char raw[512];      // INCREASED to 512 to prevent snprintf format truncation warnings
+    char mnemonic[32];  
     
     Operand dst_op;
     Operand src_op;
@@ -62,7 +62,7 @@ typedef struct BasicBlock BasicBlock;
 
 struct BasicBlock {
     int id;
-    char labels[8][32]; // Labels pointing directly to this block
+    char labels[8][128]; 
     int num_labels;
 
     AsmNode *first_ins;
@@ -76,8 +76,8 @@ struct BasicBlock {
     int num_succs;
     int cap_succs;
 
-    BlockState in_state;   // Computed entry state
-    BlockState out_state;  // Computed exit state after transfer function
+    BlockState in_state;   
+    BlockState out_state;  
 };
 
 typedef struct {
@@ -87,15 +87,15 @@ typedef struct {
 } ControlFlowGraph;
 
 typedef struct {
-    char name[64];
+    char name[128]; 
     AsmNode *body_nodes[MAX_BODY_INS];
     int body_count;
 } InlineCandidate;
 
 typedef struct {
-    char name[64];
-    AsmNode *start_node; // Label node
-    AsmNode *end_node;   // Terminating RET node
+    char name[128]; 
+    AsmNode *start_node; 
+    AsmNode *end_node;   
     bool reachable;
 } FunctionDef;
 
@@ -136,26 +136,26 @@ Operand parse_operand(const char *str) {
     memset(&op, 0, sizeof(Operand));
     if (!str || strlen(str) == 0) return op;
 
-    strncpy(op.raw, str, sizeof(op.raw) - 1);
+    snprintf(op.raw, sizeof(op.raw), "%s", str);
 
     if (str[0] == '[' && str[strlen(str) - 1] == ']') {
         op.mode = MODE_INDIRECT;
-        char inner[32] = {0};
-        strncpy(inner, str + 1, strlen(str) - 2);
+        char inner[128] = {0}; 
+        snprintf(inner, sizeof(inner), "%.*s", (int)(strlen(str) - 2), str + 1);
 
         char *plus_ptr  = strchr(inner, '+');
         char *minus_ptr = strrchr(inner, '-');
 
         if (plus_ptr) {
             *plus_ptr = '\0';
-            strncpy(op.reg, trim(inner), sizeof(op.reg) - 1);
+            snprintf(op.reg, sizeof(op.reg), "%s", trim(inner));
             op.offset = atoi(trim(plus_ptr + 1));
         } else if (minus_ptr && minus_ptr != inner) {
             *minus_ptr = '\0';
-            strncpy(op.reg, trim(inner), sizeof(op.reg) - 1);
+            snprintf(op.reg, sizeof(op.reg), "%s", trim(inner));
             op.offset = -atoi(trim(minus_ptr + 1));
         } else {
-            strncpy(op.reg, trim(inner), sizeof(op.reg) - 1);
+            snprintf(op.reg, sizeof(op.reg), "%s", trim(inner));
             op.offset = 0;
         }
     } 
@@ -165,7 +165,7 @@ Operand parse_operand(const char *str) {
     } 
     else {
         op.mode = MODE_REG;
-        strncpy(op.reg, str, sizeof(op.reg) - 1);
+        snprintf(op.reg, sizeof(op.reg), "%s", str);
     }
 
     return op;
@@ -173,9 +173,9 @@ Operand parse_operand(const char *str) {
 
 AsmNode* create_node(const char* raw, OpType type, const char* mnem, const char* dst, const char* src) {
     AsmNode *node = (AsmNode*)calloc(1, sizeof(AsmNode));
-    if (raw) strncpy(node->raw, raw, sizeof(node->raw) - 1);
+    if (raw) snprintf(node->raw, sizeof(node->raw), "%s", raw);
     node->type = type;
-    if (mnem) strncpy(node->mnemonic, mnem, sizeof(node->mnemonic) - 1);
+    if (mnem) snprintf(node->mnemonic, sizeof(node->mnemonic), "%s", mnem);
     
     if (dst && strlen(dst) > 0) {
         node->dst_op = parse_operand(dst);
@@ -216,11 +216,10 @@ AsmNode* parse_vircon32_asm(const char *filename) {
     AsmNode *dummy_head = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
     AsmNode *tail = dummy_head;
 
-    char line[256];
+    char line[512]; 
     while (fgets(line, sizeof(line), fp)) {
-        char raw[128];
-        strncpy(raw, line, sizeof(raw) - 1);
-        raw[sizeof(raw) - 1] = '\0';
+        char raw[512]; 
+        snprintf(raw, sizeof(raw), "%s", line);
         raw[strcspn(raw, "\r\n")] = '\0';
 
         char *trimmed = trim(line);
@@ -231,14 +230,13 @@ AsmNode* parse_vircon32_asm(const char *filename) {
             continue;
         }
 
-        char code_part[128] = {0};
+        char code_part[256] = {0}; 
         char *comment_ptr = strchr(trimmed, ';');
         if (comment_ptr) {
             size_t len = comment_ptr - trimmed;
-            strncpy(code_part, trimmed, len);
-            code_part[len] = '\0';
+            snprintf(code_part, len + 1, "%s", trimmed);
         } else {
-            strncpy(code_part, trimmed, sizeof(code_part) - 1);
+            snprintf(code_part, sizeof(code_part), "%s", trimmed);
         }
         char *code_trimmed = trim(code_part);
 
@@ -248,25 +246,24 @@ AsmNode* parse_vircon32_asm(const char *filename) {
             continue;
         }
 
-        char mnem[16] = {0}, dst[32] = {0}, src[32] = {0};
+        char mnem[32] = {0}, dst[128] = {0}, src[128] = {0}; 
         char *space_ptr = strpbrk(code_trimmed, " \t");
 
         if (!space_ptr) {
-            strncpy(mnem, code_trimmed, sizeof(mnem) - 1);
+            snprintf(mnem, sizeof(mnem), "%s", code_trimmed);
         } else {
             size_t mnem_len = space_ptr - code_trimmed;
             if (mnem_len >= sizeof(mnem)) mnem_len = sizeof(mnem) - 1;
-            strncpy(mnem, code_trimmed, mnem_len);
-            mnem[mnem_len] = '\0';
+            snprintf(mnem, mnem_len + 1, "%s", code_trimmed);
 
             char *operands = trim(space_ptr);
             char *comma_ptr = strchr(operands, ',');
             if (comma_ptr) {
                 *comma_ptr = '\0';
-                strncpy(dst, trim(operands), sizeof(dst) - 1);
-                strncpy(src, trim(comma_ptr + 1), sizeof(src) - 1);
+                snprintf(dst, sizeof(dst), "%s", trim(operands));
+                snprintf(src, sizeof(src), "%s", trim(comma_ptr + 1));
             } else {
-                strncpy(dst, trim(operands), sizeof(dst) - 1);
+                snprintf(dst, sizeof(dst), "%s", trim(operands));
             }
         }
 
@@ -301,16 +298,13 @@ void write_vircon32_asm(const char *filename, AsmNode *head) {
     bool last_was_blank = false;
 
     while (curr) {
-        // Check if current line is blank or whitespace-only
-        char line_copy[128];
-        strncpy(line_copy, curr->raw, sizeof(line_copy) - 1);
-        line_copy[sizeof(line_copy) - 1] = '\0';
+        char line_copy[512]; 
+        snprintf(line_copy, sizeof(line_copy), "%s", curr->raw);
         char *trimmed = trim(line_copy);
 
         bool is_blank = (strlen(trimmed) == 0);
 
         if (is_blank) {
-            // Only output a single blank line, skip consecutive empty lines
             if (!last_was_blank) {
                 fprintf(fp, "\n");
                 last_was_blank = true;
@@ -456,16 +450,14 @@ int pass_inline_trivial_functions(AsmNode *head) {
 
     AsmNode *curr = head ? head->next : NULL;
 
-    // STEP 1: Catalog Inlinable Functions
     while (curr) {
         if (curr->type == OP_LABEL && candidate_count < MAX_INLINE_CANDIDATES) {
-            // FIX 1: Properly trim label before stripping colon
-            char func_name[64] = {0};
-            char line_copy[128];
-            strncpy(line_copy, curr->raw, sizeof(line_copy) - 1);
+            char func_name[128] = {0}; 
+            char line_copy[512];
+            snprintf(line_copy, sizeof(line_copy), "%s", curr->raw);
             char *trimmed_lbl = trim(line_copy);
 
-            strncpy(func_name, trimmed_lbl, sizeof(func_name) - 1);
+            snprintf(func_name, sizeof(func_name), "%s", trimmed_lbl);
             char *colon = strchr(func_name, ':');
             if (colon) *colon = '\0';
             trim(func_name);
@@ -473,7 +465,6 @@ int pass_inline_trivial_functions(AsmNode *head) {
             AsmNode *scan = curr->next;
             while (scan && (scan->type == OP_OTHER || scan->type == OP_LABEL)) scan = scan->next;
 
-            // FIX 2: Frame setup is now OPTIONAL
             if (scan && scan->type == OP_PUSH && str_case_eq(scan->dst_op.reg, "BP")) {
                 scan = scan->next;
                 if (scan && scan->type == OP_MOV && str_case_eq(scan->dst_op.reg, "BP") && str_case_eq(scan->src_op.reg, "SP")) {
@@ -491,11 +482,9 @@ int pass_inline_trivial_functions(AsmNode *head) {
                     continue;
                 }
 
-                // Epilogue detection
                 if (scan->type == OP_MOV && str_case_eq(scan->dst_op.reg, "SP") && str_case_eq(scan->src_op.reg, "BP")) break;
                 if (str_case_eq(scan->mnemonic, "RET")) break;
 
-                // Reject if contains control flow or calls
                 if (str_case_eq(scan->mnemonic, "CALL") || str_case_eq(scan->mnemonic, "JMP") ||
                     str_case_eq(scan->mnemonic, "JT")   || str_case_eq(scan->mnemonic, "JF")) {
                     valid_candidate = false;
@@ -513,7 +502,7 @@ int pass_inline_trivial_functions(AsmNode *head) {
             }
 
             if (valid_candidate && core_count > 0 && core_count <= MAX_BODY_INS) {
-                strncpy(candidates[candidate_count].name, func_name, 63);
+                snprintf(candidates[candidate_count].name, sizeof(candidates[candidate_count].name), "%s", func_name);
                 candidates[candidate_count].body_count = core_count;
                 for (int i = 0; i < core_count; i++) {
                     candidates[candidate_count].body_nodes[i] = core_nodes[i];
@@ -524,7 +513,6 @@ int pass_inline_trivial_functions(AsmNode *head) {
         curr = curr->next;
     }
 
-    // STEP 2: Replace CALL sites
     int inlined_calls = 0;
     curr = head ? head->next : NULL;
 
@@ -532,11 +520,10 @@ int pass_inline_trivial_functions(AsmNode *head) {
         AsmNode *next_node = curr->next;
 
         if (str_case_eq(curr->mnemonic, "CALL")) {
-            char target_label[64] = {0};
-            strncpy(target_label, trim(curr->dst_op.raw), sizeof(target_label) - 1);
+            char target_label[128] = {0}; 
+            snprintf(target_label, sizeof(target_label), "%s", trim(curr->dst_op.raw));
 
             for (int c = 0; c < candidate_count; c++) {
-                // FIX 3: Case-insensitive label comparison
                 if (str_case_eq(target_label, candidates[c].name)) {
                     AsmNode *insertion_point = curr->prev;
 
@@ -566,7 +553,6 @@ int pass_inline_trivial_functions(AsmNode *head) {
 
 // -------------------------------------------------------------------
 // Pass: Reachability-Based Dead Function Elimination (DFE)
-// Fully supports __function_ prefixes and prevents internal label splits
 // -------------------------------------------------------------------
 int pass_dead_function_elimination(AsmNode *head) {
     FunctionDef funcs[MAX_FUNCTIONS];
@@ -574,26 +560,23 @@ int pass_dead_function_elimination(AsmNode *head) {
 
     AsmNode *curr = head ? head->next : NULL;
 
-    // STEP 1: Catalog non-overlapping functions
     while (curr) {
         if (curr->type == OP_LABEL) {
-            char line_copy[128];
-            strncpy(line_copy, curr->raw, sizeof(line_copy) - 1);
+            char line_copy[512]; 
+            snprintf(line_copy, sizeof(line_copy), "%s", curr->raw);
             char *lbl = trim(line_copy);
 
-            // Ignore local labels (.L1, .loop) and return labels (_return:)
             if (lbl[0] == '.' || lbl[0] == '@' || strstr(lbl, "_return:")) {
                 curr = curr->next;
                 continue;
             }
 
-            char func_name[64] = {0};
-            strncpy(func_name, lbl, sizeof(func_name) - 1);
+            char func_name[128] = {0}; 
+            snprintf(func_name, sizeof(func_name), "%s", lbl);
             char *colon = strchr(func_name, ':');
             if (colon) *colon = '\0';
             trim(func_name);
 
-            // Scan forward to find the terminating RET / RETI instruction
             AsmNode *scan = curr->next;
             AsmNode *ret_node = NULL;
 
@@ -606,13 +589,12 @@ int pass_dead_function_elimination(AsmNode *head) {
             }
 
             if (ret_node && func_count < MAX_FUNCTIONS) {
-                strncpy(funcs[func_count].name, func_name, 63);
+                snprintf(funcs[func_count].name, sizeof(funcs[func_count].name), "%s", func_name);
                 funcs[func_count].start_node = curr;
                 funcs[func_count].end_node = ret_node;
                 funcs[func_count].reachable = false;
                 func_count++;
 
-                // Skip past RET so internal function labels aren't cataloged separately
                 curr = ret_node->next;
                 continue;
             }
@@ -622,8 +604,7 @@ int pass_dead_function_elimination(AsmNode *head) {
 
     if (func_count == 0) return 0;
 
-    // STEP 2: Mark root entry points (including global initializers & main)
-    char worklist[MAX_FUNCTIONS][64];
+    char worklist[MAX_FUNCTIONS][128]; 
     int worklist_size = 0;
 
     for (int i = 0; i < func_count; i++) {
@@ -639,21 +620,19 @@ int pass_dead_function_elimination(AsmNode *head) {
         {
             funcs[i].reachable = true;
             if (worklist_size < MAX_FUNCTIONS) {
-                strncpy(worklist[worklist_size++], funcs[i].name, 63);
+                snprintf(worklist[worklist_size++], sizeof(worklist[0]), "%s", funcs[i].name);
             }
         }
     }
 
-    // Fallback: If no standard entry point is matched, preserve the first label
     if (worklist_size == 0 && func_count > 0) {
         funcs[0].reachable = true;
-        strncpy(worklist[worklist_size++], funcs[0].name, 63);
+        snprintf(worklist[worklist_size++], sizeof(worklist[0]), "%s", funcs[0].name);
     }
 
-    // STEP 3: Reachability Analysis (Transitive Closure)
     while (worklist_size > 0) {
-        char current_label[64];
-        strncpy(current_label, worklist[--worklist_size], 63);
+        char current_label[128];
+        snprintf(current_label, sizeof(current_label), "%s", worklist[--worklist_size]);
 
         FunctionDef *fn = NULL;
         for (int i = 0; i < func_count; i++) {
@@ -665,12 +644,12 @@ int pass_dead_function_elimination(AsmNode *head) {
         if (!fn) continue;
 
         for (AsmNode *node = fn->start_node; node != NULL; node = node->next) {
-            char target_label[64] = {0};
+            char target_label[128] = {0}; 
 
             if (str_case_eq(node->mnemonic, "CALL") || str_case_eq(node->mnemonic, "JMP") ||
                 str_case_eq(node->mnemonic, "JT")   || str_case_eq(node->mnemonic, "JF")) 
             {
-                strncpy(target_label, trim(node->dst_op.raw), sizeof(target_label) - 1);
+                snprintf(target_label, sizeof(target_label), "%s", trim(node->dst_op.raw));
             }
 
             if (strlen(target_label) > 0) {
@@ -678,7 +657,7 @@ int pass_dead_function_elimination(AsmNode *head) {
                     if (str_case_eq(funcs[f].name, target_label) && !funcs[f].reachable) {
                         funcs[f].reachable = true;
                         if (worklist_size < MAX_FUNCTIONS) {
-                            strncpy(worklist[worklist_size++], funcs[f].name, 63);
+                            snprintf(worklist[worklist_size++], sizeof(worklist[0]), "%s", funcs[f].name);
                         }
                     }
                 }
@@ -688,7 +667,6 @@ int pass_dead_function_elimination(AsmNode *head) {
         }
     }
 
-    // STEP 4: Sweep Unreachable Subroutines
     int eliminated_funcs = 0;
     for (int i = 0; i < func_count; i++) {
         if (!funcs[i].reachable) {
@@ -766,20 +744,20 @@ ControlFlowGraph* build_cfg(AsmNode *head) {
     if (!head) return cfg;
 
     BasicBlock *current_block = NULL;
-    char pending_labels[8][32];
+    char pending_labels[8][128]; 
     int pending_label_count = 0;
 
     AsmNode *curr = (head->type == OP_OTHER && head->raw[0] == '\0') ? head->next : head;
 
     while (curr) {
         if (curr->type == OP_LABEL) {
-            char lbl[32] = {0};
-            strncpy(lbl, curr->raw, sizeof(lbl) - 1);
+            char lbl[128] = {0}; 
+            snprintf(lbl, sizeof(lbl), "%s", curr->raw);
             char *colon = strchr(lbl, ':');
             if (colon) *colon = '\0';
 
             if (pending_label_count < 8) {
-                strncpy(pending_labels[pending_label_count++], lbl, 31);
+                snprintf(pending_labels[pending_label_count++], sizeof(pending_labels[0]), "%s", lbl);
             }
 
             current_block = NULL;
@@ -798,7 +776,7 @@ ControlFlowGraph* build_cfg(AsmNode *head) {
             current_block->first_ins = curr;
 
             for (int l = 0; l < pending_label_count; l++) {
-                strncpy(current_block->labels[l], pending_labels[l], 31);
+                snprintf(current_block->labels[l], sizeof(current_block->labels[l]), "%s", pending_labels[l]);
             }
             current_block->num_labels = pending_label_count;
             pending_label_count = 0;
@@ -1037,12 +1015,36 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
 // -------------------------------------------------------------------
 
 int main(int argc, char **argv) {
-    if (argc < 3) {
-        printf("Usage: %s <input.asm> <output.asm> [--dot cfg.dot]\n", argv[0]);
+    if (argc < 2) {
+        printf("Usage: %s <input.asm> [output.asm] [--dot cfg.dot]\n", argv[0]);
         return 1;
     }
 
-    AsmNode *program_ast = parse_vircon32_asm(argv[1]);
+    char *inFile = argv[1];
+    char outFile[256] = {0};
+    char dotFile[256] = {0};
+    
+    int out_idx = 0;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--dot") == 0 && i + 1 < argc) {
+            snprintf(dotFile, sizeof(dotFile), "%s", argv[i+1]);
+            i++; 
+        } else if (out_idx == 0) {
+            snprintf(outFile, sizeof(outFile), "%s", argv[i]);
+            out_idx = i;
+        }
+    }
+    
+    if (strlen(outFile) == 0) {
+        snprintf(outFile, sizeof(outFile), "%s", inFile);
+        char *ext = strrchr(outFile, '.');
+        if (ext && strcmp(ext, ".asm") == 0) {
+            *ext = '\0';
+        }
+        snprintf(outFile + strlen(outFile), sizeof(outFile) - strlen(outFile), "Opt.asm");
+    }
+
+    AsmNode *program_ast = parse_vircon32_asm(inFile);
 
     int passes = 0;
     int total_opts = 0;
@@ -1068,15 +1070,15 @@ int main(int argc, char **argv) {
     int global_folds = fold_constants_cfg(cfg);
     total_opts += global_folds;
 
-    if (argc >= 5 && strcmp(argv[3], "--dot") == 0) {
-        export_cfg_to_dot(argv[4], cfg);
-        printf("CFG exported to '%s'.\n", argv[4]);
+    if (strlen(dotFile) > 0) {
+        export_cfg_to_dot(dotFile, cfg);
+        printf("CFG exported to '%s'.\n", dotFile);
     }
 
     printf("Optimization complete: %d total optimizations (%d global folds) in %d passes.\n", 
            total_opts, global_folds, passes);
 
-    write_vircon32_asm(argv[2], program_ast);
+    write_vircon32_asm(outFile, program_ast);
 
     free_cfg(cfg);
     free(program_ast);
