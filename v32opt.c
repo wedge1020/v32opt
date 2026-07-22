@@ -4,6 +4,10 @@
 #include <stdbool.h>
 #include <ctype.h>
 
+// -------------------------------------------------------------------
+// Enums & Data Structures
+// -------------------------------------------------------------------
+
 typedef enum {
     OP_MOV, OP_IADD, OP_ISUB, OP_IMUL, OP_IEQ, OP_INE, 
     OP_CIB, OP_PUSH, OP_POP, OP_BNOT, OP_OTHER, OP_LABEL
@@ -38,8 +42,48 @@ typedef struct AsmNode {
     struct AsmNode *next;
 } AsmNode;
 
+// Lattice states for Global Constant Propagation
+typedef enum { VAL_TOP, VAL_CONST, VAL_BOTTOM } ValType;
+
+typedef struct {
+    ValType type;
+    int val;
+} RegState;
+
+typedef struct {
+    RegState regs[16]; // Vircon32 registers R0-R15
+} BlockState;
+
+typedef struct BasicBlock BasicBlock;
+
+struct BasicBlock {
+    int id;
+    char labels[8][32]; // Labels pointing directly to this block
+    int num_labels;
+
+    AsmNode *first_ins;
+    AsmNode *last_ins;
+
+    BasicBlock **preds;
+    int num_preds;
+    int cap_preds;
+
+    BasicBlock **succs;
+    int num_succs;
+    int cap_succs;
+
+    BlockState in_state;   // Computed entry state
+    BlockState out_state;  // Computed exit state after transfer function
+};
+
+typedef struct {
+    BasicBlock **blocks;
+    int num_blocks;
+    int cap_blocks;
+} ControlFlowGraph;
+
 // -------------------------------------------------------------------
-// String & Parsing Helpers
+// String Parsing & Helper Utilities
 // -------------------------------------------------------------------
 
 static char* trim(char *str) {
@@ -59,7 +103,18 @@ static bool str_case_eq(const char *s1, const char *s2) {
     return *s1 == *s2;
 }
 
-// Memory & Operand Parser
+// Maps register string to 0-15 index (R0-R13 -> 0-13, BP -> 14, SP -> 15)
+int get_reg_index(const char *reg_str) {
+    if (!reg_str || strlen(reg_str) == 0) return -1;
+    if (str_case_eq(reg_str, "SP") || str_case_eq(reg_str, "R15")) return 15;
+    if (str_case_eq(reg_str, "BP") || str_case_eq(reg_str, "R14")) return 14;
+    if (toupper((unsigned char)reg_str[0]) == 'R') {
+        int idx = atoi(reg_str + 1);
+        if (idx >= 0 && idx < 16) return idx;
+    }
+    return -1;
+}
+
 Operand parse_operand(const char *str) {
     Operand op;
     memset(&op, 0, sizeof(Operand));
@@ -72,22 +127,22 @@ Operand parse_operand(const char *str) {
         op.mode = MODE_INDIRECT;
 
         char inner[32] = {0};
-        strncpy(inner, str + 1, strlen(str) - 2); // Strip '[' and ']'
+        strncpy(inner, str + 1, strlen(str) - 2);
 
         char *plus_ptr  = strchr(inner, '+');
-        char *minus_ptr = strrchr(inner, '-'); // strrchr handles negative offsets
+        char *minus_ptr = strrchr(inner, '-');
 
         if (plus_ptr) {
             *plus_ptr = '\0';
             strncpy(op.reg, trim(inner), sizeof(op.reg) - 1);
             op.offset = atoi(trim(plus_ptr + 1));
-        } else if (minus_ptr && minus_ptr != inner) { // Ensure '-' isn't a leading sign
+        } else if (minus_ptr && minus_ptr != inner) {
             *minus_ptr = '\0';
             strncpy(op.reg, trim(inner), sizeof(op.reg) - 1);
             op.offset = -atoi(trim(minus_ptr + 1));
         } else {
             strncpy(op.reg, trim(inner), sizeof(op.reg) - 1);
-            op.offset = 0; // Pure dereference like [R0]
+            op.offset = 0;
         }
     } 
     // Immediate constant
@@ -233,8 +288,9 @@ void write_vircon32_asm(const char *filename, AsmNode *head) {
 }
 
 // -------------------------------------------------------------------
-// PASS 1: Window Size 2 Peephole Optimizations
+// Local Peephole Passes
 // -------------------------------------------------------------------
+
 int pass_peephole_window2(AsmNode *head) {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;
@@ -286,9 +342,6 @@ int pass_peephole_window2(AsmNode *head) {
     return optimizations;
 }
 
-// -------------------------------------------------------------------
-// PASS 2: Single Instruction Simplifications (Algebraic)
-// -------------------------------------------------------------------
 int pass_algebraic_simplifications(AsmNode *head) {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;
@@ -323,7 +376,7 @@ int pass_algebraic_simplifications(AsmNode *head) {
         {
             curr->type = OP_IADD;
             strcpy(curr->mnemonic, "IADD");
-            curr->src_op = curr->dst_op; // Set SRC operand to match DST register
+            curr->src_op = curr->dst_op;
             snprintf(curr->raw, sizeof(curr->raw), "    IADD %s, %s", curr->dst_op.raw, curr->src_op.raw);
             optimizations++;
         }
@@ -334,9 +387,6 @@ int pass_algebraic_simplifications(AsmNode *head) {
     return optimizations;
 }
 
-// -------------------------------------------------------------------
-// PASS 3: Store-to-Load Forwarding (Memory Offset Optimization)
-// -------------------------------------------------------------------
 int pass_store_to_load_forwarding(AsmNode *head) {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;
@@ -345,21 +395,16 @@ int pass_store_to_load_forwarding(AsmNode *head) {
         AsmNode *n1 = curr;
         AsmNode *n2 = curr->next;
 
-        // Match Pattern:
-        // MOV [REG+OFF], R_src
-        // MOV R_dst, [REG+OFF]
+        // Match Pattern: MOV [REG+OFF], R_src  followed by  MOV R_dst, [REG+OFF]
         if (n1->type == OP_MOV && n2->type == OP_MOV &&
             n1->dst_op.mode == MODE_INDIRECT && n1->src_op.mode == MODE_REG &&
             n2->dst_op.mode == MODE_REG      && n2->src_op.mode == MODE_INDIRECT) 
         {
-            // Verify base registers and numerical offsets match
             if (strcmp(n1->dst_op.reg, n2->src_op.reg) == 0 && 
                 n1->dst_op.offset == n2->src_op.offset) 
             {
-                // Forward register: Rewrite n2 to "MOV R_dst, R_src"
                 n2->src_op = n1->src_op;
                 snprintf(n2->raw, sizeof(n2->raw), "    MOV %s, %s", n2->dst_op.reg, n2->src_op.reg);
-                
                 optimizations++;
             }
         }
@@ -371,11 +416,338 @@ int pass_store_to_load_forwarding(AsmNode *head) {
 }
 
 // -------------------------------------------------------------------
+// Control Flow Graph (CFG) Construction
+// -------------------------------------------------------------------
+
+static void add_edge(BasicBlock *src, BasicBlock *dst) {
+    if (!src || !dst) return;
+
+    for (int i = 0; i < src->num_succs; i++) {
+        if (src->succs[i] == dst) return;
+    }
+
+    if (src->num_succs >= src->cap_succs) {
+        src->cap_succs = src->cap_succs == 0 ? 4 : src->cap_succs * 2;
+        src->succs = realloc(src->succs, src->cap_succs * sizeof(BasicBlock*));
+    }
+    src->succs[src->num_succs++] = dst;
+
+    if (dst->num_preds >= dst->cap_preds) {
+        dst->cap_preds = dst->cap_preds == 0 ? 4 : dst->cap_preds * 2;
+        dst->preds = realloc(dst->preds, dst->cap_preds * sizeof(BasicBlock*));
+    }
+    dst->preds[dst->num_preds++] = src;
+}
+
+static bool is_unconditional_branch(AsmNode *node) {
+    if (!node) return false;
+    return (strcmp(node->mnemonic, "JMP") == 0 ||
+            strcmp(node->mnemonic, "RET") == 0 ||
+            strcmp(node->mnemonic, "HLT") == 0);
+}
+
+static bool is_conditional_branch(AsmNode *node) {
+    if (!node) return false;
+    return (strcmp(node->mnemonic, "JT") == 0 || strcmp(node->mnemonic, "JF") == 0);
+}
+
+static bool is_branch_or_call(AsmNode *node) {
+    return is_unconditional_branch(node) || 
+           is_conditional_branch(node) || 
+           (node && strcmp(node->mnemonic, "CALL") == 0);
+}
+
+static BasicBlock* find_block_by_label(ControlFlowGraph *cfg, const char *label) {
+    for (int i = 0; i < cfg->num_blocks; i++) {
+        BasicBlock *b = cfg->blocks[i];
+        for (int l = 0; l < b->num_labels; l++) {
+            if (strcmp(b->labels[l], label) == 0) return b;
+        }
+    }
+    return NULL;
+}
+
+ControlFlowGraph* build_cfg(AsmNode *head) {
+    ControlFlowGraph *cfg = calloc(1, sizeof(ControlFlowGraph));
+    if (!head) return cfg;
+
+    BasicBlock *current_block = NULL;
+    char pending_labels[8][32];
+    int pending_label_count = 0;
+
+    AsmNode *curr = (head->type == OP_OTHER && head->raw[0] == '\0') ? head->next : head;
+
+    while (curr) {
+        if (curr->type == OP_LABEL) {
+            char lbl[32] = {0};
+            strncpy(lbl, curr->raw, sizeof(lbl) - 1);
+            char *colon = strchr(lbl, ':');
+            if (colon) *colon = '\0';
+
+            if (pending_label_count < 8) {
+                strncpy(pending_labels[pending_label_count++], lbl, 31);
+            }
+
+            current_block = NULL;
+            curr = curr->next;
+            continue;
+        }
+
+        if (curr->type == OP_OTHER && (curr->raw[0] == '\0' || curr->raw[0] == ';')) {
+            curr = curr->next;
+            continue;
+        }
+
+        if (!current_block) {
+            current_block = calloc(1, sizeof(BasicBlock));
+            current_block->id = cfg->num_blocks;
+            current_block->first_ins = curr;
+
+            for (int l = 0; l < pending_label_count; l++) {
+                strncpy(current_block->labels[l], pending_labels[l], 31);
+            }
+            current_block->num_labels = pending_label_count;
+            pending_label_count = 0;
+
+            if (cfg->num_blocks >= cfg->cap_blocks) {
+                cfg->cap_blocks = cfg->cap_blocks == 0 ? 8 : cfg->cap_blocks * 2;
+                cfg->blocks = realloc(cfg->blocks, cfg->cap_blocks * sizeof(BasicBlock*));
+            }
+            cfg->blocks[cfg->num_blocks++] = current_block;
+        }
+
+        current_block->last_ins = curr;
+
+        if (is_branch_or_call(curr)) {
+            current_block = NULL;
+        }
+
+        curr = curr->next;
+    }
+
+    // Connect Control Flow Edges
+    for (int i = 0; i < cfg->num_blocks; i++) {
+        BasicBlock *block = cfg->blocks[i];
+        AsmNode *term = block->last_ins;
+
+        if (!term) continue;
+
+        if (strcmp(term->mnemonic, "JMP") == 0) {
+            BasicBlock *target = find_block_by_label(cfg, term->dst_op.raw);
+            if (target) add_edge(block, target);
+        }
+        else if (is_conditional_branch(term)) {
+            BasicBlock *target = find_block_by_label(cfg, term->dst_op.raw);
+            if (target) add_edge(block, target);
+            if (i + 1 < cfg->num_blocks) add_edge(block, cfg->blocks[i + 1]);
+        }
+        else if (strcmp(term->mnemonic, "CALL") == 0) {
+            if (i + 1 < cfg->num_blocks) add_edge(block, cfg->blocks[i + 1]);
+        }
+        else if (strcmp(term->mnemonic, "RET") == 0 || strcmp(term->mnemonic, "HLT") == 0) {
+            // Terminates execution sequence
+        }
+        else {
+            if (i + 1 < cfg->num_blocks) add_edge(block, cfg->blocks[i + 1]);
+        }
+    }
+
+    return cfg;
+}
+
+void export_cfg_to_dot(const char *filename, ControlFlowGraph *cfg) {
+    FILE *fp = fopen(filename, "w");
+    if (!fp) return;
+
+    fprintf(fp, "digraph Vircon32_CFG {\n");
+    fprintf(fp, "    node [shape=box, fontname=\"Courier\"];\n\n");
+
+    for (int i = 0; i < cfg->num_blocks; i++) {
+        BasicBlock *b = cfg->blocks[i];
+
+        fprintf(fp, "    block_%d [label=\"Block %d", b->id, b->id);
+        if (b->num_labels > 0) {
+            fprintf(fp, " (");
+            for (int l = 0; l < b->num_labels; l++) {
+                fprintf(fp, "%s%s", b->labels[l], (l < b->num_labels - 1) ? ", " : "");
+            }
+            fprintf(fp, ")");
+        }
+        fprintf(fp, "\\n----------------\\n");
+
+        for (AsmNode *ins = b->first_ins; ins != NULL; ins = ins->next) {
+            fprintf(fp, "%s\\n", ins->raw);
+            if (ins == b->last_ins) break;
+        }
+        fprintf(fp, "\"];\n");
+
+        for (int s = 0; s < b->num_succs; s++) {
+            fprintf(fp, "    block_%d -> block_%d;\n", b->id, b->succs[s]->id);
+        }
+    }
+
+    fprintf(fp, "}\n");
+    fclose(fp);
+}
+
+void free_cfg(ControlFlowGraph *cfg) {
+    if (!cfg) return;
+    for (int i = 0; i < cfg->num_blocks; i++) {
+        free(cfg->blocks[i]->preds);
+        free(cfg->blocks[i]->succs);
+        free(cfg->blocks[i]);
+    }
+    free(cfg->blocks);
+    free(cfg);
+}
+
+// -------------------------------------------------------------------
+// Global Data-Flow Analysis: Constant Propagation
+// -------------------------------------------------------------------
+
+static RegState merge_reg(RegState a, RegState b) {
+    if (a.type == VAL_TOP) return b;
+    if (b.type == VAL_TOP) return a;
+    if (a.type == VAL_BOTTOM || b.type == VAL_BOTTOM) return (RegState){VAL_BOTTOM, 0};
+    if (a.type == VAL_CONST && b.type == VAL_CONST && a.val == b.val) return a;
+    return (RegState){VAL_BOTTOM, 0};
+}
+
+static bool apply_transfer_function(BasicBlock *block) {
+    BlockState current = block->in_state;
+
+    for (AsmNode *node = block->first_ins; node != NULL; node = node->next) {
+        if (node->type == OP_MOV) {
+            int dst_reg = get_reg_index(node->dst_op.reg);
+            if (dst_reg >= 0) {
+                if (node->src_op.mode == MODE_IMMEDIATE) {
+                    current.regs[dst_reg] = (RegState){VAL_CONST, node->src_op.immediate};
+                } else if (node->src_op.mode == MODE_REG) {
+                    int src_reg = get_reg_index(node->src_op.reg);
+                    current.regs[dst_reg] = (src_reg >= 0) ? current.regs[src_reg] : (RegState){VAL_BOTTOM, 0};
+                } else {
+                    current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
+                }
+            }
+        }
+        else if (node->type == OP_IADD) {
+            int dst_reg = get_reg_index(node->dst_op.reg);
+            if (dst_reg >= 0) {
+                RegState dst_st = current.regs[dst_reg];
+                RegState src_st = (node->src_op.mode == MODE_IMMEDIATE) 
+                    ? (RegState){VAL_CONST, node->src_op.immediate} 
+                    : current.regs[get_reg_index(node->src_op.reg)];
+
+                if (dst_st.type == VAL_CONST && src_st.type == VAL_CONST) {
+                    current.regs[dst_reg] = (RegState){VAL_CONST, dst_st.val + src_st.val};
+                } else {
+                    current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
+                }
+            }
+        }
+
+        if (node == block->last_ins) break;
+    }
+
+    bool changed = memcmp(&block->out_state, &current, sizeof(BlockState)) != 0;
+    block->out_state = current;
+    return changed;
+}
+
+void propagate_constants_cfg(ControlFlowGraph *cfg) {
+    if (!cfg || cfg->num_blocks == 0) return;
+
+    bool *in_worklist = calloc(cfg->num_blocks, sizeof(bool));
+    int *worklist = malloc(cfg->num_blocks * sizeof(int));
+    int worklist_size = 0;
+
+    for (int i = 0; i < cfg->num_blocks; i++) {
+        worklist[worklist_size++] = i;
+        in_worklist[i] = true;
+    }
+
+    while (worklist_size > 0) {
+        int b_idx = worklist[--worklist_size];
+        in_worklist[b_idx] = false;
+        BasicBlock *block = cfg->blocks[b_idx];
+
+        BlockState new_in;
+        for (int r = 0; r < 16; r++) new_in.regs[r] = (RegState){VAL_TOP, 0};
+
+        for (int p = 0; p < block->num_preds; p++) {
+            BasicBlock *pred = block->preds[p];
+            for (int r = 0; r < 16; r++) {
+                new_in.regs[r] = merge_reg(new_in.regs[r], pred->out_state.regs[r]);
+            }
+        }
+        block->in_state = new_in;
+
+        if (apply_transfer_function(block)) {
+            for (int s = 0; s < block->num_succs; s++) {
+                int succ_id = block->succs[s]->id;
+                if (!in_worklist[succ_id]) {
+                    worklist[worklist_size++] = succ_id;
+                    in_worklist[succ_id] = true;
+                }
+            }
+        }
+    }
+
+    free(in_worklist);
+    free(worklist);
+}
+
+int fold_constants_cfg(ControlFlowGraph *cfg) {
+    int optimizations = 0;
+    if (!cfg) return 0;
+
+    for (int i = 0; i < cfg->num_blocks; i++) {
+        BasicBlock *block = cfg->blocks[i];
+        BlockState current = block->in_state;
+
+        for (AsmNode *node = block->first_ins; node != NULL; node = node->next) {
+            // Fold constant register inputs: MOV R_dst, R_src -> MOV R_dst, <constant>
+            if (node->type == OP_MOV && node->src_op.mode == MODE_REG) {
+                int src_reg = get_reg_index(node->src_op.reg);
+                if (src_reg >= 0 && current.regs[src_reg].type == VAL_CONST) {
+                    int const_val = current.regs[src_reg].val;
+                    node->src_op.mode = MODE_IMMEDIATE;
+                    node->src_op.immediate = const_val;
+                    snprintf(node->src_op.raw, sizeof(node->src_op.raw), "%d", const_val);
+                    snprintf(node->raw, sizeof(node->raw), "    MOV %s, %d", node->dst_op.reg, const_val);
+                    optimizations++;
+                }
+            }
+
+            // Advance state tracking through current block
+            if (node->type == OP_MOV) {
+                int dst_reg = get_reg_index(node->dst_op.reg);
+                if (dst_reg >= 0) {
+                    if (node->src_op.mode == MODE_IMMEDIATE) {
+                        current.regs[dst_reg] = (RegState){VAL_CONST, node->src_op.immediate};
+                    } else if (node->src_op.mode == MODE_REG) {
+                        int src_reg = get_reg_index(node->src_op.reg);
+                        current.regs[dst_reg] = (src_reg >= 0) ? current.regs[src_reg] : (RegState){VAL_BOTTOM, 0};
+                    } else {
+                        current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
+                    }
+                }
+            }
+
+            if (node == block->last_ins) break;
+        }
+    }
+
+    return optimizations;
+}
+
+// -------------------------------------------------------------------
 // Main Entry Point
 // -------------------------------------------------------------------
+
 int main(int argc, char **argv) {
     if (argc < 3) {
-        printf("Usage: %s <input.asm> <output.asm>\n", argv[0]);
+        printf("Usage: %s <input.asm> <output.asm> [--dot cfg.dot]\n", argv[0]);
         return 1;
     }
 
@@ -385,7 +757,7 @@ int main(int argc, char **argv) {
     int total_opts = 0;
     int opts_in_pass = 0;
 
-    // Run passes until convergence
+    // Phase 1: Iterative Peephole & Local Optimization Engine
     do {
         opts_in_pass = 0;
         opts_in_pass += pass_peephole_window2(program_ast);
@@ -396,9 +768,25 @@ int main(int argc, char **argv) {
         passes++;
     } while (opts_in_pass > 0);
 
-    printf("Optimization complete: %d instructions optimized in %d passes.\n", total_opts, passes);
+    // Phase 2: Build CFG & Perform Global Data-Flow Analysis
+    ControlFlowGraph *cfg = build_cfg(program_ast);
+    propagate_constants_cfg(cfg);
+    
+    int global_folds = fold_constants_cfg(cfg);
+    total_opts += global_folds;
+
+    // Optional DOT Graphviz export
+    if (argc >= 5 && strcmp(argv[3], "--dot") == 0) {
+        export_cfg_to_dot(argv[4], cfg);
+        printf("CFG exported to '%s'.\n", argv[4]);
+    }
+
+    printf("Optimization complete: %d total optimizations (%d global folds) in %d passes.\n", 
+           total_opts, global_folds, passes);
+
     write_vircon32_asm(argv[2], program_ast);
 
+    free_cfg(cfg);
     free(program_ast);
     return 0;
 }
