@@ -34,7 +34,7 @@ typedef struct {
 
 typedef struct AsmNode {
     OpType type;
-    char raw[512];      // INCREASED to 512 to prevent snprintf format truncation warnings
+    char raw[512];      
     char mnemonic[32];  
     
     Operand dst_op;
@@ -98,6 +98,16 @@ typedef struct {
     AsmNode *end_node;   
     bool reachable;
 } FunctionDef;
+
+typedef struct {
+    bool verbose;
+    bool enable_peephole;
+    bool enable_algebraic;
+    bool enable_forwarding;
+    bool enable_inline;
+    bool enable_dce;
+    bool enable_constant_folding;
+} OptConfig;
 
 // -------------------------------------------------------------------
 // String Parsing & AST Utilities
@@ -977,7 +987,7 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
         BlockState current = block->in_state;
 
 		for (AsmNode *node = block->first_ins; node != NULL; node = node->next) {
-			// FIX: Ensure the destination is a register before turning the source into an immediate.
+			
 			if (node->type == OP_MOV && node->src_op.mode == MODE_REG && node->dst_op.mode == MODE_REG) {
 				int src_reg = get_reg_index(node->src_op.reg);
 				if (src_reg >= 0 && current.regs[src_reg].type == VAL_CONST) {
