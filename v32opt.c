@@ -976,18 +976,19 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
         BasicBlock *block = cfg->blocks[i];
         BlockState current = block->in_state;
 
-        for (AsmNode *node = block->first_ins; node != NULL; node = node->next) {
-            if (node->type == OP_MOV && node->src_op.mode == MODE_REG) {
-                int src_reg = get_reg_index(node->src_op.reg);
-                if (src_reg >= 0 && current.regs[src_reg].type == VAL_CONST) {
-                    int const_val = current.regs[src_reg].val;
-                    node->src_op.mode = MODE_IMMEDIATE;
-                    node->src_op.immediate = const_val;
-                    snprintf(node->src_op.raw, sizeof(node->src_op.raw), "%d", const_val);
-                    snprintf(node->raw, sizeof(node->raw), "    MOV %s, %d", node->dst_op.reg, const_val);
-                    optimizations++;
-                }
-            }
+		for (AsmNode *node = block->first_ins; node != NULL; node = node->next) {
+			// FIX: Ensure the destination is a register before turning the source into an immediate.
+			if (node->type == OP_MOV && node->src_op.mode == MODE_REG && node->dst_op.mode == MODE_REG) {
+				int src_reg = get_reg_index(node->src_op.reg);
+				if (src_reg >= 0 && current.regs[src_reg].type == VAL_CONST) {
+					int const_val = current.regs[src_reg].val;
+					node->src_op.mode = MODE_IMMEDIATE;
+					node->src_op.immediate = const_val;
+					snprintf(node->src_op.raw, sizeof(node->src_op.raw), "%d", const_val);
+					snprintf(node->raw, sizeof(node->raw), "    MOV %s, %d", node->dst_op.reg, const_val);
+					optimizations++;
+				}
+			}
 
             if (node->type == OP_MOV) {
                 int dst_reg = get_reg_index(node->dst_op.reg);
