@@ -566,13 +566,6 @@ int pass_inline_trivial_functions(AsmNode *head) {
 
 // -------------------------------------------------------------------
 // Pass: Reachability-Based Dead Function Elimination (DFE)
-// -------------------------------------------------------------------
-// -------------------------------------------------------------------
-// Pass: Reachability-Based Dead Function Elimination (DFE)
-// Bounded non-overlapping ranges prevent double-free crashes
-// -------------------------------------------------------------------
-// -------------------------------------------------------------------
-// Pass: Reachability-Based Dead Function Elimination (DFE)
 // Fully supports __function_ prefixes and prevents internal label splits
 // -------------------------------------------------------------------
 int pass_dead_function_elimination(AsmNode *head) {
