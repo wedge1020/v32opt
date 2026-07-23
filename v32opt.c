@@ -564,18 +564,51 @@ int pass_inline_trivial_functions(AsmNode *head) {
 // -------------------------------------------------------------------
 // Pass: Reachability-Based Dead Function Elimination (DFE)
 // -------------------------------------------------------------------
+// -------------------------------------------------------------------
+// Pass: Reachability-Based Dead Function Elimination (DFE)
+// -------------------------------------------------------------------
 int pass_dead_function_elimination(AsmNode *head) {
     FunctionDef funcs[MAX_FUNCTIONS];
     int func_count = 0;
 
     AsmNode *curr = head ? head->next : NULL;
 
+    // ----------------------------------------------------------------
+    // 1. Capture Unlabeled Preamble (Boot Vector)
+    // ----------------------------------------------------------------
+    AsmNode *preamble_start = curr;
+    // Skip leading blank lines or full-line comments
+    while (preamble_start && preamble_start->type == OP_OTHER && 
+          (preamble_start->raw[0] == '\0' || preamble_start->raw[0] == ';')) {
+        preamble_start = preamble_start->next;
+    }
+
+    // If real instructions exist before the first label, bundle them into "__boot_vector"
+    if (preamble_start && preamble_start->type != OP_LABEL) {
+        AsmNode *preamble_end = preamble_start;
+        while (preamble_end->next && preamble_end->next->type != OP_LABEL) {
+            preamble_end = preamble_end->next;
+        }
+
+        if (func_count < MAX_FUNCTIONS) {
+            snprintf(funcs[func_count].name, sizeof(funcs[func_count].name), "__boot_vector");
+            funcs[func_count].start_node = preamble_start;
+            funcs[func_count].end_node = preamble_end;
+            funcs[func_count].reachable = false;
+            func_count++;
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // 2. Discover Standard Function Boundaries
+    // ----------------------------------------------------------------
     while (curr) {
         if (curr->type == OP_LABEL) {
             char line_copy[512]; 
             snprintf(line_copy, sizeof(line_copy), "%s", curr->raw);
             char *lbl = trim(line_copy);
 
+            // Ignore local labels and compiler metadata
             if (lbl[0] == '.' || lbl[0] == '@' || strstr(lbl, "_return:")) {
                 curr = curr->next;
                 continue;
@@ -614,11 +647,15 @@ int pass_dead_function_elimination(AsmNode *head) {
 
     if (func_count == 0) return 0;
 
+    // ----------------------------------------------------------------
+    // 3. Seed Reachability Worklist
+    // ----------------------------------------------------------------
     char worklist[MAX_FUNCTIONS][128]; 
     int worklist_size = 0;
 
-	for (int i = 0; i < func_count; i++) {
-        if (str_case_eq(funcs[i].name, "__function_main")              ||
+    for (int i = 0; i < func_count; i++) {
+        if (str_case_eq(funcs[i].name, "__boot_vector")                || // <-- Seed preamble
+            str_case_eq(funcs[i].name, "__function_main")              ||
             str_case_eq(funcs[i].name, "main")                         ||
             str_case_eq(funcs[i].name, "_start")                       ||
             str_case_eq(funcs[i].name, "start")                        ||
@@ -626,7 +663,7 @@ int pass_dead_function_elimination(AsmNode *head) {
             str_case_eq(funcs[i].name, "__init_globals")               ||
             str_case_eq(funcs[i].name, "__function_init")              ||
             str_case_eq(funcs[i].name, "__global_scope_initialization")||
-            strstr(funcs[i].name, "__builtin_")   != NULL              || // <-- ADD THIS CATCH-ALL
+            // NOTE: Blanket "__builtin_" catch-all removed so unused library code is stripped!
             strstr(funcs[i].name, "global_scope") != NULL              ||
             strstr(funcs[i].name, "ISR")          != NULL              ||
             strstr(funcs[i].name, "interrupt")    != NULL)
@@ -643,24 +680,18 @@ int pass_dead_function_elimination(AsmNode *head) {
         snprintf(worklist[worklist_size++], sizeof(worklist[0]), "%s", funcs[0].name);
     }
 
-    /* =========================================
-       Global scan for pointer directives 
-       ========================================= */
+    // ----------------------------------------------------------------
+    // 4. Global Scan for `pointer` Directives
+    // ----------------------------------------------------------------
     for (AsmNode *node = head; node != NULL; node = node->next) {
         if (str_case_eq(node->mnemonic, "pointer")) {
             char args_copy[512];
-            // Copy the full raw string to avoid corrupting the AST during tokenization
             snprintf(args_copy, sizeof(args_copy), "%s", node->raw);
             
-            // Tokenize to isolate the labels
             char *token = strtok(args_copy, " ,\t\n\r");
-            
-            // Ensure the first token is "pointer" before parsing the rest
             if (token && str_case_eq(token, "pointer")) {
                 token = strtok(NULL, " ,\t\n\r");
-                
                 while (token != NULL) {
-                    // Find the matching function and mark it reachable
                     for (int f = 0; f < func_count; f++) {
                         if (str_case_eq(funcs[f].name, token) && !funcs[f].reachable) {
                             funcs[f].reachable = true;
@@ -669,13 +700,15 @@ int pass_dead_function_elimination(AsmNode *head) {
                             }
                         }
                     }
-                    // Grab the next label in the comma-separated list
                     token = strtok(NULL, " ,\t\n\r");
                 }
             }
         }
     }
 
+    // ----------------------------------------------------------------
+    // 5. Worklist Traversal (Catch Calls, Branches & Function Pointers)
+    // ----------------------------------------------------------------
     while (worklist_size > 0) {
         char current_label[128];
         snprintf(current_label, sizeof(current_label), "%s", worklist[--worklist_size]);
@@ -690,21 +723,26 @@ int pass_dead_function_elimination(AsmNode *head) {
         if (!fn) continue;
 
         for (AsmNode *node = fn->start_node; node != NULL; node = node->next) {
-            char target_label[128] = {0}; 
-
-            if (str_case_eq(node->mnemonic, "CALL") || str_case_eq(node->mnemonic, "JMP") ||
-                str_case_eq(node->mnemonic, "JT")   || str_case_eq(node->mnemonic, "JF")) 
-            {
-                snprintf(target_label, sizeof(target_label), "%s", trim(node->dst_op.raw));
+            // Ignore labels and comments during operand evaluation
+            if (node->type == OP_LABEL || (node->type == OP_OTHER && node->raw[0] == ';')) {
+                if (node == fn->end_node) break;
+                continue;
             }
 
-            if (strlen(target_label) > 0) {
-                for (int f = 0; f < func_count; f++) {
-                    if (str_case_eq(funcs[f].name, target_label) && !funcs[f].reachable) {
-                        funcs[f].reachable = true;
-                        if (worklist_size < MAX_FUNCTIONS) {
-                            snprintf(worklist[worklist_size++], sizeof(worklist[0]), "%s", funcs[f].name);
-                        }
+            char *op_dst = trim(node->dst_op.raw);
+            char *op_src = trim(node->src_op.raw);
+
+            // Check if EITHER operand references a known function name
+            // This catches direct CALL/JMP targets AND function pointer assignments (e.g., MOV R1, my_func)
+            for (int f = 0; f < func_count; f++) {
+                if (funcs[f].reachable) continue; // Already processed
+
+                if ((strlen(op_dst) > 0 && str_case_eq(funcs[f].name, op_dst)) ||
+                    (strlen(op_src) > 0 && str_case_eq(funcs[f].name, op_src))) 
+                {
+                    funcs[f].reachable = true;
+                    if (worklist_size < MAX_FUNCTIONS) {
+                        snprintf(worklist[worklist_size++], sizeof(worklist[0]), "%s", funcs[f].name);
                     }
                 }
             }
@@ -713,6 +751,9 @@ int pass_dead_function_elimination(AsmNode *head) {
         }
     }
 
+    // ----------------------------------------------------------------
+    // 6. Sweep Unreachable Functions
+    // ----------------------------------------------------------------
     int eliminated_funcs = 0;
     for (int i = 0; i < func_count; i++) {
         if (!funcs[i].reachable) {
