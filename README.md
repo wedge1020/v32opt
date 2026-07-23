@@ -82,12 +82,12 @@ pass aggressiveness.
 You can enable specific optimization passes explicitly if you want custom
 behavior outside the standard `-O` levels:
 
-* `-Opeephole`: Enable local peephole optimizations.
-* `-Oalgebraic`: Enable algebraic simplifications.
-* `-Oforwarding`: Enable store-to-load forwarding.
-* `-Oinline`: Enable trivial function inlining.
-* `-Odce`: Enable dead function elimination (reachability analysis).
-* `-Oconstant_folding`: Enable global constant propagation and folding.
+* `-fopt_peephole`: Enable local peephole optimizations.
+* `-fopt_algebraic`: Enable algebraic simplifications.
+* `-fopt_forwarding`: Enable store-to-load forwarding.
+* `-fopt_inline`: Enable trivial function inlining.
+* `-fopt_dce`: Enable dead function elimination (reachability analysis).
+* `-fopt_constant_folding`: Enable global constant propagation and folding.
 
 ### Debugging & Analysis
 

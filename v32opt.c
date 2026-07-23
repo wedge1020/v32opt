@@ -1063,19 +1063,19 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
         BasicBlock *block = cfg->blocks[i];
         BlockState current = block->in_state;
 
-		for (AsmNode *node = block->first_ins; node != NULL; node = node->next) {
-			
-			if (node->type == OP_MOV && node->src_op.mode == MODE_REG && node->dst_op.mode == MODE_REG) {
-				int src_reg = get_reg_index(node->src_op.reg);
-				if (src_reg >= 0 && current.regs[src_reg].type == VAL_CONST) {
-					int const_val = current.regs[src_reg].val;
-					node->src_op.mode = MODE_IMMEDIATE;
-					node->src_op.immediate = const_val;
-					snprintf(node->src_op.raw, sizeof(node->src_op.raw), "%d", const_val);
-					snprintf(node->raw, sizeof(node->raw), "    MOV %s, %d", node->dst_op.reg, const_val);
-					optimizations++;
-				}
-			}
+        for (AsmNode *node = block->first_ins; node != NULL; node = node->next) {
+            
+            if (node->type == OP_MOV && node->src_op.mode == MODE_REG && node->dst_op.mode == MODE_REG) {
+                int src_reg = get_reg_index(node->src_op.reg);
+                if (src_reg >= 0 && current.regs[src_reg].type == VAL_CONST) {
+                    int const_val = current.regs[src_reg].val;
+                    node->src_op.mode = MODE_IMMEDIATE;
+                    node->src_op.immediate = const_val;
+                    snprintf(node->src_op.raw, sizeof(node->src_op.raw), "%d", const_val);
+                    snprintf(node->raw, sizeof(node->raw), "    MOV %s, %d", node->dst_op.reg, const_val);
+                    optimizations++;
+                }
+            }
 
             if (node->type == OP_MOV) {
                 int dst_reg = get_reg_index(node->dst_op.reg);
@@ -1135,7 +1135,8 @@ int main(int argc, char **argv) {
         .enable_constant_folding = false
     };
 
-    int out_idx = 0;
+    int  out_idx = 0;
+	int  opt_count  = 0;
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--dot") == 0 && i + 1 < argc) {
             snprintf(dotFile, sizeof(dotFile), "%s", argv[i+1]);
@@ -1156,6 +1157,7 @@ int main(int argc, char **argv) {
             config.enable_inline = false;
             config.enable_dce = false;
             config.enable_constant_folding = false;
+			opt_count = 3;
         } else if (strcmp(argv[i], "-O2") == 0) {
             config.enable_peephole = true;
             config.enable_algebraic = true;
@@ -1163,6 +1165,7 @@ int main(int argc, char **argv) {
             config.enable_inline = false;
             config.enable_dce = true;
             config.enable_constant_folding = true;
+			opt_count = 5;
         } else if (strcmp(argv[i], "-O3") == 0) {
             config.enable_peephole = true;
             config.enable_algebraic = true;
@@ -1170,21 +1173,66 @@ int main(int argc, char **argv) {
             config.enable_inline = true;
             config.enable_dce = true;
             config.enable_constant_folding = true;
+			opt_count = 6;
         } else if (strcmp(argv[i], "-fopt_peephole") == 0) {
             config.enable_peephole = true;
+			opt_count = opt_count + 1;
         } else if (strcmp(argv[i], "-fopt_algebraic") == 0) {
             config.enable_algebraic = true;
+			opt_count = opt_count + 1;
         } else if (strcmp(argv[i], "-fopt_forwarding") == 0) {
             config.enable_forwarding = true;
+			opt_count = opt_count + 1;
         } else if (strcmp(argv[i], "-fopt_inline") == 0) {
             config.enable_inline = true;
+			opt_count = opt_count + 1;
         } else if (strcmp(argv[i], "-fopt_dce") == 0) {
             config.enable_dce = true;
+			opt_count = opt_count + 1;
         } else if (strcmp(argv[i], "-fopt_constant_folding") == 0) {
             config.enable_constant_folding = true;
+			opt_count = opt_count + 1;
         } else if (out_idx == 0 && argv[i][0] != '-') {
             snprintf(outFile, sizeof(outFile), "%s", argv[i]);
             out_idx = i;
+        }
+    }
+
+    if (config.verbose)
+    {
+
+        if (opt_count  == 0)
+        {
+            fprintf (stdout, "--- Configuration: NO OPTIMIZATIONS ENABLED ---\n");
+        }
+        else
+        {
+			fprintf (stdout, "--- Configuration: Enabled Optimizations ---\n");
+        }
+
+        if (config.enable_peephole)
+        {
+            fprintf (stdout, "  - peephole\n");
+        }
+        if (config.enable_algebraic)
+        {
+            fprintf (stdout, "  - algebraic\n");
+        }
+        if (config.enable_forwarding)
+        {
+            fprintf (stdout, "  - forwarding\n");
+        }
+        if (config.enable_inline)
+        {
+            fprintf (stdout, "  - inline\n");
+        }
+        if (config.enable_dce)
+        {
+            fprintf (stdout, "  - dce\n");
+        }
+        if (config.enable_constant_folding)
+        {
+            fprintf (stdout, "  - constant_folding\n");
         }
     }
 
@@ -1253,7 +1301,8 @@ int main(int argc, char **argv) {
         if (config.verbose) printf("CFG exported to '%s'.\n", dotFile);
     }
 
-    if (config.verbose || total_opts > 0) {
+    //if (config.verbose || total_opts > 0) {
+    if (config.verbose) {
         printf("\nOptimization complete: %d total optimizations applied.\n", total_opts);
     }
 
