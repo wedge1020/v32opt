@@ -621,24 +621,32 @@ int pass_dead_function_elimination(AsmNode *head) {
             trim(func_name);
 
             AsmNode *scan = curr->next;
-            AsmNode *ret_node = NULL;
+            AsmNode *end_of_func = curr;
 
+            // Scan until we hit the NEXT top-level function label or EOF
             while (scan) {
-                if (str_case_eq(scan->mnemonic, "RET") || str_case_eq(scan->mnemonic, "RETI")) {
-                    ret_node = scan;
-                    break;
+                if (scan->type == OP_LABEL) {
+                    char next_copy[512];
+                    snprintf(next_copy, sizeof(next_copy), "%s", scan->raw);
+                    char *next_lbl = trim(next_copy);
+                    
+                    // If it is NOT a local label, we have reached the next function boundary!
+                    if (next_lbl[0] != '.' && next_lbl[0] != '@' && !strstr(next_lbl, "_return:")) {
+                        break;
+                    }
                 }
+                end_of_func = scan;
                 scan = scan->next;
             }
 
-            if (ret_node && func_count < MAX_FUNCTIONS) {
+            if (func_count < MAX_FUNCTIONS) {
                 snprintf(funcs[func_count].name, sizeof(funcs[func_count].name), "%s", func_name);
                 funcs[func_count].start_node = curr;
-                funcs[func_count].end_node = ret_node;
+                funcs[func_count].end_node = end_of_func; // Perfectly captures all exit paths!
                 funcs[func_count].reachable = false;
                 func_count++;
 
-                curr = ret_node->next;
+                curr = scan; // Jump directly to the next function label to continue scanning
                 continue;
             }
         }
