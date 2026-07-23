@@ -159,11 +159,11 @@ Operand parse_operand(const char *str) {
         if (plus_ptr) {
             *plus_ptr = '\0';
             snprintf(op.reg, sizeof(op.reg), "%s", trim(inner));
-            op.offset = atoi(trim(plus_ptr + 1));
+            op.offset = (int)strtoul(trim(plus_ptr + 1), NULL, 0);
         } else if (minus_ptr && minus_ptr != inner) {
             *minus_ptr = '\0';
             snprintf(op.reg, sizeof(op.reg), "%s", trim(inner));
-            op.offset = -atoi(trim(minus_ptr + 1));
+            op.offset = -(int)strtoul(trim(minus_ptr + 1), NULL, 0);
         } else {
             snprintf(op.reg, sizeof(op.reg), "%s", trim(inner));
             op.offset = 0;
@@ -171,7 +171,7 @@ Operand parse_operand(const char *str) {
     } 
     else if (isdigit((unsigned char)str[0]) || (str[0] == '-' && isdigit((unsigned char)str[1]))) {
         op.mode = MODE_IMMEDIATE;
-        op.immediate = atoi(str);
+        op.immediate = (int)strtoul(str, NULL, 0);
     } 
     else {
         op.mode = MODE_REG;
@@ -564,9 +564,6 @@ int pass_inline_trivial_functions(AsmNode *head) {
 // -------------------------------------------------------------------
 // Pass: Reachability-Based Dead Function Elimination (DFE)
 // -------------------------------------------------------------------
-// -------------------------------------------------------------------
-// Pass: Reachability-Based Dead Function Elimination (DFE)
-// -------------------------------------------------------------------
 int pass_dead_function_elimination(AsmNode *head) {
     FunctionDef funcs[MAX_FUNCTIONS];
     int func_count = 0;
@@ -577,13 +574,11 @@ int pass_dead_function_elimination(AsmNode *head) {
     // 1. Capture Unlabeled Preamble (Boot Vector)
     // ----------------------------------------------------------------
     AsmNode *preamble_start = curr;
-    // Skip leading blank lines or full-line comments
     while (preamble_start && preamble_start->type == OP_OTHER && 
           (preamble_start->raw[0] == '\0' || preamble_start->raw[0] == ';')) {
         preamble_start = preamble_start->next;
     }
 
-    // If real instructions exist before the first label, bundle them into "__boot_vector"
     if (preamble_start && preamble_start->type != OP_LABEL) {
         AsmNode *preamble_end = preamble_start;
         while (preamble_end->next && preamble_end->next->type != OP_LABEL) {
@@ -608,7 +603,6 @@ int pass_dead_function_elimination(AsmNode *head) {
             snprintf(line_copy, sizeof(line_copy), "%s", curr->raw);
             char *lbl = trim(line_copy);
 
-            // Ignore local labels and compiler metadata
             if (lbl[0] == '.' || lbl[0] == '@' || strstr(lbl, "_return:")) {
                 curr = curr->next;
                 continue;
@@ -623,14 +617,12 @@ int pass_dead_function_elimination(AsmNode *head) {
             AsmNode *scan = curr->next;
             AsmNode *end_of_func = curr;
 
-            // Scan until we hit the NEXT top-level function label or EOF
             while (scan) {
                 if (scan->type == OP_LABEL) {
                     char next_copy[512];
                     snprintf(next_copy, sizeof(next_copy), "%s", scan->raw);
                     char *next_lbl = trim(next_copy);
                     
-                    // If it is NOT a local label, we have reached the next function boundary!
                     if (next_lbl[0] != '.' && next_lbl[0] != '@' && !strstr(next_lbl, "_return:")) {
                         break;
                     }
@@ -642,11 +634,11 @@ int pass_dead_function_elimination(AsmNode *head) {
             if (func_count < MAX_FUNCTIONS) {
                 snprintf(funcs[func_count].name, sizeof(funcs[func_count].name), "%s", func_name);
                 funcs[func_count].start_node = curr;
-                funcs[func_count].end_node = end_of_func; // Perfectly captures all exit paths!
+                funcs[func_count].end_node = end_of_func; 
                 funcs[func_count].reachable = false;
                 func_count++;
 
-                curr = scan; // Jump directly to the next function label to continue scanning
+                curr = scan; 
                 continue;
             }
         }
@@ -662,7 +654,7 @@ int pass_dead_function_elimination(AsmNode *head) {
     int worklist_size = 0;
 
     for (int i = 0; i < func_count; i++) {
-        if (str_case_eq(funcs[i].name, "__boot_vector")                || // <-- Seed preamble
+        if (str_case_eq(funcs[i].name, "__boot_vector")                ||
             str_case_eq(funcs[i].name, "__function_main")              ||
             str_case_eq(funcs[i].name, "main")                         ||
             str_case_eq(funcs[i].name, "_start")                       ||
@@ -671,7 +663,6 @@ int pass_dead_function_elimination(AsmNode *head) {
             str_case_eq(funcs[i].name, "__init_globals")               ||
             str_case_eq(funcs[i].name, "__function_init")              ||
             str_case_eq(funcs[i].name, "__global_scope_initialization")||
-            // NOTE: Blanket "__builtin_" catch-all removed so unused library code is stripped!
             strstr(funcs[i].name, "global_scope") != NULL              ||
             strstr(funcs[i].name, "ISR")          != NULL              ||
             strstr(funcs[i].name, "interrupt")    != NULL)
@@ -731,7 +722,6 @@ int pass_dead_function_elimination(AsmNode *head) {
         if (!fn) continue;
 
         for (AsmNode *node = fn->start_node; node != NULL; node = node->next) {
-            // Ignore labels and comments during operand evaluation
             if (node->type == OP_LABEL || (node->type == OP_OTHER && node->raw[0] == ';')) {
                 if (node == fn->end_node) break;
                 continue;
@@ -740,10 +730,8 @@ int pass_dead_function_elimination(AsmNode *head) {
             char *op_dst = trim(node->dst_op.raw);
             char *op_src = trim(node->src_op.raw);
 
-            // Check if EITHER operand references a known function name
-            // This catches direct CALL/JMP targets AND function pointer assignments (e.g., MOV R1, my_func)
             for (int f = 0; f < func_count; f++) {
-                if (funcs[f].reachable) continue; // Already processed
+                if (funcs[f].reachable) continue; 
 
                 if ((strlen(op_dst) > 0 && str_case_eq(funcs[f].name, op_dst)) ||
                     (strlen(op_src) > 0 && str_case_eq(funcs[f].name, op_src))) 
@@ -1079,8 +1067,8 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
                     int const_val = current.regs[src_reg].val;
                     node->src_op.mode = MODE_IMMEDIATE;
                     node->src_op.immediate = const_val;
-                    snprintf(node->src_op.raw, sizeof(node->src_op.raw), "%d", const_val);
-                    snprintf(node->raw, sizeof(node->raw), "    MOV %s, %d", node->dst_op.reg, const_val);
+                    snprintf(node->src_op.raw, sizeof(node->src_op.raw), "0x%X", (unsigned int)const_val);
+                    snprintf(node->raw, sizeof(node->raw), "    MOV %s, 0x%X", node->dst_op.reg, (unsigned int)const_val);
                     optimizations++;
                 }
             }
@@ -1132,7 +1120,6 @@ int main(int argc, char **argv) {
     char outFile[256] = {0};
     char dotFile[256] = {0};
 
-    // Default config is -O0
     OptConfig config = {
         .verbose = false,
         .enable_peephole = false,
@@ -1304,12 +1291,11 @@ int main(int argc, char **argv) {
     }
 
     if (strlen(dotFile) > 0) {
-        if (!cfg) cfg = build_cfg(program_ast); // Ensure CFG exists for export if requested
+        if (!cfg) cfg = build_cfg(program_ast); 
         export_cfg_to_dot(dotFile, cfg);
         if (config.verbose) printf("CFG exported to '%s'.\n", dotFile);
     }
 
-    //if (config.verbose || total_opts > 0) {
     if (config.verbose) {
         printf("\nOptimization complete: %d total optimizations applied.\n", total_opts);
     }
