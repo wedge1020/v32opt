@@ -107,6 +107,10 @@ typedef struct {
     bool enable_inline;
     bool enable_dce;
     bool enable_constant_folding;
+    bool enable_jump_next;
+    bool enable_redundant_movs;
+    bool enable_combine_immediates;
+    bool enable_strength_reduction;
 } OptConfig;
 
 // -------------------------------------------------------------------
@@ -460,6 +464,143 @@ int pass_store_to_load_forwarding(AsmNode *head) {
         curr = curr->next;
     }
 
+    return optimizations;
+}
+
+// -------------------------------------------------------------------
+// Pass: Redundant Jump Elimination
+// -------------------------------------------------------------------
+int pass_redundant_jumps(AsmNode *head) {
+    int optimizations = 0;
+    AsmNode *curr = head ? head->next : NULL;
+
+    while (curr) {
+        if (str_case_eq(curr->mnemonic, "JMP")) {
+            // Find the next actual instruction or label (skip comments/blanks)
+            AsmNode *next_node = curr->next;
+            while (next_node && next_node->type == OP_OTHER && 
+                  (next_node->raw[0] == '\0' || next_node->raw[0] == ';')) {
+                next_node = next_node->next;
+            }
+
+            if (next_node && next_node->type == OP_LABEL) {
+                char lbl[128] = {0};
+                safe_str_copy(lbl, next_node->raw, sizeof(lbl));
+                char *colon = strchr(lbl, ':');
+                if (colon) *colon = '\0';
+                
+                if (str_case_eq(trim(lbl), trim(curr->dst_op.raw))) {
+                    AsmNode *to_remove = curr;
+                    curr = curr->next;
+                    remove_node(to_remove);
+                    optimizations++;
+                    continue;
+                }
+            }
+        }
+        curr = curr->next;
+    }
+    return optimizations;
+}
+
+// -------------------------------------------------------------------
+// Pass: Redundant & Mirror Move Elimination
+// -------------------------------------------------------------------
+int pass_redundant_movs(AsmNode *head) {
+    int optimizations = 0;
+    AsmNode *curr = head ? head->next : NULL;
+
+    while (curr) {
+        if (curr->type == OP_MOV) {
+            AsmNode *n2 = curr->next;
+            while (n2 && n2->type == OP_OTHER && 
+                  (n2->raw[0] == '\0' || n2->raw[0] == ';')) {
+                n2 = n2->next;
+            }
+            if (!n2) break;
+
+            if (n2->type == OP_MOV) {
+                // Case 1: Duplicate Move (e.g., MOV R0, X followed by MOV R0, X)
+                if (str_case_eq(curr->dst_op.raw, n2->dst_op.raw) &&
+                    str_case_eq(curr->src_op.raw, n2->src_op.raw)) 
+                {
+                    remove_node(n2);
+                    optimizations++;
+                    continue;
+                }
+
+                // Case 2: Mirror Move (e.g., MOV R0, R1 followed by MOV R1, R0)
+                if (curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_REG &&
+                    n2->dst_op.mode == MODE_REG && n2->src_op.mode == MODE_REG) 
+                {
+                    if (str_case_eq(curr->dst_op.reg, n2->src_op.reg) &&
+                        str_case_eq(curr->src_op.reg, n2->dst_op.reg)) 
+                    {
+                        remove_node(n2);
+                        optimizations++;
+                        continue;
+                    }
+                }
+            }
+        }
+        curr = curr->next;
+    }
+    return optimizations;
+}
+
+// -------------------------------------------------------------------
+// Pass: Immediate Math Combining
+// -------------------------------------------------------------------
+int pass_combine_immediates(AsmNode *head) {
+    int optimizations = 0;
+    AsmNode *curr = head ? head->next : NULL;
+
+    while (curr) {
+        if ((curr->type == OP_IADD || curr->type == OP_ISUB) &&
+            curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE) 
+        {
+            AsmNode *n2 = curr->next;
+            while (n2 && n2->type == OP_OTHER && 
+                  (n2->raw[0] == '\0' || n2->raw[0] == ';')) {
+                n2 = n2->next;
+            }
+
+            if (n2 && (n2->type == OP_IADD || n2->type == OP_ISUB) &&
+                n2->dst_op.mode == MODE_REG && n2->src_op.mode == MODE_IMMEDIATE &&
+                str_case_eq(curr->dst_op.reg, n2->dst_op.reg)) 
+            {
+                int val1 = (curr->type == OP_IADD) ? curr->src_op.immediate : -curr->src_op.immediate;
+                int val2 = (n2->type == OP_IADD) ? n2->src_op.immediate : -n2->src_op.immediate;
+                int combined = val1 + val2;
+
+                if (combined == 0) {
+                    // They canceled each other out completely!
+                    AsmNode *next_iter = n2->next;
+                    remove_node(curr);
+                    remove_node(n2);
+                    curr = next_iter;
+                    optimizations += 2;
+                    continue;
+                } else if (combined > 0) {
+                    curr->type = OP_IADD;
+                    safe_str_copy(curr->mnemonic, "IADD", sizeof(curr->mnemonic));
+                    curr->src_op.immediate = combined;
+                    snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%d", combined);
+                    snprintf(curr->raw, sizeof(curr->raw), "    IADD %s, %d", curr->dst_op.raw, combined);
+                } else {
+                    curr->type = OP_ISUB;
+                    safe_str_copy(curr->mnemonic, "ISUB", sizeof(curr->mnemonic));
+                    curr->src_op.immediate = -combined;
+                    snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%d", -combined);
+                    snprintf(curr->raw, sizeof(curr->raw), "    ISUB %s, %d", curr->dst_op.raw, -combined);
+                }
+                remove_node(n2);
+                optimizations++;
+                continue;
+            }
+        }
+        curr = curr->next;
+    }
     return optimizations;
 }
 
@@ -1116,15 +1257,19 @@ int main(int argc, char **argv) {
         fprintf (stdout, "  -v                      Verbose output (show pass statistics)\n");
         fprintf (stdout, "  --dot <cfg.dot>         Export Control Flow Graph to DOT format\n");
         fprintf (stdout, "  -O0                     Disable all optimizations [default]\n");
-        fprintf (stdout, "  -O1                     Enables: peephole, algebraic, forwarding\n");
-        fprintf (stdout, "  -O2                     -O1 + DCE, constant folding\n");
-        fprintf (stdout, "  -O3                     -O2 + function inlining (aggressive)\n");
-        fprintf (stdout, "  -fopt_peephole          Enables peephole optimizations\n");
-        fprintf (stdout, "  -fopt_algebraic         Enables algebraic simplifications\n");
-        fprintf (stdout, "  -fopt_forwarding        Enables store-to-load forwarding\n");
-        fprintf (stdout, "  -fopt_inline            Enables function inlining\n");
-        fprintf (stdout, "  -fopt_dce               Enables dead function elimination\n");
-        fprintf (stdout, "  -fopt_constant_folding  Enables constant folding\n\n");
+        fprintf (stdout, "  -O1                     Enables:\n");
+        fprintf (stdout, "     -fopt_peephole          Enables peephole optimizations\n");
+        fprintf (stdout, "     -fopt_algebraic         Enables algebraic simplifications\n");
+        fprintf (stdout, "     -fopt_forwarding        Enables store-to-load forwarding\n");
+        fprintf (stdout, "     -fopt_jump_next         Enables jump next\n\n");
+        fprintf (stdout, "     -fopt_redundant_movs    Enables redundant movs\n\n");
+        fprintf (stdout, "     -fopt_combine_immediates  Enables combine immediates\n\n");
+        fprintf (stdout, "     -fopt_strength_reduction  Enables strength reduction\n\n");
+        fprintf (stdout, "  -O2                        -O1 + these:\n");
+        fprintf (stdout, "     -fopt_dce               Enables dead function elimination\n");
+        fprintf (stdout, "     -fopt_constant_folding  Enables constant folding\n\n");
+        fprintf (stdout, "  -O3                        -O2 + these (aggressive):\n");
+        fprintf (stdout, "     -fopt_inline            Enables function inlining\n");
         return (1);
     }
 
@@ -1140,6 +1285,10 @@ int main(int argc, char **argv) {
         .enable_inline = false,
         .enable_dce = false,
         .enable_constant_folding = false
+		.enable_jump_next = false;
+		.enable_redundant_movs = false;
+		.enable_combine_immediates = false;
+		.enable_strength_reduction = false;
     };
 
     int  out_idx = 0;
@@ -1157,30 +1306,59 @@ int main(int argc, char **argv) {
             config.enable_inline = false;
             config.enable_dce = false;
             config.enable_constant_folding = false;
-        } else if (strcmp(argv[i], "-O1") == 0) {
+            config.enable_jump_next = false;
+            config.enable_redundant_movs = false;
+            config.enable_combine_immediates = false;
+            config.enable_strength_reduction = false;
+		} else if (strcmp(argv[i], "-O1") == 0) {
             config.enable_peephole = true;
             config.enable_algebraic = true;
             config.enable_forwarding = true;
+            config.enable_jump_next = true;          // Added
+            config.enable_redundant_movs = true;     // Added
+            config.enable_combine_immediates = true; // Added
+            config.enable_strength_reduction = true; // Added
             config.enable_inline = false;
             config.enable_dce = false;
             config.enable_constant_folding = false;
-			opt_count = 3;
+            opt_count = 7; // Updated count
         } else if (strcmp(argv[i], "-O2") == 0) {
             config.enable_peephole = true;
             config.enable_algebraic = true;
             config.enable_forwarding = true;
+            config.enable_jump_next = true;          // Added
+            config.enable_redundant_movs = true;     // Added
+            config.enable_combine_immediates = true; // Added
+            config.enable_strength_reduction = true; // Added
             config.enable_inline = false;
             config.enable_dce = true;
             config.enable_constant_folding = true;
-			opt_count = 5;
+            opt_count = 9; // Updated count
         } else if (strcmp(argv[i], "-O3") == 0) {
             config.enable_peephole = true;
             config.enable_algebraic = true;
             config.enable_forwarding = true;
+            config.enable_jump_next = true;          // Added
+            config.enable_redundant_movs = true;     // Added
+            config.enable_combine_immediates = true; // Added
+            config.enable_strength_reduction = true; // Added
             config.enable_inline = true;
             config.enable_dce = true;
             config.enable_constant_folding = true;
-			opt_count = 6;
+            opt_count = 10; // Updated count
+        // Individual Flags:
+        } else if (strcmp(argv[i], "-fopt_jump_next") == 0) {
+            config.enable_jump_next = true;
+            opt_count++;
+        } else if (strcmp(argv[i], "-fopt_redundant_movs") == 0) {
+            config.enable_redundant_movs = true;
+            opt_count++;
+        } else if (strcmp(argv[i], "-fopt_combine_immediates") == 0) {
+            config.enable_combine_immediates = true;
+            opt_count++;
+        } else if (strcmp(argv[i], "-fopt_strength_reduction") == 0) {
+            config.enable_strength_reduction = true;
+            opt_count++;
         } else if (strcmp(argv[i], "-fopt_peephole") == 0) {
             config.enable_peephole = true;
 			opt_count = opt_count + 1;
@@ -1237,10 +1415,11 @@ int main(int argc, char **argv) {
         {
             fprintf (stdout, "  - dce\n");
         }
-        if (config.enable_constant_folding)
-        {
-            fprintf (stdout, "  - constant_folding\n");
-        }
+        if (config.enable_constant_folding)   fprintf (stdout, "  - constant_folding\n");
+		if (config.enable_jump_next)          fprintf(stdout, "  - jump_next\n");
+        if (config.enable_redundant_movs)     fprintf(stdout, "  - redundant_movs\n");
+        if (config.enable_combine_immediates) fprintf(stdout, "  - combine_immediates\n");
+        if (config.enable_strength_reduction) fprintf(stdout, "  - strength_reduction\n");
     }
 
     if (strlen(outFile) == 0) {
@@ -1260,18 +1439,23 @@ int main(int argc, char **argv) {
 
     if (config.verbose) printf("--- Starting Optimization Phase 1: Local Passes ---\n");
 
-    // Phase 1: Iterative Peephole, Inlining & Local Optimizations
+	// Phase 1: Iterative Peephole, Inlining & Local Optimizations
     do {
         opts_in_pass = 0;
         int p_opts = 0, a_opts = 0, f_opts = 0, i_opts = 0, d_opts = 0;
+        int j_opts = 0, m_opts = 0, c_opts = 0, s_opts = 0; // Added s_opts
 
-        if (config.enable_peephole)   p_opts = pass_peephole_window2(program_ast);
-        if (config.enable_algebraic)  a_opts = pass_algebraic_simplifications(program_ast);
-        if (config.enable_forwarding) f_opts = pass_store_to_load_forwarding(program_ast);
-        if (config.enable_inline)     i_opts = pass_inline_trivial_functions(program_ast);
-        if (config.enable_dce)        d_opts = pass_dead_function_elimination(program_ast);
+        if (config.enable_peephole)           p_opts = pass_peephole_window2(program_ast);
+        if (config.enable_algebraic)          a_opts = pass_algebraic_simplifications(program_ast);
+        if (config.enable_forwarding)         f_opts = pass_store_to_load_forwarding(program_ast);
+        if (config.enable_jump_next)          j_opts = pass_redundant_jumps(program_ast);
+        if (config.enable_redundant_movs)     m_opts = pass_redundant_movs(program_ast);
+        if (config.enable_combine_immediates) c_opts = pass_combine_immediates(program_ast);
+        if (config.enable_strength_reduction) s_opts = pass_strength_reduction(program_ast); // Added
+        if (config.enable_inline)             i_opts = pass_inline_trivial_functions(program_ast);
+        if (config.enable_dce)                d_opts = pass_dead_function_elimination(program_ast);
 
-        opts_in_pass = p_opts + a_opts + f_opts + i_opts + d_opts;
+        opts_in_pass = p_opts + a_opts + f_opts + j_opts + m_opts + c_opts + s_opts + i_opts + d_opts;
         total_opts += opts_in_pass;
         passes++;
 
@@ -1280,6 +1464,10 @@ int main(int argc, char **argv) {
             if (p_opts > 0) printf("  - Peephole: %d\n", p_opts);
             if (a_opts > 0) printf("  - Algebraic: %d\n", a_opts);
             if (f_opts > 0) printf("  - Forwarding: %d\n", f_opts);
+            if (j_opts > 0) printf("  - Redundant jumps removed: %d\n", j_opts);
+            if (m_opts > 0) printf("  - Redundant moves removed: %d\n", m_opts);
+            if (c_opts > 0) printf("  - Immediates combined: %d\n", c_opts);
+            if (s_opts > 0) printf("  - Strength reductions: %d\n", s_opts);
             if (i_opts > 0) printf("  - Inlined funcs: %d\n", i_opts);
             if (d_opts > 0) printf("  - Dead funcs removed: %d\n", d_opts);
         }
@@ -1317,4 +1505,109 @@ int main(int argc, char **argv) {
     if (cfg) free_cfg(cfg);
     free(program_ast);
     return 0;
+}
+
+// Helper: Check if a positive integer is a power of 2 (2, 4, 8, 16...)
+static inline bool is_power_of_two(int x) {
+    return (x > 0) && ((x & (x - 1)) == 0);
+}
+
+// Helper: Calculate log2 of a power-of-two integer (determines shift amount)
+static inline int get_log2(int x) {
+    int log = 0;
+    while (x > 1) {
+        x >>= 1;
+        log++;
+    }
+    return log;
+}
+
+// -------------------------------------------------------------------
+// Pass: Strength Reduction (Multiplication & Division)
+// -------------------------------------------------------------------
+int pass_strength_reduction(AsmNode *head) {
+    int optimizations = 0;
+    AsmNode *curr = head ? head->next : NULL;
+
+    while (curr) {
+        // --- 1. Integer Multiplication (IMUL) ---
+        if (curr->type == OP_IMUL && curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE) {
+            int val = curr->src_op.immediate;
+
+            // Case A: Multiply by 0 -> Replace with MOV dst, 0
+            if (val == 0) {
+                curr->type = OP_MOV;
+                safe_str_copy(curr->mnemonic, "MOV", sizeof(curr->mnemonic));
+                snprintf(curr->raw, sizeof(curr->raw), "    MOV %s, 0", curr->dst_op.raw);
+                optimizations++;
+                curr = curr->next;
+                continue;
+            }
+
+            // Case B: Multiply by 1 -> Identity operation (Remove completely!)
+            if (val == 1) {
+                AsmNode *to_remove = curr;
+                curr = curr->next;
+                remove_node(to_remove);
+                optimizations++;
+                continue;
+            }
+
+            // Case C: Multiply by 2 -> Replace with IADD dst, dst
+            if (val == 2) {
+                curr->type = OP_IADD;
+                safe_str_copy(curr->mnemonic, "IADD", sizeof(curr->mnemonic));
+                curr->src_op.mode = MODE_REG;
+                safe_str_copy(curr->src_op.reg, curr->dst_op.reg, sizeof(curr->src_op.reg));
+                safe_str_copy(curr->src_op.raw, curr->dst_op.raw, sizeof(curr->src_op.raw));
+                snprintf(curr->raw, sizeof(curr->raw), "    IADD %s, %s", curr->dst_op.raw, curr->dst_op.raw);
+                optimizations++;
+                curr = curr->next;
+                continue;
+            }
+
+            // Case D: Multiply by Power of 2 (4, 8, 16...) -> Replace with SHL dst, log2(val)
+            if (is_power_of_two(val)) {
+                int shift = get_log2(val);
+                curr->type = OP_SHL;
+                safe_str_copy(curr->mnemonic, "SHL", sizeof(curr->mnemonic));
+                curr->src_op.immediate = shift;
+                snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%d", shift);
+                snprintf(curr->raw, sizeof(curr->raw), "    SHL %s, %d", curr->dst_op.raw, shift);
+                optimizations++;
+                curr = curr->next;
+                continue;
+            }
+        }
+
+        // --- 2. Integer Division (IDIV) ---
+        if (curr->type == OP_IDIV && curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE) {
+            int val = curr->src_op.immediate;
+
+            // Case A: Divide by 1 -> Identity operation (Remove completely!)
+            if (val == 1) {
+                AsmNode *to_remove = curr;
+                curr = curr->next;
+                remove_node(to_remove);
+                optimizations++;
+                continue;
+            }
+
+            // Case B: Divide by Power of 2 (2, 4, 8...) -> Replace with SHR dst, log2(val)
+            if (is_power_of_two(val)) {
+                int shift = get_log2(val);
+                curr->type = OP_SHR;
+                safe_str_copy(curr->mnemonic, "SHR", sizeof(curr->mnemonic));
+                curr->src_op.immediate = shift;
+                snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%d", shift);
+                snprintf(curr->raw, sizeof(curr->raw), "    SHR %s, %d", curr->dst_op.raw, shift);
+                optimizations++;
+                curr = curr->next;
+                continue;
+            }
+        }
+
+        curr = curr->next;
+    }
+    return optimizations;
 }
