@@ -13,8 +13,8 @@
 // -------------------------------------------------------------------
 
 typedef enum {
-    OP_MOV, OP_IADD, OP_ISUB, OP_IMUL, OP_IEQ, OP_INE, 
-    OP_CIB, OP_PUSH, OP_POP, OP_BNOT, OP_OTHER, OP_LABEL
+    OP_MOV, OP_IADD, OP_ISUB, OP_IMUL, OP_IDIV, OP_IEQ, OP_INE, 
+    OP_CIB, OP_PUSH, OP_POP, OP_BNOT, OP_SHL, OP_SHR, OP_OTHER, OP_LABEL
 } OpType;
 
 typedef enum {
@@ -304,6 +304,9 @@ AsmNode* parse_vircon32_asm(const char *filename) {
         else if (str_case_eq(mnem, "PUSH")) type = OP_PUSH;
         else if (str_case_eq(mnem, "POP"))  type = OP_POP;
         else if (str_case_eq(mnem, "BNOT")) type = OP_BNOT;
+        else if (str_case_eq(mnem, "IDIV")) type = OP_IDIV;
+        else if (str_case_eq(mnem, "SHL"))  type = OP_SHL;
+        else if (str_case_eq(mnem, "SHR"))  type = OP_SHR;
 
         AsmNode *node = create_node(raw, type, mnem, dst, src);
         tail->next = node; node->prev = tail; tail = node;
@@ -1247,6 +1250,9 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
     return optimizations;
 }
 
+// Forward declaration for local optimization passes defined later
+int pass_strength_reduction(AsmNode *head);
+
 // -------------------------------------------------------------------
 // Main Entry Point
 // -------------------------------------------------------------------
@@ -1254,22 +1260,22 @@ int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf (stdout, "Usage: %s <input.asm> [output.asm] [options]\n", argv[0]);
         fprintf (stdout, "Options:\n");
-        fprintf (stdout, "  -v                      Verbose output (show pass statistics)\n");
-        fprintf (stdout, "  --dot <cfg.dot>         Export Control Flow Graph to DOT format\n");
-        fprintf (stdout, "  -O0                     Disable all optimizations [default]\n");
-        fprintf (stdout, "  -O1                     Enables:\n");
-        fprintf (stdout, "     -fopt_peephole          Enables peephole optimizations\n");
-        fprintf (stdout, "     -fopt_algebraic         Enables algebraic simplifications\n");
-        fprintf (stdout, "     -fopt_forwarding        Enables store-to-load forwarding\n");
-        fprintf (stdout, "     -fopt_jump_next         Enables jump next\n\n");
-        fprintf (stdout, "     -fopt_redundant_movs    Enables redundant movs\n\n");
-        fprintf (stdout, "     -fopt_combine_immediates  Enables combine immediates\n\n");
-        fprintf (stdout, "     -fopt_strength_reduction  Enables strength reduction\n\n");
-        fprintf (stdout, "  -O2                        -O1 + these:\n");
-        fprintf (stdout, "     -fopt_dce               Enables dead function elimination\n");
-        fprintf (stdout, "     -fopt_constant_folding  Enables constant folding\n\n");
-        fprintf (stdout, "  -O3                        -O2 + these (aggressive):\n");
-        fprintf (stdout, "     -fopt_inline            Enables function inlining\n");
+        fprintf (stdout, "  -v                           Verbose output (show pass statistics)\n");
+        fprintf (stdout, "  --dot <cfg.dot>              Export Control Flow Graph to DOT format\n");
+        fprintf (stdout, "  -O0                          Disable all optimizations [default]\n");
+        fprintf (stdout, "  -O1                          Enables:\n");
+        fprintf (stdout, "     -fopt_peephole            Enables peephole optimizations\n");
+        fprintf (stdout, "     -fopt_algebraic           Enables algebraic simplifications\n");
+        fprintf (stdout, "     -fopt_forwarding          Enables store-to-load forwarding\n");
+        fprintf (stdout, "     -fopt_jump_next           Enables jump next\n");
+        fprintf (stdout, "     -fopt_redundant_movs      Enables redundant movs\n");
+        fprintf (stdout, "     -fopt_combine_immediates  Enables combine immediates\n");
+        fprintf (stdout, "     -fopt_strength_reduction  Enables strength reduction\n");
+        fprintf (stdout, "  -O2                          -O1 + these:\n");
+        fprintf (stdout, "     -fopt_dce                 Enables dead function elimination\n");
+        fprintf (stdout, "     -fopt_constant_folding    Enables constant folding\n");
+        fprintf (stdout, "  -O3                          -O2 + these (aggressive):\n");
+        fprintf (stdout, "     -fopt_inline              Enables function inlining\n\n");
         return (1);
     }
 
@@ -1284,11 +1290,11 @@ int main(int argc, char **argv) {
         .enable_forwarding = false,
         .enable_inline = false,
         .enable_dce = false,
-        .enable_constant_folding = false
-		.enable_jump_next = false;
-		.enable_redundant_movs = false;
-		.enable_combine_immediates = false;
-		.enable_strength_reduction = false;
+        .enable_constant_folding = false,
+		.enable_jump_next = false,
+		.enable_redundant_movs = false,
+		.enable_combine_immediates = false,
+		.enable_strength_reduction = false
     };
 
     int  out_idx = 0;
