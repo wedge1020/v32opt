@@ -1103,36 +1103,36 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
 // -------------------------------------------------------------------
 int main(int argc, char **argv) {
     if (argc < 2) {
-        printf("Usage: %s <input.asm> [output.asm] [options]\n", argv[0]);
-        printf("Options:\n");
-        printf("  -v                  Verbose output (show pass statistics)\n");
-        printf("  --dot <cfg.dot>     Export Control Flow Graph to DOT format\n");
-        printf("  -O0                 Disable all optimizations\n");
-        printf("  -O1                 Enable local optimizations (peephole, algebraic, forwarding)\n");
-        printf("  -O2                 Enable -O1 + global optimizations (DCE, constant folding) [Default]\n");
-        printf("  -O3                 Enable -O2 + aggressive optimizations (function inlining)\n");
-        printf("  -Opeephole          Enable peephole optimization explicitly\n");
-        printf("  -Oalgebraic         Enable algebraic simplifications explicitly\n");
-        printf("  -Oforwarding        Enable store-to-load forwarding explicitly\n");
-        printf("  -Oinline            Enable function inlining explicitly\n");
-        printf("  -Odce               Enable dead function elimination explicitly\n");
-        printf("  -Oconstant_folding  Enable constant folding explicitly\n");
-        return 1;
+        fprintf (stdout, "Usage: %s <input.asm> [output.asm] [options]\n", argv[0]);
+        fprintf (stdout, "Options:\n");
+        fprintf (stdout, "  -v                      Verbose output (show pass statistics)\n");
+        fprintf (stdout, "  --dot <cfg.dot>         Export Control Flow Graph to DOT format\n");
+        fprintf (stdout, "  -O0                     Disable all optimizations [default]\n");
+        fprintf (stdout, "  -O1                     Enables: peephole, algebraic, forwarding\n");
+        fprintf (stdout, "  -O2                     -O1 + DCE, constant folding\n");
+        fprintf (stdout, "  -O3                     -O2 + function inlining (aggressive)\n");
+        fprintf (stdout, "  -fopt_peephole          Enables peephole optimizations\n");
+        fprintf (stdout, "  -fopt_algebraic         Enables algebraic simplifications\n");
+        fprintf (stdout, "  -fopt_forwarding        Enables store-to-load forwarding\n");
+        fprintf (stdout, "  -fopt_inline            Enables function inlining\n");
+        fprintf (stdout, "  -fopt_dce               Enables dead function elimination\n");
+        fprintf (stdout, "  -fopt_constant_folding  Enables constant folding\n\n");
+        return (1);
     }
 
     char *inFile = argv[1];
     char outFile[256] = {0};
     char dotFile[256] = {0};
 
-    // Default config is roughly equivalent to -O2
+    // Default config is -O0
     OptConfig config = {
         .verbose = false,
-        .enable_peephole = true,
-        .enable_algebraic = true,
-        .enable_forwarding = true,
+        .enable_peephole = false,
+        .enable_algebraic = false,
+        .enable_forwarding = false,
         .enable_inline = false,
-        .enable_dce = true,
-        .enable_constant_folding = true
+        .enable_dce = false,
+        .enable_constant_folding = false
     };
 
     int out_idx = 0;
@@ -1170,17 +1170,17 @@ int main(int argc, char **argv) {
             config.enable_inline = true;
             config.enable_dce = true;
             config.enable_constant_folding = true;
-        } else if (strcmp(argv[i], "-Opeephole") == 0) {
+        } else if (strcmp(argv[i], "-fopt_peephole") == 0) {
             config.enable_peephole = true;
-        } else if (strcmp(argv[i], "-Oalgebraic") == 0) {
+        } else if (strcmp(argv[i], "-fopt_algebraic") == 0) {
             config.enable_algebraic = true;
-        } else if (strcmp(argv[i], "-Oforwarding") == 0) {
+        } else if (strcmp(argv[i], "-fopt_forwarding") == 0) {
             config.enable_forwarding = true;
-        } else if (strcmp(argv[i], "-Oinline") == 0) {
+        } else if (strcmp(argv[i], "-fopt_inline") == 0) {
             config.enable_inline = true;
-        } else if (strcmp(argv[i], "-Odce") == 0) {
+        } else if (strcmp(argv[i], "-fopt_dce") == 0) {
             config.enable_dce = true;
-        } else if (strcmp(argv[i], "-Oconstant_folding") == 0) {
+        } else if (strcmp(argv[i], "-fopt_constant_folding") == 0) {
             config.enable_constant_folding = true;
         } else if (out_idx == 0 && argv[i][0] != '-') {
             snprintf(outFile, sizeof(outFile), "%s", argv[i]);

@@ -11,6 +11,10 @@ output,  `v32opt` reduces  binary size  and cycle  counts by  eliminating
 redundant  operations,  performing  algebraic  simplifications,  inlining
 trivial functions, and stripping dead code.
 
+This project and  this documentation - was built with  the help of Gemini
+AI (Google),  a mix of  its Thinking (3.6)  mid-tier model and  Pro (3.1)
+high-tier model.
+
 ---
 
 ## 🛠️ Compilation & Build Instructions
