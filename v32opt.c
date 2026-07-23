@@ -113,6 +113,18 @@ typedef struct {
 // String Parsing & AST Utilities
 // -------------------------------------------------------------------
 
+// Wrapper function using strncpy at its core to safely copy strings
+// without generating -Wformat-truncation or -Wstringop-truncation warnings.
+// Safely copy string and guarantee null-termination without strncpy truncation warnings.
+static inline void safe_str_copy(char *dest, const char *src, size_t dest_size) {
+    if (dest != NULL && src != NULL && dest_size > 0) {
+        size_t src_len = strlen(src);
+        size_t copy_len = (src_len < dest_size - 1) ? src_len : (dest_size - 1);
+        memcpy(dest, src, copy_len);
+        dest[copy_len] = '\0';
+    }
+}
+
 static char* trim(char *str) {
     while (isspace((unsigned char)*str)) str++;
     if (*str == 0) return str;
@@ -146,7 +158,7 @@ Operand parse_operand(const char *str) {
     memset(&op, 0, sizeof(Operand));
     if (!str || strlen(str) == 0) return op;
 
-    snprintf(op.raw, sizeof(op.raw), "%s", str);
+    safe_str_copy(op.raw, str, sizeof(op.raw));
 
     if (str[0] == '[' && str[strlen(str) - 1] == ']') {
         op.mode = MODE_INDIRECT;
@@ -158,14 +170,14 @@ Operand parse_operand(const char *str) {
 
         if (plus_ptr) {
             *plus_ptr = '\0';
-            snprintf(op.reg, sizeof(op.reg), "%s", trim(inner));
+            safe_str_copy(op.reg, trim(inner), sizeof(op.reg));
             op.offset = (int)strtoul(trim(plus_ptr + 1), NULL, 0);
         } else if (minus_ptr && minus_ptr != inner) {
             *minus_ptr = '\0';
-            snprintf(op.reg, sizeof(op.reg), "%s", trim(inner));
+            safe_str_copy(op.reg, trim(inner), sizeof(op.reg));
             op.offset = -(int)strtoul(trim(minus_ptr + 1), NULL, 0);
         } else {
-            snprintf(op.reg, sizeof(op.reg), "%s", trim(inner));
+            safe_str_copy(op.reg, trim(inner), sizeof(op.reg));
             op.offset = 0;
         }
     } 
@@ -175,7 +187,7 @@ Operand parse_operand(const char *str) {
     } 
     else {
         op.mode = MODE_REG;
-        snprintf(op.reg, sizeof(op.reg), "%s", str);
+        safe_str_copy(op.reg, str, sizeof(op.reg));
     }
 
     return op;
@@ -183,9 +195,9 @@ Operand parse_operand(const char *str) {
 
 AsmNode* create_node(const char* raw, OpType type, const char* mnem, const char* dst, const char* src) {
     AsmNode *node = (AsmNode*)calloc(1, sizeof(AsmNode));
-    if (raw) snprintf(node->raw, sizeof(node->raw), "%s", raw);
+    if (raw) safe_str_copy(node->raw, raw, sizeof(node->raw));
     node->type = type;
-    if (mnem) snprintf(node->mnemonic, sizeof(node->mnemonic), "%s", mnem);
+    if (mnem) safe_str_copy(node->mnemonic, mnem, sizeof(node->mnemonic));
     
     if (dst && strlen(dst) > 0) {
         node->dst_op = parse_operand(dst);
@@ -229,7 +241,7 @@ AsmNode* parse_vircon32_asm(const char *filename) {
     char line[512]; 
     while (fgets(line, sizeof(line), fp)) {
         char raw[512]; 
-        snprintf(raw, sizeof(raw), "%s", line);
+        safe_str_copy(raw, line, sizeof(raw));
         raw[strcspn(raw, "\r\n")] = '\0';
 
         char *trimmed = trim(line);
@@ -244,9 +256,9 @@ AsmNode* parse_vircon32_asm(const char *filename) {
         char *comment_ptr = strchr(trimmed, ';');
         if (comment_ptr) {
             size_t len = comment_ptr - trimmed;
-            snprintf(code_part, len + 1, "%s", trimmed);
+            safe_str_copy(code_part, trimmed, len + 1);
         } else {
-            snprintf(code_part, sizeof(code_part), "%s", trimmed);
+            safe_str_copy(code_part, trimmed, sizeof(code_part));
         }
         char *code_trimmed = trim(code_part);
 
@@ -260,20 +272,20 @@ AsmNode* parse_vircon32_asm(const char *filename) {
         char *space_ptr = strpbrk(code_trimmed, " \t");
 
         if (!space_ptr) {
-            snprintf(mnem, sizeof(mnem), "%s", code_trimmed);
+            safe_str_copy(mnem, code_trimmed, sizeof(mnem));
         } else {
             size_t mnem_len = space_ptr - code_trimmed;
             if (mnem_len >= sizeof(mnem)) mnem_len = sizeof(mnem) - 1;
-            snprintf(mnem, mnem_len + 1, "%s", code_trimmed);
+            safe_str_copy(mnem, code_trimmed, mnem_len + 1);
 
             char *operands = trim(space_ptr);
             char *comma_ptr = strchr(operands, ',');
             if (comma_ptr) {
                 *comma_ptr = '\0';
-                snprintf(dst, sizeof(dst), "%s", trim(operands));
-                snprintf(src, sizeof(src), "%s", trim(comma_ptr + 1));
+                safe_str_copy(dst, trim(operands), sizeof(dst));
+                safe_str_copy(src, trim(comma_ptr + 1), sizeof(src));
             } else {
-                snprintf(dst, sizeof(dst), "%s", trim(operands));
+                safe_str_copy(dst, trim(operands), sizeof(dst));
             }
         }
 
@@ -309,7 +321,7 @@ void write_vircon32_asm(const char *filename, AsmNode *head) {
 
     while (curr) {
         char line_copy[512]; 
-        snprintf(line_copy, sizeof(line_copy), "%s", curr->raw);
+        safe_str_copy(line_copy, curr->raw, sizeof(line_copy));
         char *trimmed = trim(line_copy);
 
         bool is_blank = (strlen(trimmed) == 0);
@@ -464,10 +476,10 @@ int pass_inline_trivial_functions(AsmNode *head) {
         if (curr->type == OP_LABEL && candidate_count < MAX_INLINE_CANDIDATES) {
             char func_name[128] = {0}; 
             char line_copy[512];
-            snprintf(line_copy, sizeof(line_copy), "%s", curr->raw);
+            safe_str_copy(line_copy, curr->raw, sizeof(line_copy));
             char *trimmed_lbl = trim(line_copy);
 
-            snprintf(func_name, sizeof(func_name), "%s", trimmed_lbl);
+            safe_str_copy(func_name, trimmed_lbl, sizeof(func_name));
             char *colon = strchr(func_name, ':');
             if (colon) *colon = '\0';
             trim(func_name);
@@ -512,7 +524,7 @@ int pass_inline_trivial_functions(AsmNode *head) {
             }
 
             if (valid_candidate && core_count > 0 && core_count <= MAX_BODY_INS) {
-                snprintf(candidates[candidate_count].name, sizeof(candidates[candidate_count].name), "%s", func_name);
+                safe_str_copy(candidates[candidate_count].name, func_name, sizeof(candidates[candidate_count].name));
                 candidates[candidate_count].body_count = core_count;
                 for (int i = 0; i < core_count; i++) {
                     candidates[candidate_count].body_nodes[i] = core_nodes[i];
@@ -531,7 +543,7 @@ int pass_inline_trivial_functions(AsmNode *head) {
 
         if (str_case_eq(curr->mnemonic, "CALL")) {
             char target_label[128] = {0}; 
-            snprintf(target_label, sizeof(target_label), "%s", trim(curr->dst_op.raw));
+            safe_str_copy(target_label, trim(curr->dst_op.raw), sizeof(target_label));
 
             for (int c = 0; c < candidate_count; c++) {
                 if (str_case_eq(target_label, candidates[c].name)) {
@@ -586,7 +598,7 @@ int pass_dead_function_elimination(AsmNode *head) {
         }
 
         if (func_count < MAX_FUNCTIONS) {
-            snprintf(funcs[func_count].name, sizeof(funcs[func_count].name), "__boot_vector");
+            safe_str_copy(funcs[func_count].name, "__boot_vector", sizeof(funcs[func_count].name));
             funcs[func_count].start_node = preamble_start;
             funcs[func_count].end_node = preamble_end;
             funcs[func_count].reachable = false;
@@ -600,7 +612,7 @@ int pass_dead_function_elimination(AsmNode *head) {
     while (curr) {
         if (curr->type == OP_LABEL) {
             char line_copy[512]; 
-            snprintf(line_copy, sizeof(line_copy), "%s", curr->raw);
+            safe_str_copy(line_copy, curr->raw, sizeof(line_copy));
             char *lbl = trim(line_copy);
 
             if (lbl[0] == '.' || lbl[0] == '@' || strstr(lbl, "_return:")) {
@@ -609,7 +621,7 @@ int pass_dead_function_elimination(AsmNode *head) {
             }
 
             char func_name[128] = {0}; 
-            snprintf(func_name, sizeof(func_name), "%s", lbl);
+            safe_str_copy(func_name, lbl, sizeof(func_name));
             char *colon = strchr(func_name, ':');
             if (colon) *colon = '\0';
             trim(func_name);
@@ -620,7 +632,7 @@ int pass_dead_function_elimination(AsmNode *head) {
             while (scan) {
                 if (scan->type == OP_LABEL) {
                     char next_copy[512];
-                    snprintf(next_copy, sizeof(next_copy), "%s", scan->raw);
+                    safe_str_copy(next_copy, scan->raw, sizeof(next_copy));
                     char *next_lbl = trim(next_copy);
                     
                     if (next_lbl[0] != '.' && next_lbl[0] != '@' && !strstr(next_lbl, "_return:")) {
@@ -632,7 +644,7 @@ int pass_dead_function_elimination(AsmNode *head) {
             }
 
             if (func_count < MAX_FUNCTIONS) {
-                snprintf(funcs[func_count].name, sizeof(funcs[func_count].name), "%s", func_name);
+                safe_str_copy(funcs[func_count].name, func_name, sizeof(funcs[func_count].name));
                 funcs[func_count].start_node = curr;
                 funcs[func_count].end_node = end_of_func; 
                 funcs[func_count].reachable = false;
@@ -669,14 +681,14 @@ int pass_dead_function_elimination(AsmNode *head) {
         {
             funcs[i].reachable = true;
             if (worklist_size < MAX_FUNCTIONS) {
-                snprintf(worklist[worklist_size++], sizeof(worklist[0]), "%s", funcs[i].name);
+                safe_str_copy(worklist[worklist_size++], funcs[i].name, sizeof(worklist[0]));
             }
         }
     }
 
     if (worklist_size == 0 && func_count > 0) {
         funcs[0].reachable = true;
-        snprintf(worklist[worklist_size++], sizeof(worklist[0]), "%s", funcs[0].name);
+        safe_str_copy(worklist[worklist_size++], funcs[0].name, sizeof(worklist[0]));
     }
 
     // ----------------------------------------------------------------
@@ -685,7 +697,7 @@ int pass_dead_function_elimination(AsmNode *head) {
     for (AsmNode *node = head; node != NULL; node = node->next) {
         if (str_case_eq(node->mnemonic, "pointer")) {
             char args_copy[512];
-            snprintf(args_copy, sizeof(args_copy), "%s", node->raw);
+            safe_str_copy(args_copy, node->raw, sizeof(args_copy));
             
             char *token = strtok(args_copy, " ,\t\n\r");
             if (token && str_case_eq(token, "pointer")) {
@@ -695,7 +707,7 @@ int pass_dead_function_elimination(AsmNode *head) {
                         if (str_case_eq(funcs[f].name, token) && !funcs[f].reachable) {
                             funcs[f].reachable = true;
                             if (worklist_size < MAX_FUNCTIONS) {
-                                snprintf(worklist[worklist_size++], sizeof(worklist[0]), "%s", funcs[f].name);
+                                safe_str_copy(worklist[worklist_size++], funcs[f].name, sizeof(worklist[0]));
                             }
                         }
                     }
@@ -710,7 +722,7 @@ int pass_dead_function_elimination(AsmNode *head) {
     // ----------------------------------------------------------------
     while (worklist_size > 0) {
         char current_label[128];
-        snprintf(current_label, sizeof(current_label), "%s", worklist[--worklist_size]);
+        safe_str_copy(current_label, worklist[--worklist_size], sizeof(current_label));
 
         FunctionDef *fn = NULL;
         for (int i = 0; i < func_count; i++) {
@@ -738,7 +750,7 @@ int pass_dead_function_elimination(AsmNode *head) {
                 {
                     funcs[f].reachable = true;
                     if (worklist_size < MAX_FUNCTIONS) {
-                        snprintf(worklist[worklist_size++], sizeof(worklist[0]), "%s", funcs[f].name);
+                        safe_str_copy(worklist[worklist_size++], funcs[f].name, sizeof(worklist[0]));
                     }
                 }
             }
@@ -835,12 +847,12 @@ ControlFlowGraph* build_cfg(AsmNode *head) {
     while (curr) {
         if (curr->type == OP_LABEL) {
             char lbl[128] = {0}; 
-            snprintf(lbl, sizeof(lbl), "%s", curr->raw);
+            safe_str_copy(lbl, curr->raw, sizeof(lbl));
             char *colon = strchr(lbl, ':');
             if (colon) *colon = '\0';
 
             if (pending_label_count < 8) {
-                snprintf(pending_labels[pending_label_count++], sizeof(pending_labels[0]), "%s", lbl);
+                safe_str_copy(pending_labels[pending_label_count++], lbl, sizeof(pending_labels[0]));
             }
 
             current_block = NULL;
@@ -859,7 +871,7 @@ ControlFlowGraph* build_cfg(AsmNode *head) {
             current_block->first_ins = curr;
 
             for (int l = 0; l < pending_label_count; l++) {
-                snprintf(current_block->labels[l], sizeof(current_block->labels[l]), "%s", pending_labels[l]);
+                safe_str_copy(current_block->labels[l], pending_labels[l], sizeof(current_block->labels[l]));
             }
             current_block->num_labels = pending_label_count;
             pending_label_count = 0;
@@ -1134,7 +1146,7 @@ int main(int argc, char **argv) {
 	int  opt_count  = 0;
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--dot") == 0 && i + 1 < argc) {
-            snprintf(dotFile, sizeof(dotFile), "%s", argv[i+1]);
+            safe_str_copy(dotFile, argv[i+1], sizeof(dotFile));
             i++;
         } else if (strcmp(argv[i], "-v") == 0) {
             config.verbose = true;
@@ -1188,7 +1200,7 @@ int main(int argc, char **argv) {
             config.enable_constant_folding = true;
 			opt_count = opt_count + 1;
         } else if (out_idx == 0 && argv[i][0] != '-') {
-            snprintf(outFile, sizeof(outFile), "%s", argv[i]);
+            safe_str_copy(outFile, argv[i], sizeof(outFile));
             out_idx = i;
         }
     }
@@ -1232,7 +1244,7 @@ int main(int argc, char **argv) {
     }
 
     if (strlen(outFile) == 0) {
-        snprintf(outFile, sizeof(outFile), "%s", inFile);
+        safe_str_copy(outFile, inFile, sizeof(outFile));
         char *ext = strrchr(outFile, '.');
         if (ext && strcmp(ext, ".asm") == 0) {
             *ext = '\0';
