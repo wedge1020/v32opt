@@ -617,16 +617,19 @@ int pass_dead_function_elimination(AsmNode *head) {
     char worklist[MAX_FUNCTIONS][128]; 
     int worklist_size = 0;
 
-    for (int i = 0; i < func_count; i++) {
+	for (int i = 0; i < func_count; i++) {
         if (str_case_eq(funcs[i].name, "__function_main")              ||
             str_case_eq(funcs[i].name, "main")                         ||
             str_case_eq(funcs[i].name, "_start")                       ||
             str_case_eq(funcs[i].name, "start")                        ||
             str_case_eq(funcs[i].name, "__start")                      ||
+            str_case_eq(funcs[i].name, "__init_globals")               ||
+            str_case_eq(funcs[i].name, "__function_init")              ||
             str_case_eq(funcs[i].name, "__global_scope_initialization")||
+            strstr(funcs[i].name, "__builtin_")   != NULL              || // <-- ADD THIS CATCH-ALL
             strstr(funcs[i].name, "global_scope") != NULL              ||
             strstr(funcs[i].name, "ISR")          != NULL              ||
-            strstr(funcs[i].name, "interrupt")    != NULL) 
+            strstr(funcs[i].name, "interrupt")    != NULL)
         {
             funcs[i].reachable = true;
             if (worklist_size < MAX_FUNCTIONS) {
