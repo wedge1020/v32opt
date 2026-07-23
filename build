@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+[ ! -r "${1}" ] && echo "ERROR: MUST specify assembly file (filename.asm)" && exit 1
+
+NAME=$(echo "${1}" | cut -d'.' -f1)
+
+OPT_LIST="O0 O1 O2 O3 fopt_peephole fopt_algebraic fopt_forwarding"
+OPT_LIST="${OPT_LIST} fopt_constant_folding fopt_inline"
+
+for opt in ${OPT_LIST}; do
+	printf "[opt] %-23s " "${opt}:"
+	./v32opt ${NAME}.asm -${opt} > /dev/null
+	mv ${NAME}Opt.asm ${NAME}_${opt}.asm
+	assemble -o ${NAME}_${opt}.vbin ${NAME}_${opt}.asm 2>&1 | grep 'error:' | head -1 | cut -d':' -f2,4 > out.tmp
+	line=$(cat  out.tmp | cut -d':' -f1)
+	error=$(cat out.tmp | sed 's/ label //g' | cut -d':' -f2)
+	[ ! -s out.tmp ] && echo "OK" || echo "FAIL (${error}:${line})"
+	#./v32opt ${NAME}.asm -Oconstant_folding -Opeephole -Oalgebraic -Oforwarding -v && assemble -o mainOpt.vbin mainOpt.asm
+	#
+	#
+done
+
+rm -f out.tmp *.vbin samples/*.vbin
+
+exit 0
