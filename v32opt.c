@@ -2105,6 +2105,7 @@ int main(int argc, char **argv) {
     char *inFile = argv[1];
     char outFile[256] = {0};
     char dotFile[256] = {0};
+    int  max_passes   = 1000;
 
     OptConfig config = {
         .verbose = false,
@@ -2191,40 +2192,46 @@ int main(int argc, char **argv) {
             config.enable_promote_leaf = false;
             config.enable_promote_loops = false;
         // Positive (-fopt_NAME) Flags:
-        } else if (strcmp(argv[i], "-fopt_promote_regs") == 0)       config.enable_promote_regs = true;
-          else if (strcmp(argv[i], "-fopt_promote_leaf") == 0)       config.enable_promote_leaf = true;
-          else if (strcmp(argv[i], "-fopt_promote_loops") == 0)      config.enable_promote_loops = true;
-          else if (strcmp(argv[i], "-fopt_jump_next") == 0)          config.enable_jump_next = true;
-          else if (strcmp(argv[i], "-fopt_redundant_movs") == 0)     config.enable_redundant_movs = true;
-          else if (strcmp(argv[i], "-fopt_combine_immediates") == 0) config.enable_combine_immediates = true;
-          else if (strcmp(argv[i], "-fopt_strength_reduction") == 0) config.enable_strength_reduction = true;
-          else if (strcmp(argv[i], "-fopt_peephole") == 0)           config.enable_peephole = true;
-          else if (strcmp(argv[i], "-fopt_algebraic") == 0)          config.enable_algebraic = true;
-          else if (strcmp(argv[i], "-fopt_forwarding") == 0)         config.enable_forwarding = true;
-          else if (strcmp(argv[i], "-fopt_inline") == 0)             config.enable_inline = true;
-          else if (strcmp(argv[i], "-fopt_dce") == 0)                config.enable_dce = true;
-          else if (strcmp(argv[i], "-fopt_constant_folding") == 0)   config.enable_constant_folding = true;
+        }
+        else if (strcmp(argv[i], "-fopt_promote_regs") == 0)       config.enable_promote_regs = true;
+        else if (strcmp(argv[i], "-fopt_promote_leaf") == 0)       config.enable_promote_leaf = true;
+        else if (strcmp(argv[i], "-fopt_promote_loops") == 0)      config.enable_promote_loops = true;
+        else if (strcmp(argv[i], "-fopt_jump_next") == 0)          config.enable_jump_next = true;
+        else if (strcmp(argv[i], "-fopt_redundant_movs") == 0)     config.enable_redundant_movs = true;
+        else if (strcmp(argv[i], "-fopt_combine_immediates") == 0) config.enable_combine_immediates = true;
+        else if (strcmp(argv[i], "-fopt_strength_reduction") == 0) config.enable_strength_reduction = true;
+        else if (strcmp(argv[i], "-fopt_peephole") == 0)           config.enable_peephole = true;
+        else if (strcmp(argv[i], "-fopt_algebraic") == 0)          config.enable_algebraic = true;
+        else if (strcmp(argv[i], "-fopt_forwarding") == 0)         config.enable_forwarding = true;
+        else if (strcmp(argv[i], "-fopt_inline") == 0)             config.enable_inline = true;
+        else if (strcmp(argv[i], "-fopt_dce") == 0)                config.enable_dce = true;
+        else if (strcmp(argv[i], "-fopt_constant_folding") == 0)   config.enable_constant_folding = true;
         // Negative (-fno_opt_NAME) Flags:
-          else if (strcmp(argv[i], "-fno_opt_promote_regs") == 0)       config.enable_promote_regs = false;
-          else if (strcmp(argv[i], "-fno_opt_promote_leaf") == 0)       config.enable_promote_leaf = false;
-          else if (strcmp(argv[i], "-fno_opt_promote_loops") == 0)      config.enable_promote_loops = false;
-          else if (strcmp(argv[i], "-fno_opt_jump_next") == 0)          config.enable_jump_next = false;
-          else if (strcmp(argv[i], "-fno_opt_redundant_movs") == 0)     config.enable_redundant_movs = false;
-          else if (strcmp(argv[i], "-fno_opt_combine_immediates") == 0) config.enable_combine_immediates = false;
-          else if (strcmp(argv[i], "-fno_opt_strength_reduction") == 0) config.enable_strength_reduction = false;
-          else if (strcmp(argv[i], "-fno_opt_peephole") == 0)           config.enable_peephole = false;
-          else if (strcmp(argv[i], "-fno_opt_algebraic") == 0)          config.enable_algebraic = false;
-          else if (strcmp(argv[i], "-fno_opt_forwarding") == 0)         config.enable_forwarding = false;
-          else if (strcmp(argv[i], "-fno_opt_inline") == 0)             config.enable_inline = false;
-          else if (strcmp(argv[i], "-fno_opt_dce") == 0)                config.enable_dce = false;
-          else if (strcmp(argv[i], "-fno_opt_constant_folding") == 0)   config.enable_constant_folding = false;
+        else if (strcmp(argv[i], "-fno_opt_promote_regs") == 0)       config.enable_promote_regs = false;
+        else if (strcmp(argv[i], "-fno_opt_promote_leaf") == 0)       config.enable_promote_leaf = false;
+        else if (strcmp(argv[i], "-fno_opt_promote_loops") == 0)      config.enable_promote_loops = false;
+        else if (strcmp(argv[i], "-fno_opt_jump_next") == 0)          config.enable_jump_next = false;
+        else if (strcmp(argv[i], "-fno_opt_redundant_movs") == 0)     config.enable_redundant_movs = false;
+        else if (strcmp(argv[i], "-fno_opt_combine_immediates") == 0) config.enable_combine_immediates = false;
+        else if (strcmp(argv[i], "-fno_opt_strength_reduction") == 0) config.enable_strength_reduction = false;
+        else if (strcmp(argv[i], "-fno_opt_peephole") == 0)           config.enable_peephole = false;
+        else if (strcmp(argv[i], "-fno_opt_algebraic") == 0)          config.enable_algebraic = false;
+        else if (strcmp(argv[i], "-fno_opt_forwarding") == 0)         config.enable_forwarding = false;
+        else if (strcmp(argv[i], "-fno_opt_inline") == 0)             config.enable_inline = false;
+        else if (strcmp(argv[i], "-fno_opt_dce") == 0)                config.enable_dce = false;
+        else if (strcmp(argv[i], "-fno_opt_constant_folding") == 0)   config.enable_constant_folding = false;
         // Diagnostic Flags:
-          else if (strncmp(argv[i], "-finline-max=", 13) == 0) {
+        else if (strncmp(argv[i], "-finline-max=", 13) == 0) {
             g_inline_call_limit = atoi(argv[i] + 13);
-        } else if (strncmp(argv[i], "-finline-exclude=", 17) == 0) {
+        }
+        else if (strncmp(argv[i], "-finline-exclude=", 17) == 0) {
             safe_str_copy(g_inline_exclude_name, argv[i] + 17, sizeof(g_inline_exclude_name));
+        }
+        else if (strncmp(argv[i], "-fmax_passes=", 13) == 0) {
+            max_passes = atoi(argv[i] + 13);
         // Positional Output File Fallback:
-        } else if (out_idx == 0 && argv[i][0] != '-') {
+        }
+        else if (out_idx == 0 && argv[i][0] != '-') {
             safe_str_copy(outFile, argv[i], sizeof(outFile));
             out_idx = i;
         }
@@ -2361,7 +2368,7 @@ int main(int argc, char **argv) {
     int cleanup_opts;
     do {
         cleanup_opts = 0;
-        c_opts = s_opts = a_opts = p_opts = m_opts = j_opts = 0;
+        int c_opts = 0, s_opts = 0, a_opts = 0, p_opts = 0, m_opts = 0, j_opts = 0;
 
         if (config.enable_combine_immediates) c_opts = pass_combine_immediates(program_ast);
         if (config.enable_strength_reduction) s_opts = pass_strength_reduction(program_ast);
