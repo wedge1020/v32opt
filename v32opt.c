@@ -2097,6 +2097,9 @@ int main(int argc, char **argv) {
         fprintf (stdout, "  peephole, algebraic, forwarding, jump_next, redundant_movs,\n");
         fprintf (stdout, "  combine_immediates, strength_reduction, inline, dce,\n");
         fprintf (stdout, "  constant_folding, promote_regs, promote_leaf, promote_loops\n\n");
+        fprintf (stdout, "Diagnostic Flags:\n");
+        fprintf (stdout, "  -finline-max=N   Cap the number of inlined CALL sites to N\n");
+        fprintf (stdout, "  -fmax_passes=N   Cap the maximum iterative optimization passes to N\n\n");
         fprintf (stdout, "NOTE: promote_regs, promote_leaf, and promote_loops not yet\n");
         fprintf (stdout, "connected to any optimization category. Test and bugfix first\n\n");
         return (1);
