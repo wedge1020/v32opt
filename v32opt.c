@@ -6,7 +6,22 @@
 
 #define MAX_INLINE_CANDIDATES 64
 #define MAX_BODY_INS 8
-#define MAX_FUNCTIONS 256
+// FIX: 256 was too small for any real-sized program - this project's
+// own 42-game, ~61K-line compiled test file has 680 genuine functions
+// on its own, comfortably over the original limit. Raised well past
+// that with room to grow; each FunctionDef entry is small (a name
+// buffer, two pointers, a bool), so the memory cost of a larger static
+// array here is negligible.
+#define MAX_FUNCTIONS 4096
+
+// DIAGNOSTIC ONLY (not a correctness fix): see comment at its use site
+// in pass_inline_trivial_functions, set via -finline-max=N. -1 = no
+// limit (default, normal behavior unchanged). Persistent across every
+// invocation of the pass within one run (it runs repeatedly until a
+// fixed point), so N means a true total, not "N per call".
+int g_inline_call_limit = -1;
+int g_inline_calls_so_far = 0;
+char g_inline_exclude_name[1024] = {0};
 
 // -------------------------------------------------------------------
 // Enums & Data Structures
@@ -30,11 +45,18 @@ typedef struct {
     int offset;       
     int immediate;    
     char raw[128];    
+    // FIX: distinguishes a float literal (e.g. "0.500000") from a real
+    // integer immediate. Both parse into MODE_IMMEDIATE, but `immediate`
+    // is meaningless for a float - see parse_operand and its comment
+    // for why. Every place that reads `immediate` for constant
+    // tracking/folding must check this first and treat a float operand
+    // as unknown (VAL_BOTTOM), never as the (corrupted) integer value.
+    bool is_float;
 } Operand;
 
 typedef struct AsmNode {
     OpType type;
-    char raw[512];      
+    char raw[8192];      
     char mnemonic[32];  
     
     Operand dst_op;
@@ -187,7 +209,25 @@ Operand parse_operand(const char *str) {
     } 
     else if (isdigit((unsigned char)str[0]) || (str[0] == '-' && isdigit((unsigned char)str[1]))) {
         op.mode = MODE_IMMEDIATE;
-        op.immediate = (int)strtoul(str, NULL, 0);
+        // FIX: strtoul stops at the first non-digit character, so a
+        // float literal like "0.500000" (a real, valid operand here -
+        // e.g. set_channel_volume(0.5)) silently parsed as integer 0,
+        // losing the fractional value entirely. That corrupted 0 then
+        // got treated as a genuine tracked constant by later passes
+        // (constant folding, forwarding) and could get folded into
+        // completely unrelated code, replacing a correct register alias
+        // with a bogus "MOV reg, 0x0" - confirmed directly: this exact
+        // mechanism silently zeroed the SPU channel volume in a real
+        // compiled program (every channel set to volume 0 instead of
+        // 0.5/0.25), with no compile, assemble, or pack error anywhere,
+        // since the corrupted value only ever gets used internally for
+        // dataflow tracking - the original, correct "0.500000" text
+        // survives untouched in `raw` and prints out fine anywhere
+        // nothing tries to fold it. Flagging float operands here so
+        // every downstream constant-tracking site can treat them as
+        // unknown instead of trusting `immediate`.
+        op.is_float = (strchr(str, '.') != NULL);
+        op.immediate = op.is_float ? 0 : (int)strtoul(str, NULL, 0);
     } 
     else {
         op.mode = MODE_REG;
@@ -242,9 +282,9 @@ AsmNode* parse_vircon32_asm(const char *filename) {
     AsmNode *dummy_head = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
     AsmNode *tail = dummy_head;
 
-    char line[512]; 
+    char line[8192]; 
     while (fgets(line, sizeof(line), fp)) {
-        char raw[512]; 
+        char raw[8192]; 
         safe_str_copy(raw, line, sizeof(raw));
         raw[strcspn(raw, "\r\n")] = '\0';
 
@@ -327,7 +367,7 @@ void write_vircon32_asm(const char *filename, AsmNode *head) {
     bool last_was_blank = false;
 
     while (curr) {
-        char line_copy[512]; 
+        char line_copy[8192]; 
         safe_str_copy(line_copy, curr->raw, sizeof(line_copy));
         char *trimmed = trim(line_copy);
 
@@ -419,7 +459,7 @@ int pass_algebraic_simplifications(AsmNode *head) {
         }
 
         if ((curr->type == OP_IADD || curr->type == OP_ISUB) && 
-            curr->src_op.mode == MODE_IMMEDIATE && curr->src_op.immediate == 0) 
+            curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float && curr->src_op.immediate == 0) 
         {
             remove_node(curr);
             optimizations++;
@@ -428,7 +468,7 @@ int pass_algebraic_simplifications(AsmNode *head) {
         }
 
         if (curr->type == OP_IMUL && 
-            curr->src_op.mode == MODE_IMMEDIATE && curr->src_op.immediate == 2) 
+            curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float && curr->src_op.immediate == 2) 
         {
             curr->type = OP_IADD;
             strcpy(curr->mnemonic, "IADD");
@@ -524,7 +564,37 @@ int pass_redundant_movs(AsmNode *head) {
 
             if (n2->type == OP_MOV) {
                 // Case 1: Duplicate Move (e.g., MOV R0, X followed by MOV R0, X)
-                if (str_case_eq(curr->dst_op.raw, n2->dst_op.raw) &&
+                //
+                // FIX: this compared operand *text* only, which is unsound
+                // when the source is an indirect load through the very
+                // register being written - e.g. "MOV R1, [R1]" followed by
+                // another "MOV R1, [R1]". Textually identical, but NOT the
+                // same instruction semantically: the first load computes
+                // R1 := mem[R1_old], which changes R1 - so the second,
+                // textually-identical "[R1]" now addresses a completely
+                // different location (mem[R1_new]). This is pointer-
+                // chasing (a double dereference), not a duplicate, and
+                // deleting the second instruction silently drops one level
+                // of indirection. Confirmed directly: this exact pattern
+                // appears in every game's compiled CAudio_PlaySound (built
+                // from "*CAudio_Sounds[SoundID]", a pointer-to-pointer
+                // dereference) - deleting the second load passed a raw
+                // pointer to select_sound()/assign_channel_sound() where
+                // the actual sound handle was expected, silently breaking
+                // audio playback in the packed ROM with no compile,
+                // assemble, or pack error anywhere.
+                //
+                // The two instructions are only safely removable when the
+                // source doesn't depend on the register the first
+                // instruction just wrote - i.e. skip this whenever the
+                // source is an indirect operand whose base register is the
+                // same register being written.
+                bool self_referential_load =
+                    (curr->src_op.mode == MODE_INDIRECT) &&
+                    str_case_eq(curr->src_op.reg, curr->dst_op.reg);
+
+                if (!self_referential_load &&
+                    str_case_eq(curr->dst_op.raw, n2->dst_op.raw) &&
                     str_case_eq(curr->src_op.raw, n2->src_op.raw)) 
                 {
                     remove_node(n2);
@@ -560,7 +630,7 @@ int pass_combine_immediates(AsmNode *head) {
 
     while (curr) {
         if ((curr->type == OP_IADD || curr->type == OP_ISUB) &&
-            curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE) 
+            curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float) 
         {
             AsmNode *n2 = curr->next;
             while (n2 && n2->type == OP_OTHER && 
@@ -569,7 +639,7 @@ int pass_combine_immediates(AsmNode *head) {
             }
 
             if (n2 && (n2->type == OP_IADD || n2->type == OP_ISUB) &&
-                n2->dst_op.mode == MODE_REG && n2->src_op.mode == MODE_IMMEDIATE &&
+                n2->dst_op.mode == MODE_REG && n2->src_op.mode == MODE_IMMEDIATE && !n2->src_op.is_float &&
                 str_case_eq(curr->dst_op.reg, n2->dst_op.reg)) 
             {
                 int val1 = (curr->type == OP_IADD) ? curr->src_op.immediate : -curr->src_op.immediate;
@@ -619,7 +689,7 @@ int pass_inline_trivial_functions(AsmNode *head) {
     while (curr) {
         if (curr->type == OP_LABEL && candidate_count < MAX_INLINE_CANDIDATES) {
             char func_name[128] = {0}; 
-            char line_copy[512];
+            char line_copy[8192];
             safe_str_copy(line_copy, curr->raw, sizeof(line_copy));
             char *trimmed_lbl = trim(line_copy);
 
@@ -657,6 +727,28 @@ int pass_inline_trivial_functions(AsmNode *head) {
                     break;
                 }
 
+                // FIX: reject any candidate whose body touches SP
+                // directly (PUSH/POP, or any instruction with SP as an
+                // operand register) - these change the stack layout
+                // mid-body, which the BP->SP offset rewrite below can't
+                // account for. Also reject any [BP-N] (negative offset)
+                // reference, which would indicate a local-variable slot
+                // the callee's own (skipped) prologue reserved space
+                // for - not something this rewrite handles either.
+                if (str_case_eq(scan->mnemonic, "PUSH") || str_case_eq(scan->mnemonic, "POP")) {
+                    valid_candidate = false;
+                    break;
+                }
+                if (str_case_eq(scan->dst_op.reg, "SP") || str_case_eq(scan->src_op.reg, "SP")) {
+                    valid_candidate = false;
+                    break;
+                }
+                if ((scan->dst_op.mode == MODE_INDIRECT && str_case_eq(scan->dst_op.reg, "BP") && scan->dst_op.offset < 0) ||
+                    (scan->src_op.mode == MODE_INDIRECT && str_case_eq(scan->src_op.reg, "BP") && scan->src_op.offset < 0)) {
+                    valid_candidate = false;
+                    break;
+                }
+
                 if (core_count < MAX_BODY_INS) {
                     core_nodes[core_count++] = scan;
                 } else {
@@ -689,12 +781,91 @@ int pass_inline_trivial_functions(AsmNode *head) {
             char target_label[128] = {0}; 
             safe_str_copy(target_label, trim(curr->dst_op.raw), sizeof(target_label));
 
+            // DIAGNOSTIC ONLY (not a correctness fix): g_inline_call_limit,
+            // set via -finline-max=N, caps how many CALL sites get
+            // inlined, in file order, so a real build can be bisected by
+            // testing N values against actual hardware/emulator - added
+            // to narrow down which of many inlined call sites causes a
+            // runtime-only symptom (confirmed-silent audio in a full
+            // -O3 build) that static tracing of the obvious candidates
+            // didn't explain. Default -1 means no limit (normal
+            // behavior, unchanged).
+            if (g_inline_call_limit >= 0 && g_inline_calls_so_far >= g_inline_call_limit) {
+                curr = next_node;
+                continue;
+            }
+            // DIAGNOSTIC ONLY: g_inline_exclude_name, set via
+            // -finline-exclude=NAME, skips inlining just that one named
+            // function (everything else inlines normally) - for testing
+            // one specific function's inlining in isolation against a
+            // real, otherwise-full -O3 build.
+            if (g_inline_exclude_name[0] != '\0') {
+                // Comma-separated list support: check target_label
+                // against each token.
+                char list_copy[1024];
+                safe_str_copy(list_copy, g_inline_exclude_name, sizeof(list_copy));
+                bool excluded = false;
+                char *tok = strtok(list_copy, ",");
+                while (tok) {
+                    if (str_case_eq(trim(tok), target_label)) { excluded = true; break; }
+                    tok = strtok(NULL, ",");
+                }
+                if (excluded) {
+                    curr = next_node;
+                    continue;
+                }
+            }
+
             for (int c = 0; c < candidate_count; c++) {
                 if (str_case_eq(target_label, candidates[c].name)) {
                     AsmNode *insertion_point = curr->prev;
 
                     for (int b = 0; b < candidates[c].body_count; b++) {
                         AsmNode *inlined_ins = clone_node(candidates[c].body_nodes[b]);
+
+                        // FIX: rewrite any [BP+N] (N>=2) parameter
+                        // reference in the cloned instruction to
+                        // [SP+(N-2)] instead - [BP+N] was only valid
+                        // relative to the callee's own prologue-
+                        // established BP, which no longer exists once
+                        // this body is spliced into the caller with no
+                        // new prologue of its own. At the call site,
+                        // [BP+N] (inside the callee) and [SP+(N-2)] (at
+                        // the call site, before the call executes) refer
+                        // to the exact same stack slot - confirmed
+                        // empirically: a single-argument callee reads
+                        // its parameter at [BP+2], and the caller pushes
+                        // that same argument to [SP+0] immediately
+                        // before the call.
+                        if (inlined_ins->dst_op.mode == MODE_INDIRECT &&
+                            str_case_eq(inlined_ins->dst_op.reg, "BP") &&
+                            inlined_ins->dst_op.offset >= 2) {
+                            inlined_ins->dst_op.offset -= 2;
+                            safe_str_copy(inlined_ins->dst_op.reg, "SP", sizeof(inlined_ins->dst_op.reg));
+                            snprintf(inlined_ins->dst_op.raw, sizeof(inlined_ins->dst_op.raw),
+                                     "[SP+%d]", inlined_ins->dst_op.offset);
+                        }
+                        if (inlined_ins->src_op.mode == MODE_INDIRECT &&
+                            str_case_eq(inlined_ins->src_op.reg, "BP") &&
+                            inlined_ins->src_op.offset >= 2) {
+                            inlined_ins->src_op.offset -= 2;
+                            safe_str_copy(inlined_ins->src_op.reg, "SP", sizeof(inlined_ins->src_op.reg));
+                            snprintf(inlined_ins->src_op.raw, sizeof(inlined_ins->src_op.raw),
+                                     "[SP+%d]", inlined_ins->src_op.offset);
+                        }
+                        // write_vircon32_asm() emits raw directly, not
+                        // the parsed operand structs - regenerate it
+                        // from the (possibly rewritten) operands above,
+                        // preserving the original instruction's own
+                        // mnemonic case, or the offset fix never reaches
+                        // the actual output.
+                        if (inlined_ins->has_dst && inlined_ins->has_src) {
+                            snprintf(inlined_ins->raw, sizeof(inlined_ins->raw), "  %s %s, %s",
+                                     inlined_ins->mnemonic, inlined_ins->dst_op.raw, inlined_ins->src_op.raw);
+                        } else if (inlined_ins->has_dst) {
+                            snprintf(inlined_ins->raw, sizeof(inlined_ins->raw), "  %s %s",
+                                     inlined_ins->mnemonic, inlined_ins->dst_op.raw);
+                        }
 
                         inlined_ins->prev = insertion_point;
                         inlined_ins->next = curr;
@@ -706,6 +877,7 @@ int pass_inline_trivial_functions(AsmNode *head) {
 
                     remove_node(curr);
                     inlined_calls++;
+                    g_inline_calls_so_far++;
                     break;
                 }
             }
@@ -755,11 +927,50 @@ int pass_dead_function_elimination(AsmNode *head) {
     // ----------------------------------------------------------------
     while (curr) {
         if (curr->type == OP_LABEL) {
-            char line_copy[512]; 
+            char line_copy[8192]; 
             safe_str_copy(line_copy, curr->raw, sizeof(line_copy));
             char *lbl = trim(line_copy);
 
-            if (lbl[0] == '.' || lbl[0] == '@' || strstr(lbl, "_return:")) {
+            // FIX: the original condition here ("not starting with '.'
+            // or '@', and not containing '_return:'") treats *every*
+            // internal control-flow label (__if_N_start, __for_N_start,
+            // __while_N_start, __LogicalAnd_ShortCircuit_N, etc.) as the
+            // start of a brand new, separate "function" - confirmed on
+            // a real 61K-line compiled program: 680 genuine functions
+            // vs. 4230 such internal labels, all misidentified as
+            // functions of their own. A real function's own body then
+            // gets sliced into fragments at every internal branch point
+            // it contains, and any fragment past the first one - which
+            // nothing ever explicitly CALLs, since control reaches it
+            // via fall-through or a jump instead - looks unreachable to
+            // this pass's reachability scan and gets deleted, even
+            // though it's still very much live code. This is what let
+            // genuinely-called functions (confirmed cases: select_texture,
+            // called directly from main(); initGame(), same) get swept
+            // as "dead". Only a label actually starting with the
+            // compiler's own function-label prefix is a real function
+            // boundary - everything else, including '.'/'@'-prefixed
+            // and '_return:'-containing labels, is left as part of
+            // whatever function it's already inside.
+            //
+            // FIX (found while testing the fix above): the compiler
+            // emits BOTH __function_NAME (entry) and
+            // __function_NAME_return (an internal label used for
+            // early-return jumps within that same function's own body -
+            // see "Generated label names.txt") under the identical
+            // __function_ prefix. A bare prefix check treats the
+            // _return label as yet another separate trackable
+            // "function" of its own - and since nothing ever CALLs a
+            // _return label (it's only ever reached via an internal
+            // jmp), it always looks unreachable and gets deleted,
+            // breaking any early return in that function that jumps to
+            // it. Confirmed directly: with only the prefix check, 309
+            // labels were removed, and every single one of the sampled
+            // ones was a _return label (e.g. addGameAerialBar_return),
+            // not a genuinely dead function.
+            size_t lbl_len = strlen(lbl);
+            bool is_return_label = (lbl_len >= 8 && str_case_eq(lbl + lbl_len - 8, "_return:"));
+            if (strncmp(lbl, "__function_", 11) != 0 || is_return_label) {
                 curr = curr->next;
                 continue;
             }
@@ -775,11 +986,46 @@ int pass_dead_function_elimination(AsmNode *head) {
 
             while (scan) {
                 if (scan->type == OP_LABEL) {
-                    char next_copy[512];
+                    char next_copy[8192];
                     safe_str_copy(next_copy, scan->raw, sizeof(next_copy));
                     char *next_lbl = trim(next_copy);
                     
-                    if (next_lbl[0] != '.' && next_lbl[0] != '@' && !strstr(next_lbl, "_return:")) {
+                    // FIX: same criterion as the outer check above - a
+                    // function's body only actually ends where the next
+                    // *real* function begins, not at its own internal
+                    // control-flow labels.
+                    // FIX: a function's tracked range must also stop at
+                    // data labels - __literal_string_N (string literal
+                    // storage) and __global_NAME (global variable
+                    // storage), per the compiler's own documented label
+                    // scheme (CCompiler/Documents/Generated label
+                    // names.txt) - not just at the next real function.
+                    // Confirmed directly: __literal_string_1702, holding
+                    // an actual string constant ('string "      "'),
+                    // sits immediately after a `ret` with no enclosing
+                    // __function_ label of its own - without this, it
+                    // gets silently absorbed into whatever function
+                    // happens to precede it in the file, and deleted
+                    // right along with it if that function is dead,
+                    // even though the string itself might be referenced
+                    // and used from somewhere else entirely.
+                    // __global_scope_initialization is the one
+                    // exception - it's a real, called code block (see
+                    // VirconCEmitter.cpp) despite the __global_ prefix,
+                    // not a data label, so it's deliberately excluded
+                    // from this stop condition and remains available to
+                    // be absorbed like ordinary internal code would be.
+                    //
+                    // FIX (same as the outer check above): only stop at
+                    // an actual function *entry* label, not its
+                    // _return label, which shares the __function_
+                    // prefix but is internal to that same function.
+                    size_t next_lbl_len = strlen(next_lbl);
+                    bool next_is_return = (next_lbl_len >= 8 && str_case_eq(next_lbl + next_lbl_len - 8, "_return:"));
+                    if ((strncmp(next_lbl, "__function_", 11) == 0 && !next_is_return) ||
+                        strncmp(next_lbl, "__literal_", 10) == 0 ||
+                        (strncmp(next_lbl, "__global_", 9) == 0 &&
+                         !str_case_eq(next_lbl, "__global_scope_initialization:"))) {
                         break;
                     }
                 }
@@ -840,7 +1086,7 @@ int pass_dead_function_elimination(AsmNode *head) {
     // ----------------------------------------------------------------
     for (AsmNode *node = head; node != NULL; node = node->next) {
         if (str_case_eq(node->mnemonic, "pointer")) {
-            char args_copy[512];
+            char args_copy[8192];
             safe_str_copy(args_copy, node->raw, sizeof(args_copy));
             
             char *token = strtok(args_copy, " ,\t\n\r");
@@ -1127,10 +1373,62 @@ static bool apply_transfer_function(BasicBlock *block) {
     BlockState current = block->in_state;
 
     for (AsmNode *node = block->first_ins; node != NULL; node = node->next) {
-        if (node->type == OP_MOV) {
+        // FIX: a CALL can overwrite any register - at minimum R0, the
+        // return value register, for any non-void function, and this
+        // pass has no interprocedural knowledge of which (if any)
+        // other registers a given callee happens to leave untouched.
+        // Without this, whatever constant was known to be in a
+        // register *before* the call is incorrectly treated as still
+        // being there *after* it - confirmed directly against real
+        // compiled output: a fresh function's first real computation,
+        // reading pow()'s actual return value from R0 immediately after
+        // calling it, was folded to a hardcoded 0 pulled from
+        // completely unrelated code elsewhere in the program. This is
+        // the single most dangerous bug found in this tool - it
+        // produces no compile or assemble error anywhere, just silently
+        // wrong output.
+        if (str_case_eq(node->mnemonic, "CALL")) {
+            for (int r = 0; r < 16; r++) {
+                current.regs[r] = (RegState){VAL_BOTTOM, 0};
+            }
+            if (node == block->last_ins) break;
+            continue;
+        }
+
+        // FIX: both the MOV and IADD cases below previously keyed off
+        // node->dst_op.reg without first checking node->dst_op.mode. The
+        // operand parser fills in .reg with the *base register name* for
+        // an indirect operand too (e.g. "[BP+2]" parses to mode=INDIRECT,
+        // reg="BP") - it is not exclusive to real register destinations.
+        // So an indirect store like "MOV [BP+2], R0" was being read as if
+        // it were "MOV BP, R0": get_reg_index("BP") happily returns 14,
+        // and the tracked constant belonging to R0 got smeared onto BP's
+        // slot - even though the instruction never writes to BP itself,
+        // only to the memory address BP happens to be pointing at. Since
+        // BP is the base register for almost every parameter/local access
+        // the real compiler emits, this reliably poisoned BP (and by the
+        // same mechanism, SP) with whatever constant last happened to be
+        // in the source register of a nearby indirect store - confirmed
+        // directly: "mov R0, -1" followed later by "mov [BP+2], R0" then
+        // "mov SP, BP" folded to the literal "MOV SP, 0xFFFFFFFF", with
+        // no relationship whatsoever to the real stack pointer. Gating
+        // both cases on dst_op.mode == MODE_REG restores the correct
+        // behavior: an indirect store writes to memory, not to its base
+        // register, so it should update no register's tracked state at
+        // all.
+        if (node->type == OP_MOV && node->dst_op.mode == MODE_REG) {
             int dst_reg = get_reg_index(node->dst_op.reg);
             if (dst_reg >= 0) {
-                if (node->src_op.mode == MODE_IMMEDIATE) {
+                // FIX: a float immediate (e.g. "0.500000") must not be
+                // tracked as VAL_CONST - node->src_op.immediate is 0 for
+                // every float literal (see parse_operand), which is
+                // correct only for the literal 0.0 and silently wrong
+                // for every other float value. Treating it as BOTTOM
+                // (unknown) here is always safe; treating it as a
+                // trustworthy constant is what let a corrupted 0
+                // overwrite a real 0.5 volume value elsewhere in this
+                // same pass.
+                if (node->src_op.mode == MODE_IMMEDIATE && !node->src_op.is_float) {
                     current.regs[dst_reg] = (RegState){VAL_CONST, node->src_op.immediate};
                 } else if (node->src_op.mode == MODE_REG) {
                     int src_reg = get_reg_index(node->src_op.reg);
@@ -1140,19 +1438,45 @@ static bool apply_transfer_function(BasicBlock *block) {
                 }
             }
         }
-        else if (node->type == OP_IADD) {
+        else if (node->type == OP_IADD && node->dst_op.mode == MODE_REG) {
             int dst_reg = get_reg_index(node->dst_op.reg);
             if (dst_reg >= 0) {
                 RegState dst_st = current.regs[dst_reg];
-                RegState src_st = (node->src_op.mode == MODE_IMMEDIATE) 
+                // FIX: same float-immediate guard as the MOV case above.
+                RegState src_st = (node->src_op.mode == MODE_IMMEDIATE && !node->src_op.is_float) 
                     ? (RegState){VAL_CONST, node->src_op.immediate} 
-                    : current.regs[get_reg_index(node->src_op.reg)];
+                    : (node->src_op.mode == MODE_REG ? current.regs[get_reg_index(node->src_op.reg)] : (RegState){VAL_BOTTOM, 0});
 
                 if (dst_st.type == VAL_CONST && src_st.type == VAL_CONST) {
                     current.regs[dst_reg] = (RegState){VAL_CONST, dst_st.val + src_st.val};
                 } else {
                     current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
                 }
+            }
+        }
+        else if (node->has_dst && node->dst_op.mode == MODE_REG && node->type != OP_PUSH) {
+            // FIX: the CALL fix above addressed one specific instance of
+            // a broader problem - this transfer function only knows how
+            // to compute a definite new state for MOV and IADD; every
+            // other instruction that writes to a register (ISUB, IMUL,
+            // IDIV, IN - reading a hardware port, FADD/FSUB/etc, CIF/CFI,
+            // comparison results, ...) fell through with no case at all,
+            // silently leaving that register's old tracked state
+            // untouched - exactly the same bug as the CALL case, just
+            // not limited to calls. Any instruction that writes to a
+            // register and isn't one of the two cases above must be
+            // treated the same way CALL is: the old value cannot
+            // possibly still be there once something else has written
+            // to it, whether or not this pass understands what the new
+            // value actually is. PUSH is the one exception worth
+            // carving out explicitly rather than just accepting the
+            // conservative cost: "PUSH R1" reads R1 to write it to the
+            // stack, it doesn't modify R1 itself, so invalidating it
+            // would only cost optimization opportunities for no
+            // correctness benefit.
+            int dst_reg = get_reg_index(node->dst_op.reg);
+            if (dst_reg >= 0) {
+                current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
             }
         }
 
@@ -1216,7 +1540,21 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
         BlockState current = block->in_state;
 
         for (AsmNode *node = block->first_ins; node != NULL; node = node->next) {
-            
+            // FIX: same reasoning as apply_transfer_function above -
+            // this function has its own, separate copy of the register-
+            // constant tracking (current.regs[]), used for the actual
+            // fold/rewrite rather than just the propagation analysis,
+            // and needs the identical CALL-invalidation or the bug
+            // isn't actually fixed even with the other copy corrected -
+            // this is the copy that performs the unsafe rewrite.
+            if (str_case_eq(node->mnemonic, "CALL")) {
+                for (int r = 0; r < 16; r++) {
+                    current.regs[r] = (RegState){VAL_BOTTOM, 0};
+                }
+                if (node == block->last_ins) break;
+                continue;
+            }
+
             if (node->type == OP_MOV && node->src_op.mode == MODE_REG && node->dst_op.mode == MODE_REG) {
                 int src_reg = get_reg_index(node->src_op.reg);
                 if (src_reg >= 0 && current.regs[src_reg].type == VAL_CONST) {
@@ -1229,10 +1567,34 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
                 }
             }
 
-            if (node->type == OP_MOV) {
+            // FIX: same indirect-operand bug as apply_transfer_function
+            // above - node->dst_op.reg holds the base register name for
+            // an indirect operand too ("[BP+2]" -> mode=INDIRECT,
+            // reg="BP"), so this must gate on dst_op.mode == MODE_REG or
+            // an indirect store like "MOV [BP+2], R0" gets misread as a
+            // real write to BP, smearing R0's constant onto BP's tracked
+            // state. This is the copy that performs the actual unsafe
+            // rewrite, so leaving it unguarded here reproduces the bug
+            // even with apply_transfer_function's copy fixed - confirmed
+            // directly: a minimal "push BP / mov BP,SP / mov R0,-1 /
+            // mov [BP+2],R0 / mov SP,BP / pop BP / ret" input folded the
+            // final "mov SP, BP" to the literal "MOV SP, 0xFFFFFFFF".
+            if (node->type == OP_MOV && node->dst_op.mode == MODE_REG) {
                 int dst_reg = get_reg_index(node->dst_op.reg);
                 if (dst_reg >= 0) {
-                    if (node->src_op.mode == MODE_IMMEDIATE) {
+                    // FIX: same float-immediate guard as
+                    // apply_transfer_function - a float literal (e.g.
+                    // "0.500000") parses with immediate=0 (see
+                    // parse_operand), which is only correct for the
+                    // literal 0.0 and wrong for every other float value.
+                    // Tracking it as VAL_CONST here is what let this
+                    // exact pass fold a later register read of it into a
+                    // bogus "MOV reg, 0x0", silently zeroing a real
+                    // runtime value (confirmed directly: an SPU channel
+                    // volume argument of 0.5 got replaced with 0 this
+                    // way, in a real compiled program, silencing audio
+                    // with no build error anywhere).
+                    if (node->src_op.mode == MODE_IMMEDIATE && !node->src_op.is_float) {
                         current.regs[dst_reg] = (RegState){VAL_CONST, node->src_op.immediate};
                     } else if (node->src_op.mode == MODE_REG) {
                         int src_reg = get_reg_index(node->src_op.reg);
@@ -1240,6 +1602,45 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
                     } else {
                         current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
                     }
+                }
+            }
+            // FIX: this copy of the tracking had no IADD case at all
+            // (unlike apply_transfer_function above, which does) - an
+            // IADD left current.regs[] completely untouched here,
+            // neither updated with a newly-computed constant nor
+            // invalidated, silently drifting out of sync with what the
+            // separate propagation analysis actually determined. Also
+            // gated on dst_op.mode == MODE_REG for the same reason as
+            // the MOV case just above (the real compiler never emits an
+            // indirect-destination IADD, but nothing should rely on
+            // that).
+            else if (node->type == OP_IADD && node->dst_op.mode == MODE_REG) {
+                int dst_reg = get_reg_index(node->dst_op.reg);
+                if (dst_reg >= 0) {
+                    RegState dst_st = current.regs[dst_reg];
+                    // FIX: same float-immediate guard as the MOV case
+                    // just above.
+                    RegState src_st = (node->src_op.mode == MODE_IMMEDIATE && !node->src_op.is_float)
+                        ? (RegState){VAL_CONST, node->src_op.immediate}
+                        : (node->src_op.mode == MODE_REG ? current.regs[get_reg_index(node->src_op.reg)] : (RegState){VAL_BOTTOM, 0});
+                    if (dst_st.type == VAL_CONST && src_st.type == VAL_CONST) {
+                        current.regs[dst_reg] = (RegState){VAL_CONST, dst_st.val + src_st.val};
+                    } else {
+                        current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
+                    }
+                }
+            }
+            // FIX: same generalized catch-all as apply_transfer_function
+            // above - any other instruction writing to a register
+            // (ISUB, IMUL, IDIV, IN, FADD/etc, CIF/CFI, comparisons,
+            // ...) must invalidate that register rather than silently
+            // leaving stale tracked state in place. PUSH excluded for
+            // the same reason as above - it reads its register operand,
+            // it doesn't modify it.
+            else if (node->has_dst && node->dst_op.mode == MODE_REG && node->type != OP_PUSH) {
+                int dst_reg = get_reg_index(node->dst_op.reg);
+                if (dst_reg >= 0) {
+                    current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
                 }
             }
 
@@ -1377,6 +1778,12 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "-fopt_inline") == 0) {
             config.enable_inline = true;
 			opt_count = opt_count + 1;
+        } else if (strncmp(argv[i], "-finline-max=", 13) == 0) {
+            // DIAGNOSTIC ONLY - see g_inline_call_limit declaration.
+            g_inline_call_limit = atoi(argv[i] + 13);
+        } else if (strncmp(argv[i], "-finline-exclude=", 17) == 0) {
+            // DIAGNOSTIC ONLY - see g_inline_exclude_name declaration.
+            safe_str_copy(g_inline_exclude_name, argv[i] + 17, sizeof(g_inline_exclude_name));
         } else if (strcmp(argv[i], "-fopt_dce") == 0) {
             config.enable_dce = true;
 			opt_count = opt_count + 1;
@@ -1537,7 +1944,7 @@ int pass_strength_reduction(AsmNode *head) {
 
     while (curr) {
         // --- 1. Integer Multiplication (IMUL) ---
-        if (curr->type == OP_IMUL && curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE) {
+        if (curr->type == OP_IMUL && curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float) {
             int val = curr->src_op.immediate;
 
             // Case A: Multiply by 0 -> Replace with MOV dst, 0
@@ -1572,22 +1979,18 @@ int pass_strength_reduction(AsmNode *head) {
                 continue;
             }
 
-            // Case D: Multiply by Power of 2 (4, 8, 16...) -> Replace with SHL dst, log2(val)
-            if (is_power_of_two(val)) {
-                int shift = get_log2(val);
-                curr->type = OP_SHL;
-                safe_str_copy(curr->mnemonic, "SHL", sizeof(curr->mnemonic));
-                curr->src_op.immediate = shift;
-                snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%d", shift);
-                snprintf(curr->raw, sizeof(curr->raw), "    SHL %s, %d", curr->dst_op.raw, shift);
-                optimizations++;
-                curr = curr->next;
-                continue;
-            }
+            // FIX: removed the IMUL-by-power-of-2 -> SHL case that was
+            // here. It was mathematically sound (SHL is a real Vircon32
+            // instruction, and left-shifting a signed int by N is
+            // exactly multiplication by 2^N with no sign caveats,
+            // unlike the IDIV case below), but pointless on this
+            // specific hardware - IMUL and SHL both cost exactly 1
+            // cycle here, so "reducing" one to the other buys nothing
+            // and just adds a code path with no benefit to verify.
         }
 
         // --- 2. Integer Division (IDIV) ---
-        if (curr->type == OP_IDIV && curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE) {
+        if (curr->type == OP_IDIV && curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float) {
             int val = curr->src_op.immediate;
 
             // Case A: Divide by 1 -> Identity operation (Remove completely!)
@@ -1599,18 +2002,27 @@ int pass_strength_reduction(AsmNode *head) {
                 continue;
             }
 
-            // Case B: Divide by Power of 2 (2, 4, 8...) -> Replace with SHR dst, log2(val)
-            if (is_power_of_two(val)) {
-                int shift = get_log2(val);
-                curr->type = OP_SHR;
-                safe_str_copy(curr->mnemonic, "SHR", sizeof(curr->mnemonic));
-                curr->src_op.immediate = shift;
-                snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%d", shift);
-                snprintf(curr->raw, sizeof(curr->raw), "    SHR %s, %d", curr->dst_op.raw, shift);
-                optimizations++;
-                curr = curr->next;
-                continue;
-            }
+            // FIX: removed the IDIV-by-power-of-2 -> SHR case that was
+            // here. Two separate, independent problems, either one
+            // alone would be enough to remove this:
+            //   1. Vircon32 has no right-shift instruction at all -
+            //      only SHL is real (confirmed against
+            //      VIRCON32_C_DIALECT.md's own hardware instruction
+            //      table). The emitted "SHR" mnemonic doesn't exist on
+            //      this hardware; the real assembler rejects it
+            //      outright with a parser error.
+            //   2. Even a correct right-shift would be the *wrong
+            //      value* for negative operands: C's integer division
+            //      truncates toward zero (-7 / 2 == -3), while
+            //      arithmetic right shift rounds toward negative
+            //      infinity (-7 >> 1 == -4 in two's complement) - they
+            //      disagree on every negative odd numerator. A correct
+            //      fix needs a sign-dependent rounding adjustment
+            //      before the shift, which is more instructions than
+            //      the IDIV it would replace - and per IDIV already
+            //      being 1 cycle on this hardware, that correct version
+            //      would be strictly worse than leaving IDIV alone, so
+            //      there's no version of this case worth keeping here.
         }
 
         curr = curr->next;
