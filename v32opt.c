@@ -777,10 +777,38 @@ int pass_inline_trivial_functions(AsmNode *head) {
     int inlined_calls = 0;
     curr = head ? head->next : NULL;
 
+    // FIX (ported from v32opt-fixed round 8): the compiler always
+    // emits the program's actual entry sequence ("; program start
+    // section" - a handful of CALLs plus HLT) as the very first thing
+    // in the file, before the "%define global_X N" block that gives
+    // every global variable's memory address a name. Those %define
+    // lines aren't real instructions - they're pass-through text this
+    // tool never reorders - so if this pass inlines a candidate
+    // called from the program-start section, the callee's body
+    // (referencing "[global_X]" by name) ends up spliced in *before*
+    // the point in the file where "global_X" is ever defined,
+    // producing an assembler error on an otherwise valid program.
+    // Confirmed directly against BasicPlatformer
+    // (github.com/vircon32/ConsoleSoftware): its program-start section
+    // calls __global_scope_initialization, which sets four "[global_X]"
+    // variables and easily qualifies as a trivial leaf function under
+    // every other rule this pass checks - inlining it moved those four
+    // assignments above their own %define block. Tracking whether the
+    // first label has been seen yet and refusing to inline anything
+    // before it covers this exactly: everything in the program-start
+    // section keeps calling out to a real function instead, which is
+    // unaffected by define ordering since CALL just jumps to wherever
+    // the label ends up in the file.
+    bool seen_first_label = false;
+
     while (curr) {
         AsmNode *next_node = curr->next;
 
-        if (str_case_eq(curr->mnemonic, "CALL")) {
+        if (curr->type == OP_LABEL) {
+            seen_first_label = true;
+        }
+
+        if (str_case_eq(curr->mnemonic, "CALL") && seen_first_label) {
             char target_label[128] = {0}; 
             safe_str_copy(target_label, trim(curr->dst_op.raw), sizeof(target_label));
 
@@ -973,7 +1001,20 @@ int pass_dead_function_elimination(AsmNode *head) {
             // not a genuinely dead function.
             size_t lbl_len = strlen(lbl);
             bool is_return_label = (lbl_len >= 8 && str_case_eq(lbl + lbl_len - 8, "_return:"));
-            if (strncmp(lbl, "__function_", 11) != 0 || is_return_label) {
+            // FIX (ported from v32opt-fixed round 9): __global_scope_
+            // initialization is a real, always-reachable code block
+            // the program-start section unconditionally calls, not a
+            // __function_-prefixed label - so this check alone
+            // silently skipped it and it never became a tracked entry,
+            // leaving its own outgoing calls invisible to whatever
+            // this pass uses reachability/boundaries for. Confirmed
+            // directly: Chip8Emulator's __global_scope_initialization
+            // calls make_color_rgb six times to build a palette - with
+            // those six calls invisible, make_color_rgb looked unused
+            // and got deleted by DCE, while the six calls to it
+            // remained in the output, breaking assembly.
+            bool is_global_scope_init = str_case_eq(lbl, "__global_scope_initialization:");
+            if ((strncmp(lbl, "__function_", 11) != 0 && !is_global_scope_init) || is_return_label) {
                 curr = curr->next;
                 continue;
             }
@@ -1199,22 +1240,38 @@ static void add_edge(BasicBlock *src, BasicBlock *dst) {
     dst->preds[dst->num_preds++] = src;
 }
 
+// FIX (ported from v32opt-fixed round 10): all three functions below
+// used case-sensitive strcmp against uppercase mnemonics ("JMP",
+// "JT", "JF", "CALL", "RET", "HLT"), but the real Vircon32 compiler
+// always emits lowercase mnemonics ("jmp", "jt", "jf", "call", "ret",
+// "hlt") - confirmed across every real compiled program tested. A
+// lowercase mnemonic never matched, so build_cfg never split a block
+// at a real branch and never added a branch-target or fallthrough-
+// pair edge for a conditional jump - a block only ever ended because
+// a *label* happened to follow it, and its recorded edge was always
+// just "whichever block happens to be next in file order", regardless
+// of where the jump actually goes. A backward jump (any loop) was hit
+// hardest: the block it jumps back to never received a real back-edge,
+// so the dataflow analysis could never see that a register set inside
+// a loop also flows in from a previous iteration - letting constant
+// folding treat loop-carried registers as fixed values. Confirmed via
+// a real hardware/emulator memory violation traced to exactly this.
 static bool is_unconditional_branch(AsmNode *node) {
     if (!node) return false;
-    return (strcmp(node->mnemonic, "JMP") == 0 ||
-            strcmp(node->mnemonic, "RET") == 0 ||
-            strcmp(node->mnemonic, "HLT") == 0);
+    return (str_case_eq(node->mnemonic, "JMP") ||
+            str_case_eq(node->mnemonic, "RET") ||
+            str_case_eq(node->mnemonic, "HLT"));
 }
 
 static bool is_conditional_branch(AsmNode *node) {
     if (!node) return false;
-    return (strcmp(node->mnemonic, "JT") == 0 || strcmp(node->mnemonic, "JF") == 0);
+    return (str_case_eq(node->mnemonic, "JT") || str_case_eq(node->mnemonic, "JF"));
 }
 
 static bool is_branch_or_call(AsmNode *node) {
     return is_unconditional_branch(node) || 
            is_conditional_branch(node) || 
-           (node && strcmp(node->mnemonic, "CALL") == 0);
+           (node && str_case_eq(node->mnemonic, "CALL"));
 }
 
 static BasicBlock* find_block_by_label(ControlFlowGraph *cfg, const char *label) {
@@ -1291,7 +1348,16 @@ ControlFlowGraph* build_cfg(AsmNode *head) {
 
         if (!term) continue;
 
-        if (strcmp(term->mnemonic, "JMP") == 0) {
+        // FIX (ported from v32opt-fixed round 10): same case-
+        // sensitivity issue as the three helper functions above - this
+        // is a second, independent set of direct strcmp calls against
+        // the same uppercase mnemonics, not routed through those
+        // helpers. Fixing only the helpers (which decide where a block
+        // *ends*) isn't enough on its own - this loop decides what a
+        // block's terminator instruction actually connects *to*, and
+        // left unfixed here a real jump/call still resolves to nothing
+        // useful (the block boundary is right, but the edge is wrong).
+        if (str_case_eq(term->mnemonic, "JMP")) {
             BasicBlock *target = find_block_by_label(cfg, term->dst_op.raw);
             if (target) add_edge(block, target);
         }
@@ -1300,10 +1366,10 @@ ControlFlowGraph* build_cfg(AsmNode *head) {
             if (target) add_edge(block, target);
             if (i + 1 < cfg->num_blocks) add_edge(block, cfg->blocks[i + 1]);
         }
-        else if (strcmp(term->mnemonic, "CALL") == 0) {
+        else if (str_case_eq(term->mnemonic, "CALL")) {
             if (i + 1 < cfg->num_blocks) add_edge(block, cfg->blocks[i + 1]);
         }
-        else if (strcmp(term->mnemonic, "RET") == 0 || strcmp(term->mnemonic, "HLT") == 0) {
+        else if (str_case_eq(term->mnemonic, "RET") || str_case_eq(term->mnemonic, "HLT")) {
             // End of execution path
         }
         else {
@@ -1682,7 +1748,20 @@ int pass_promote_stack_slots(AsmNode *head) {
 
             size_t lbl_len = strlen(lbl);
             bool is_return_label = (lbl_len >= 8 && str_case_eq(lbl + lbl_len - 8, "_return:"));
-            if (strncmp(lbl, "__function_", 11) != 0 || is_return_label) {
+            // FIX (ported from v32opt-fixed round 9): __global_scope_
+            // initialization is a real, always-reachable code block
+            // the program-start section unconditionally calls, not a
+            // __function_-prefixed label - so this check alone
+            // silently skipped it and it never became a tracked entry,
+            // leaving its own outgoing calls invisible to whatever
+            // this pass uses reachability/boundaries for. Confirmed
+            // directly: Chip8Emulator's __global_scope_initialization
+            // calls make_color_rgb six times to build a palette - with
+            // those six calls invisible, make_color_rgb looked unused
+            // and got deleted by DCE, while the six calls to it
+            // remained in the output, breaking assembly.
+            bool is_global_scope_init = str_case_eq(lbl, "__global_scope_initialization:");
+            if ((strncmp(lbl, "__function_", 11) != 0 && !is_global_scope_init) || is_return_label) {
                 curr = curr->next;
                 continue;
             }

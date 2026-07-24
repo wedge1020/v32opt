@@ -1,10 +1,23 @@
-# Vircon32 Assembly Optimizer
+# v32opt — Vircon32 Compiler-Generated Assembly Language Output Optimizer
 
-An  assembly-level optimization  tool designed  for the  Vircon32 fantasy
-console.  This   tool  processes  Vircon32  assembly   code  (`.asm`)  to
-analyze control  flow, reduce instruction count,  eliminate redundancies,
-and  promote  stack variables  to  fast  general-purpose registers  while
-guaranteeing strict memory and execution safety.
+`v32opt` is a multi-pass optimizing  pipeline for Vircon32 (V32) assembly
+code. Written in  standard C, `v32opt` takes assembly  to analyze control
+flow, reduce instruction count, eliminate redundancies, and promote stack
+variables  to fast  general-purpose registers  while guaranteeing  strict
+memory and execution safety (runs a  series of local and global passes in
+an attempt to emit more optimized  resulting assembly). This can take the
+form of space saving or performance enhancements, depending on the nature
+of the source program.
+
+Whether you are writing assembly by hand or optimizing compiler-generated
+output,  `v32opt` attempts  to reduce  binary  size and  cycle counts  by
+eliminating redundant  operations, performing  algebraic simplifications,
+inlining trivial functions, and stripping dead code.
+
+This project and  this documentation - was built with  the help of AI:
+
+  * Google Gemini,  a mix of  its Thinking (3.6)  mid-tier model and  Pro (3.1)
+  * Anthropic Claude Sonnet 5 (medium)
 
 ---
 
