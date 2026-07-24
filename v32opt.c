@@ -336,6 +336,7 @@ AsmNode* parse_vircon32_asm(const char *filename) {
             }
         }
 
+
         OpType type = OP_OTHER;
         if (str_case_eq(mnem, "MOV"))   type = OP_MOV;
         else if (str_case_eq(mnem, "IADD")) type = OP_IADD;
@@ -407,7 +408,7 @@ int pass_peephole_window2(AsmNode *head) {
         if ((n1->type == OP_IEQ || n1->type == OP_INE) && 
              n2->type == OP_CIB && 
              n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
-             strcmp(n1->dst_op.reg, n2->dst_op.reg) == 0) 
+             str_case_eq(n1->dst_op.reg, n2->dst_op.reg) == 0) 
         {
             remove_node(n2);
             optimizations++;
@@ -416,7 +417,7 @@ int pass_peephole_window2(AsmNode *head) {
 
         if (n1->type == OP_BNOT && n2->type == OP_BNOT && 
             n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
-            strcmp(n1->dst_op.reg, n2->dst_op.reg) == 0) 
+            str_case_eq(n1->dst_op.reg, n2->dst_op.reg) == 0) 
         {
             AsmNode *next_iter = n2->next;
             remove_node(n1);
@@ -428,7 +429,7 @@ int pass_peephole_window2(AsmNode *head) {
 
         if (n1->type == OP_PUSH && n2->type == OP_POP && 
             n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
-            strcmp(n1->dst_op.reg, n2->dst_op.reg) == 0) 
+            str_case_eq(n1->dst_op.reg, n2->dst_op.reg) == 0) 
         {
             AsmNode *next_iter = n2->next;
             remove_node(n1);
@@ -453,7 +454,7 @@ int pass_algebraic_simplifications(AsmNode *head) {
 
         if (curr->type == OP_MOV && 
             curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_REG && 
-            strcmp(curr->dst_op.reg, curr->src_op.reg) == 0) 
+            str_case_eq(curr->dst_op.reg, curr->src_op.reg) == 0) 
         {
             remove_node(curr);
             optimizations++;
@@ -470,8 +471,12 @@ int pass_algebraic_simplifications(AsmNode *head) {
             continue;
         }
 
-        if (curr->type == OP_IMUL && 
-            curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float && curr->src_op.immediate == 2) 
+
+		// Add this check:
+		if (curr->type == OP_IMUL &&
+			curr->dst_op.mode == MODE_REG &&  // <-- MISSING
+			curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float &&
+			curr->src_op.immediate == 2)
         {
             curr->type = OP_IADD;
             strcpy(curr->mnemonic, "IADD");
@@ -498,7 +503,7 @@ int pass_store_to_load_forwarding(AsmNode *head) {
             n1->dst_op.mode == MODE_INDIRECT && n1->src_op.mode == MODE_REG &&
             n2->dst_op.mode == MODE_REG      && n2->src_op.mode == MODE_INDIRECT) 
         {
-            if (strcmp(n1->dst_op.reg, n2->src_op.reg) == 0 && 
+            if (str_case_eq(n1->dst_op.reg, n2->src_op.reg) == 0 && 
                 n1->dst_op.offset == n2->src_op.offset) 
             {
                 n2->src_op = n1->src_op;
@@ -2317,6 +2322,10 @@ int main(int argc, char **argv) {
             safe_str_copy(outFile, argv[i], sizeof(outFile));
             out_idx = i;
         }
+		else
+		{
+			fprintf (stderr, "ERROR: '%s' unrecognized option\n", argv[i]);
+		}
     }
 
     // Dynamically calculate actual enabled optimization count
