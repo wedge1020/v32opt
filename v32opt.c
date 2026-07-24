@@ -2285,27 +2285,39 @@ int main(int argc, char **argv) {
 
     if (config.verbose) printf("--- Starting Optimization Phase 1: Local Passes ---\n");
 
-    // Phase 1: Iterative Peephole, Inlining & Local Optimizations
+    // --- PHASE 1: Iterative Local & AST Optimizations ---
+    int pass_count = 0;
     do {
         opts_in_pass = 0;
         int p_opts = 0, a_opts = 0, f_opts = 0, i_opts = 0, d_opts = 0;
         int j_opts = 0, m_opts = 0, c_opts = 0, s_opts = 0, r_opts = 0;
         int pl_opts = 0, lp_opts = 0;
+        pass_count++;
 
+        // 1. Interprocedural & Structural (exposes new code to the current iteration)
+        if (config.enable_inline)             i_opts = pass_inline_trivial_functions(program_ast);
+
+        // 2. Memory-to-Register Promotion (converts stack/memory to registers)
         if (config.enable_promote_regs)       r_opts = pass_promote_stack_slots(program_ast);
         if (config.enable_promote_leaf)       pl_opts = pass_promote_stack_slots(program_ast);
         if (config.enable_promote_loops)      lp_opts = pass_promote_loop_registers(program_ast);
-        if (config.enable_peephole)           p_opts = pass_peephole_window2(program_ast);
-        if (config.enable_algebraic)          a_opts = pass_algebraic_simplifications(program_ast);
+
+        // 3. Data-Flow Forwarding & Immediate Folding
         if (config.enable_forwarding)         f_opts = pass_store_to_load_forwarding(program_ast);
-        if (config.enable_jump_next)          j_opts = pass_redundant_jumps(program_ast);
-        if (config.enable_redundant_movs)     m_opts = pass_redundant_movs(program_ast);
         if (config.enable_combine_immediates) c_opts = pass_combine_immediates(program_ast);
         if (config.enable_strength_reduction) s_opts = pass_strength_reduction(program_ast);
-        if (config.enable_inline)             i_opts = pass_inline_trivial_functions(program_ast);
+
+        // 4. Algebraic & Local Instruction Cleanup
+        if (config.enable_algebraic)          a_opts = pass_algebraic_simplifications(program_ast);
+        if (config.enable_peephole)           p_opts = pass_peephole_window2(program_ast);
+        if (config.enable_redundant_movs)     m_opts = pass_redundant_movs(program_ast);
+
+        // 5. Control Flow & Dead Code Cleanup (removes dead bodies before next loop)
+        if (config.enable_jump_next)          j_opts = pass_redundant_jumps(program_ast);
         if (config.enable_dce)                d_opts = pass_dead_function_elimination(program_ast);
 
         opts_in_pass = p_opts + a_opts + f_opts + j_opts + m_opts + c_opts + s_opts + r_opts + pl_opts + lp_opts + i_opts + d_opts;
+
         total_opts += opts_in_pass;
         passes++;
 
@@ -2325,9 +2337,9 @@ int main(int argc, char **argv) {
             if (r_opts  > 0) printf ("  - Stack slots promoted to regs: %d\n", r_opts);
         }
 
-    } while (opts_in_pass > 0);
+    } while (opts_in_pass > 0 && pass_count < max_passes);
 
-    // Phase 2: Build CFG & Perform Global Data-Flow Analysis
+    // --- PHASE 2: Global Data-Flow & CFG Optimizations ---
     int global_folds = 0;
     ControlFlowGraph *cfg = NULL;
 
@@ -2343,6 +2355,34 @@ int main(int argc, char **argv) {
             printf("  - Global constant folds: %d\n", global_folds);
         }
     }
+
+    // --- PHASE 3: Lightweight Post-CFG Cleanup ---
+    // Sweeps away algebraic identities, dead moves, and redundant jumps exposed by Phase 2.
+    int cleanup_opts;
+    do {
+        cleanup_opts = 0;
+        c_opts = s_opts = a_opts = p_opts = m_opts = j_opts = 0;
+
+        if (config.enable_combine_immediates) c_opts = pass_combine_immediates(program_ast);
+        if (config.enable_strength_reduction) s_opts = pass_strength_reduction(program_ast);
+        if (config.enable_algebraic)          a_opts = pass_algebraic_simplifications(program_ast);
+        if (config.enable_peephole)           p_opts = pass_peephole_window2(program_ast);
+        if (config.enable_redundant_movs)     m_opts = pass_redundant_movs(program_ast);
+        if (config.enable_jump_next)          j_opts = pass_redundant_jumps(program_ast);
+
+        cleanup_opts  = c_opts + s_opts + a_opts + p_opts + m_opts + j_opts;
+        total_opts += cleanup_opts;
+
+        if (config.verbose && opts_in_pass > 0) {
+            printf("Cleanup Pass applied %d follow-up optimizations:\n", cleanup_opts);
+            if (p_opts  > 0) printf ("  - Peephole: %d\n", p_opts);
+            if (a_opts  > 0) printf ("  - Algebraic: %d\n", a_opts);
+            if (j_opts  > 0) printf ("  - Redundant jumps removed: %d\n", j_opts);
+            if (m_opts  > 0) printf ("  - Redundant moves removed: %d\n", m_opts);
+            if (c_opts  > 0) printf ("  - Immediates combined: %d\n", c_opts);
+            if (s_opts  > 0) printf ("  - Strength reductions: %d\n", s_opts);
+        }
+    } while (cleanup_opts > 0);
 
     if (strlen(dotFile) > 0) {
         if (!cfg) cfg = build_cfg(program_ast); 
