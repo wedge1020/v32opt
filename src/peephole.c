@@ -7,14 +7,18 @@
 // Small-window (1-3 instruction) local transformations that improve
 // code without global analysis.
 // -------------------------------------------------------------------
-// 
+//
+// Note: On Vircon32, ALL instructions are 1 cycle, so many transformations
+// are cost-neutral. We keep them for code clarity, size reduction, or
+// idiomatic style.
+//
 // peephole_pairs()          - adjacent instruction pair elimination
 // peephole_algebra()        - algebraic simplifications
 // peephole_forwarding()     - store-to-load forwarding
 // peephole_jumps()          - redundant jump elimination
 // peephole_movs()           - redundant MOV elimination
 // peephole_immediates()     - combine immediates
-// peephole_reduce()         - strength reduction
+// peephole_reduce()         - strength reduction (cost-neutral on Vircon32)
 // peephole_shifts()         - shift optimizations
 // peephole_dead_stores()    - dead store elimination
 // peephole_loads()          - redundant load elimination
@@ -41,6 +45,10 @@ int peephole_pairs(AsmNode *head)
         AsmNode *n1 = curr;
         AsmNode *n2 = curr->next;
 
+        // --- IEQ/INE + CIB Redundancy ---
+        // IEQ/INE sets a flag; CIB branches on that flag.
+        // If they target the same register, the CIB is redundant because
+        // the flag is already set and the branch will use it directly.
         if ((n1->type == OP_IEQ || n1->type == OP_INE) &&
              n2->type == OP_CIB &&
              n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
@@ -48,9 +56,12 @@ int peephole_pairs(AsmNode *head)
         {
             remove_node(n2);
             optimizations++;
-            continue;
+            continue; // Skip n2, continue from n1->next (which is now n2->next)
         }
 
+        // --- Double BNOT Elimination ---
+        // BNOT x; BNOT x → x ^ x ^ x = x (identity)
+        // The two operations cancel out, so both can be removed.
         if (n1->type == OP_BNOT && n2->type == OP_BNOT &&
             n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
             str_case_eq(n1->dst_op.reg, n2->dst_op.reg) == 0)
@@ -58,11 +69,13 @@ int peephole_pairs(AsmNode *head)
             AsmNode *next_iter = n2->next;
             remove_node(n1);
             remove_node(n2);
-            curr = next_iter;
+            curr = next_iter; // Jump to the node after the removed pair
             optimizations += 2;
             continue;
         }
 
+        // --- PUSH/POP Pair Elimination ---
+        // PUSH r; POP r → no net effect on the stack or register
         if (n1->type == OP_PUSH && n2->type == OP_POP &&
             n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
             str_case_eq(n1->dst_op.reg, n2->dst_op.reg) == 0)
@@ -86,7 +99,7 @@ int peephole_pairs(AsmNode *head)
 // Removes or replaces instructions that are algebraically redundant:
 //   - MOV r, r → remove (no-op)
 //   - IADD/ISUB r, 0 → remove (identity)
-//   - IMUL r, 2 → replace with IADD r, r (strength reduction)
+//   - IMUL r, 2 → replace with IADD r, r (cost-neutral on Vircon32, but idiomatic)
 // ===================================================================
 int peephole_algebra(AsmNode *head)
 {
@@ -97,6 +110,8 @@ int peephole_algebra(AsmNode *head)
     {
         AsmNode *next = curr->next;
 
+        // --- MOV r, r (Self-Move Elimination) ---
+        // Copying a register to itself is a no-op.
         if (curr->type == OP_MOV &&
             curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_REG &&
             str_case_eq(curr->dst_op.reg, curr->src_op.reg) == 0)
@@ -107,6 +122,8 @@ int peephole_algebra(AsmNode *head)
             continue;
         }
 
+        // --- IADD/ISUB with Immediate 0 ---
+        // Adding or subtracting 0 leaves the register unchanged.
         if ((curr->type == OP_IADD || curr->type == OP_ISUB) &&
             curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float && curr->src_op.immediate == 0)
         {
@@ -116,6 +133,10 @@ int peephole_algebra(AsmNode *head)
             continue;
         }
 
+        // --- IMUL by 2 Strength Reduction ---
+        // IMUL r, 2 → IADD r, r
+        // Note: Cost-neutral on Vircon32 (both are 1 cycle), but IADD may be
+        // preferred for clarity or to reduce instruction variety.
         if (curr->type == OP_IMUL &&
             curr->dst_op.mode == MODE_REG &&
             curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float &&
@@ -123,7 +144,7 @@ int peephole_algebra(AsmNode *head)
         {
             curr->type = OP_IADD;
             strcpy(curr->mnemonic, "IADD");
-            curr->src_op = curr->dst_op;
+            curr->src_op = curr->dst_op; // Source becomes same as destination
             snprintf(curr->raw, sizeof(curr->raw), "    IADD %s, %s", curr->dst_op.raw, curr->src_op.raw);
             optimizations++;
         }
@@ -150,13 +171,19 @@ int peephole_forwarding(AsmNode *head)
         AsmNode *n1 = curr;
         AsmNode *n2 = curr->next;
 
+        // --- Store-to-Load Forwarding ---
+        // If n1 stores a register to memory and n2 loads from the same
+        // memory location into another register, we can replace the load
+        // with a direct register-to-register move.
         if (n1->type == OP_MOV && n2->type == OP_MOV &&
             n1->dst_op.mode == MODE_INDIRECT && n1->src_op.mode == MODE_REG &&
             n2->dst_op.mode == MODE_REG      && n2->src_op.mode == MODE_INDIRECT)
         {
+            // Check if both operations target the same memory address
             if (str_case_eq(n1->dst_op.reg, n2->src_op.reg) == 0 &&
                 n1->dst_op.offset == n2->src_op.offset)
             {
+                // Replace n2's source (memory) with n1's source (register)
                 n2->src_op = n1->src_op;
                 snprintf(n2->raw, sizeof(n2->raw), "    MOV %s, %s", n2->dst_op.reg, n2->src_op.reg);
                 optimizations++;
@@ -183,6 +210,7 @@ int peephole_jumps(AsmNode *head)
     {
         if (str_case_eq(curr->mnemonic, "JMP"))
         {
+            // Skip over comments/blank lines to find the next real instruction
             AsmNode *next_node = curr->next;
             while (next_node && next_node->type == OP_OTHER &&
                   (next_node->raw[0] == '\0' || next_node->raw[0] == ';'))
@@ -190,8 +218,12 @@ int peephole_jumps(AsmNode *head)
                 next_node = next_node->next;
             }
 
+            // --- Jump to Next Label ---
+            // If the next non-comment node is a label, and the JMP targets
+            // that label, the JMP is redundant (fall-through).
             if (next_node && next_node->type == OP_LABEL)
             {
+                // Extract label name (remove trailing colon if present)
                 char lbl[128] = {0};
                 safe_str_copy(lbl, next_node->raw, sizeof(lbl));
                 char *colon = strchr(lbl, ':');
@@ -203,7 +235,7 @@ int peephole_jumps(AsmNode *head)
                     curr = curr->next;
                     remove_node(to_remove);
                     optimizations++;
-                    continue;
+                    continue; // Skip the removed node
                 }
             }
         }
@@ -227,6 +259,7 @@ int peephole_movs(AsmNode *head)
     {
         if (curr->type == OP_MOV)
         {
+            // Skip over comments/blank lines to find the next real instruction
             AsmNode *n2 = curr->next;
             while (n2 && n2->type == OP_OTHER &&
                   (n2->raw[0] == '\0' || n2->raw[0] == ';'))
@@ -237,10 +270,15 @@ int peephole_movs(AsmNode *head)
 
             if (n2->type == OP_MOV)
             {
+                // --- Self-Referential Load Check ---
+                // If the first MOV loads from [r1] into r1, we cannot eliminate
+                // the second MOV even if it uses r1, because the value might change.
                 bool self_referential_load =
                     (curr->src_op.mode == MODE_INDIRECT) &&
                     str_case_eq(curr->src_op.reg, curr->dst_op.reg);
 
+                // --- Duplicate Move Elimination ---
+                // MOV r1, X; MOV r1, X → second MOV is redundant
                 if (!self_referential_load &&
                     str_case_eq(curr->dst_op.raw, n2->dst_op.raw) &&
                     str_case_eq(curr->src_op.raw, n2->src_op.raw))
@@ -250,6 +288,9 @@ int peephole_movs(AsmNode *head)
                     continue;
                 }
 
+                // --- Mirror Move Elimination ---
+                // MOV r1, r2; MOV r2, r1 → second MOV is redundant
+                // (swapping the same two registers twice restores original state)
                 if (curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_REG &&
                     n2->dst_op.mode == MODE_REG && n2->src_op.mode == MODE_REG)
                 {
@@ -272,7 +313,7 @@ int peephole_movs(AsmNode *head)
 // PEEPHOLE: Immediate Math Combining
 // Combines consecutive arithmetic operations with immediate operands:
 //   - IADD r, 5; ISUB r, 3 → IADD r, 2
-//   - IADD r, 5; ISUB r, 5 → remove both
+//   - IADD r, 5; ISUB r, 5 → remove both (cancels out)
 // ===================================================================
 int peephole_immediates(AsmNode *head)
 {
@@ -281,9 +322,11 @@ int peephole_immediates(AsmNode *head)
 
     while (curr)
     {
+        // Only process IADD/ISUB with register destination and immediate source
         if ((curr->type == OP_IADD || curr->type == OP_ISUB) &&
             curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float)
         {
+            // Skip over comments/blank lines to find the next real instruction
             AsmNode *n2 = curr->next;
             while (n2 && n2->type == OP_OTHER &&
                   (n2->raw[0] == '\0' || n2->raw[0] == ';'))
@@ -291,14 +334,18 @@ int peephole_immediates(AsmNode *head)
                 n2 = n2->next;
             }
 
+            // Check if n2 is also an IADD/ISUB with same destination and immediate
             if (n2 && (n2->type == OP_IADD || n2->type == OP_ISUB) &&
                 n2->dst_op.mode == MODE_REG && n2->src_op.mode == MODE_IMMEDIATE && !n2->src_op.is_float &&
                 str_case_eq(curr->dst_op.reg, n2->dst_op.reg))
             {
+                // Calculate effective values: IADD adds, ISUB subtracts
                 int val1 = (curr->type == OP_IADD) ? curr->src_op.immediate : -curr->src_op.immediate;
                 int val2 = (n2->type == OP_IADD) ? n2->src_op.immediate : -n2->src_op.immediate;
                 int combined = val1 + val2;
 
+                // --- Cancellation Case ---
+                // If the combined value is 0, both operations cancel out
                 if (combined == 0)
                 {
                     AsmNode *next_iter = n2->next;
@@ -308,6 +355,8 @@ int peephole_immediates(AsmNode *head)
                     optimizations += 2;
                     continue;
                 }
+                // --- Non-Zero Combination ---
+                // Replace the first instruction with the combined operation
                 else if (combined > 0)
                 {
                     curr->type = OP_IADD;
@@ -316,11 +365,11 @@ int peephole_immediates(AsmNode *head)
                     snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%d", combined);
                     snprintf(curr->raw, sizeof(curr->raw), "    IADD %s, %d", curr->dst_op.raw, combined);
                 }
-                else
+                else // combined < 0
                 {
                     curr->type = OP_ISUB;
                     safe_str_copy(curr->mnemonic, "ISUB", sizeof(curr->mnemonic));
-                    curr->src_op.immediate = -combined;
+                    curr->src_op.immediate = -combined; // Make positive for ISUB
                     snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%d", -combined);
                     snprintf(curr->raw, sizeof(curr->raw), "    ISUB %s, %d", curr->dst_op.raw, -combined);
                 }
@@ -336,10 +385,12 @@ int peephole_immediates(AsmNode *head)
 
 // ===================================================================
 // PEEPHOLE: Strength Reduction
-// Replaces expensive operations with cheaper equivalents:
+// Replaces expensive operations with cheaper equivalents.
+// Note: On Vircon32, all instructions are 1 cycle, so these are
+// cost-neutral but may improve code clarity or reduce variety.
 //   - IMUL r, 0 → MOV r, 0
 //   - IMUL r, 1 → remove (identity)
-//   - IMUL r, 2 → IADD r, r
+//   - IMUL r, 2 → IADD r, r (cost-neutral, but idiomatic)
 //   - IDIV r, 1 → remove (identity)
 // ===================================================================
 int peephole_reduce(AsmNode *head)
@@ -349,10 +400,13 @@ int peephole_reduce(AsmNode *head)
 
     while (curr)
     {
+        // --- IMUL Strength Reduction ---
         if (curr->type == OP_IMUL && curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float)
         {
             int val = curr->src_op.immediate;
 
+            // --- Multiply by 0 → MOV 0 ---
+            // Any value * 0 = 0
             if (val == 0)
             {
                 curr->type = OP_MOV;
@@ -363,6 +417,8 @@ int peephole_reduce(AsmNode *head)
                 continue;
             }
 
+            // --- Multiply by 1 → Remove ---
+            // Any value * 1 = itself (identity operation)
             if (val == 1)
             {
                 AsmNode *to_remove = curr;
@@ -372,6 +428,8 @@ int peephole_reduce(AsmNode *head)
                 continue;
             }
 
+            // --- Multiply by 2 → IADD r, r ---
+            // x * 2 = x + x (cost-neutral on Vircon32)
             if (val == 2)
             {
                 curr->type = OP_IADD;
@@ -386,10 +444,13 @@ int peephole_reduce(AsmNode *head)
             }
         }
 
+        // --- IDIV Strength Reduction ---
         if (curr->type == OP_IDIV && curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float)
         {
             int val = curr->src_op.immediate;
 
+            // --- Divide by 1 → Remove ---
+            // Any value / 1 = itself (identity operation)
             if (val == 1)
             {
                 AsmNode *to_remove = curr;
@@ -407,14 +468,10 @@ int peephole_reduce(AsmNode *head)
 
 // ===================================================================
 // PEEPHOLE: Shift Optimizations
-//   - SHL/SHR r, 0 → remove (no-op)
-//   - SHL r, 1 → IADD r, r (strength reduction)
-// ===================================================================
-// ===================================================================
-// PEEPHOLE: Shift Optimizations
+// On Vircon32, SHL with positive value = left shift, negative = right shift.
 //   - SHL r, 0 → remove (no-op; applies to both left and right shifts)
-//   - SHL r, 1 → IADD r, r (strength reduction for left shift by 1)
-//   - SHL r, -1 → right shift by 1; left unchanged (no cheaper equivalent)
+//   - SHL r, 1 → IADD r, r (cost-neutral on Vircon32, but idiomatic)
+//   - SHL r, -1 → right shift by 1; left unchanged (no benefit to converting to IDIV)
 // ===================================================================
 int peephole_shifts(AsmNode *head)
 {
@@ -428,28 +485,35 @@ int peephole_shifts(AsmNode *head)
             curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float)
         {
             int shift = curr->src_op.immediate;
+
+            // --- Shift by 0 (No-Op) ---
+            // Left or right shift by 0 leaves the register unchanged.
             if (shift == 0)
             {
-                // SHL by 0 is a no-op (left or right shift by 0 does nothing)
                 AsmNode *to_remove = curr;
                 curr = curr->next;
                 remove_node(to_remove);
                 optimizations++;
                 continue;
             }
+
+            // --- Left Shift by 1 ---
+            // SHL r, 1 = r * 2 = r + r
+            // Cost-neutral on Vircon32 (both SHL and IADD are 1 cycle),
+            // but IADD may be preferred for consistency.
             else if (shift == 1)
             {
-                // Left shift by 1 → IADD r, r
                 curr->type = OP_IADD;
                 safe_str_copy(curr->mnemonic, "IADD", sizeof(curr->mnemonic));
-                curr->src_op = curr->dst_op;
+                curr->src_op = curr->dst_op; // Source becomes same as destination
                 snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%s", curr->dst_op.raw);
                 snprintf(curr->raw, sizeof(curr->raw), "    IADD %s, %s", curr->dst_op.raw, curr->src_op.raw);
                 optimizations++;
             }
-            // Note: SHL r, -1 is a right shift by 1.
-            // Could optimize to IDIV r, 2 if that's cheaper on Vircon32,
-            // but without knowing relative costs, we leave it as-is.
+
+            // Note: SHL r, -1 (right shift by 1) is left unchanged.
+            // On Vircon32, SHL and IDIV are both 1 cycle, so converting
+            // SHL r, -1 to IDIV r, 2 would be cost-neutral but adds no benefit.
         }
         curr = curr->next;
     }
@@ -471,27 +535,29 @@ int peephole_dead_stores(AsmNode *head)
         AsmNode *n1 = curr;
         AsmNode *n2 = curr->next;
 
-        // Skip non-MOV or non-indirect destinations
+        // Skip if n1 is not a store (MOV to indirect address)
         if (n1->type != OP_MOV || n1->dst_op.mode != MODE_INDIRECT)
         {
             curr = curr->next;
             continue;
         }
 
-        // Skip if n2 is not a MOV with indirect destination
+        // Skip if n2 is not also a store
         if (n2->type != OP_MOV || n2->dst_op.mode != MODE_INDIRECT)
         {
             curr = curr->next;
             continue;
         }
 
-        // Check if both stores target the same memory location
+        // --- Consecutive Stores to Same Address ---
+        // If both stores target the same memory location [reg+offset],
+        // the first store's value is never read, so it can be removed.
         if (str_case_eq(n1->dst_op.reg, n2->dst_op.reg) == 0 &&
             n1->dst_op.offset == n2->dst_op.offset)
         {
             remove_node(n1);
             optimizations++;
-            curr = n2; // Skip n2 in next iteration (it's now the first of the pair)
+            curr = n2; // Continue from n2 (now the first in the pair)
             continue;
         }
 
@@ -516,26 +582,28 @@ int peephole_loads(AsmNode *head)
         AsmNode *n1 = curr;
         AsmNode *n2 = curr->next;
 
-        // Skip non-MOV or non-register destinations
+        // Skip if n1 is not a load (MOV from indirect address to register)
         if (n1->type != OP_MOV || n1->dst_op.mode != MODE_REG)
         {
             curr = curr->next;
             continue;
         }
 
-        // Skip if n2 is not a MOV with register destination
+        // Skip if n2 is not also a load
         if (n2->type != OP_MOV || n2->dst_op.mode != MODE_REG)
         {
             curr = curr->next;
             continue;
         }
 
-        // Check if both loads are from the same memory location
+        // --- Consecutive Loads from Same Address ---
+        // If both loads read from the same memory location [reg+offset],
+        // the second load can use the first's destination register instead.
         if (n1->src_op.mode == MODE_INDIRECT && n2->src_op.mode == MODE_INDIRECT &&
             str_case_eq(n1->src_op.reg, n2->src_op.reg) == 0 &&
             n1->src_op.offset == n2->src_op.offset)
         {
-            // Replace n2's source with n1's destination register
+            // Replace n2's source (memory) with n1's destination (register)
             n2->src_op = n1->dst_op;
             snprintf(n2->raw, sizeof(n2->raw), "    MOV %s, %s", n2->dst_op.raw, n2->src_op.raw);
             optimizations++;
@@ -570,11 +638,12 @@ int peephole_immediate_prop(AsmNode *head)
             continue;
         }
 
-        // Check if n2 uses n1's destination register as source
+        // Check if n2 uses n1's destination register as its source
         if (n2->src_op.mode == MODE_REG &&
             str_case_eq(n2->src_op.reg, n1->dst_op.reg) == 0)
         {
-            // Propagate the immediate value into n2
+            // --- Propagate into Arithmetic Ops ---
+            // Replace the register source with the immediate value
             if (n2->type == OP_IADD || n2->type == OP_ISUB || n2->type == OP_IMUL || n2->type == OP_IDIV)
             {
                 n2->src_op = n1->src_op;
@@ -583,9 +652,10 @@ int peephole_immediate_prop(AsmNode *head)
                          n2->mnemonic, n2->dst_op.raw, n2->src_op.raw);
                 optimizations++;
             }
+            // --- Propagate into MOV ---
+            // MOV r1, 5; MOV r2, r1 → MOV r2, 5
             else if (n2->type == OP_MOV)
             {
-                // MOV r1, 5; MOV r2, r1 → MOV r2, 5
                 n2->src_op = n1->src_op;
                 snprintf(n2->src_op.raw, sizeof(n2->src_op.raw), "%d", n2->src_op.immediate);
                 snprintf(n2->raw, sizeof(n2->raw), "    MOV %s, %d", n2->dst_op.raw, n2->src_op.immediate);
@@ -612,7 +682,7 @@ int peephole_jmp_chain(AsmNode *head)
     {
         if (str_case_eq(curr->mnemonic, "JMP"))
         {
-            // Find the target label of the JMP
+            // Skip over comments/blank lines to find the target label
             AsmNode *target = curr->next;
             while (target && target->type == OP_OTHER &&
                   (target->raw[0] == '\0' || target->raw[0] == ';'))
@@ -620,10 +690,12 @@ int peephole_jmp_chain(AsmNode *head)
                 target = target->next;
             }
 
-            // Check if the next non-comment node is a label
+            // --- Jump to Label Followed by Another Jump ---
+            // If the target is a label and the next instruction after it is a JMP,
+            // we can chain the jumps: JMP L1; L1: JMP L2 → JMP L2
             if (target && target->type == OP_LABEL)
             {
-                // Check if the label's next non-comment node is another JMP
+                // Find the instruction after the label (skip comments)
                 AsmNode *next_after_label = target->next;
                 while (next_after_label && next_after_label->type == OP_OTHER &&
                       (next_after_label->raw[0] == '\0' || next_after_label->raw[0] == ';'))
@@ -633,11 +705,11 @@ int peephole_jmp_chain(AsmNode *head)
 
                 if (next_after_label && str_case_eq(next_after_label->mnemonic, "JMP"))
                 {
-                    // Replace curr's target with next_after_label's target
+                    // Update curr to jump directly to next_after_label's target
                     safe_str_copy(curr->dst_op.raw, next_after_label->dst_op.raw, sizeof(curr->dst_op.raw));
                     snprintf(curr->raw, sizeof(curr->raw), "    JMP %s", curr->dst_op.raw);
 
-                    // Remove the label and the chained JMP
+                    // Remove the intermediate label and JMP
                     remove_node(target);
                     remove_node(next_after_label);
                     optimizations += 2;
