@@ -776,13 +776,14 @@ bool is_live_out_register(const char *reg_name) {
 }
 
 // ===================================================================
-// HELPER: Check string instructions without triggering -Waddress warnings
+// HELPER: Check string instructions safely without null-dereference crashes
 // ===================================================================
 bool is_string_instruction(AsmNode *node) {
-    // Fixed -Waddress warning: mnemonic is an array, so check element [0]
-    if (!node || node->mnemonic[0] == '\0') return false;
+    // Safe check for NULL pointer OR empty string
+    if (!node || !node->mnemonic || node->mnemonic[0] == '\0') return false;
 
     // If an instruction was converted to a comment, it is no longer active
+    if (!node->raw) return false;
     const char *p = node->raw;
     while (*p == ' ' || *p == '\t') p++;
     if (*p == ';' || *p == '\0') return false;
@@ -801,19 +802,17 @@ bool is_comment_or_empty(AsmNode *node) {
     if (node->type == OP_LABEL) return false;
 
     // 1. Check if the raw assembly line is commented out or blank
+    if (!node->raw) return true; // Safety guard against NULL pointer
     const char *p = node->raw;
     while (*p == ' ' || *p == '\t') p++;
     if (*p == ';' || *p == '\0') return true;
 
-    // 2. If it has no mnemonic, treat it as empty
-    if (node->mnemonic[0] == '\0') return true;
+    // 2. If it has no mnemonic (NULL pointer or empty string), treat it as empty
+    if (!node->mnemonic || node->mnemonic[0] == '\0') return true;
 
     return false;
 }
 
-// ===================================================================
-// HELPER: Check if an instruction reads a register
-// ===================================================================
 // ===================================================================
 // HELPER: Check if an instruction reads a register (UPGRADED & SAFE)
 // ===================================================================
@@ -871,7 +870,9 @@ bool is_register_read(AsmNode *node, const char *reg_name) {
 // HELPER: Check if an instruction is a pure register definition
 // ===================================================================
 bool is_pure_reg_def(AsmNode *node) {
-    if (!node || is_comment_or_empty(node) || !node->has_dst || node->dst_op.mode != MODE_REG || node->dst_op.reg[0] == '\0') return false;
+    if (!node || is_comment_or_empty(node) || !node->has_dst || 
+        node->dst_op.mode != MODE_REG || 
+        !node->dst_op.reg || node->dst_op.reg[0] == '\0') return false;
 
     if (is_string_instruction(node)) return false;
 
@@ -885,7 +886,6 @@ bool is_pure_reg_def(AsmNode *node) {
         str_case_eq(node->mnemonic, "JMP")  ||
         str_case_eq(node->mnemonic, "JT")   ||
         str_case_eq(node->mnemonic, "JF")   ||
-        str_case_eq(node->mnemonic, "CIB")  ||
         str_case_eq(node->mnemonic, "RET")  ||
         str_case_eq(node->mnemonic, "HLT")) {
         return false;
