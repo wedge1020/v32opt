@@ -179,6 +179,15 @@ bool     modifies_register        (AsmNode *, const char *);
 bool     is_control_flow_boundary (AsmNode *);
 long     parse_imm_val            (const char *);
 bool     is_register_read         (AsmNode *, const char *);
+bool     is_live_out_register     (const char *);
+
+// stack optimizations
+//
+int      optimize_frame_pointers  (AsmNode *); // -O2
+
+// stack helpers
+//
+bool     references_bp            (AsmNode *);
 
 // inline optimization
 //

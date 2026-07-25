@@ -729,9 +729,102 @@ bool is_register_read(AsmNode *node, const char *reg_name) {
 }
 
 // ===================================================================
+// HELPER: Check if a register is "Live-Out" across function returns
+// In Vircon32, only R0 (return value), SP, and BP survive a RET.
+// ===================================================================
+bool is_live_out_register(const char *reg_name) {
+    if (!reg_name) return true; // Be conservative on NULL
+    if (str_case_eq(reg_name, "R0")) return true;
+    if (str_case_eq(reg_name, "SP")) return true;
+    if (str_case_eq(reg_name, "BP")) return true;
+    return false;
+}
+
+// ===================================================================
+// PEEPHOLE: Dead Store Elimination (DSE) - Upgraded with Liveness!
+// Eliminates register writes overwritten OR dead at function exit.
+// ===================================================================
+int peephole_dead_stores(AsmNode *head)
+{
+    int optimizations = 0;
+    AsmNode *curr = head ? head->next : NULL;
+
+    while (curr)
+    {
+        // We only care about pure MOV instructions that define a register
+        if (curr->type == OP_MOV && curr->has_dst && curr->dst_op.mode == MODE_REG)
+        {
+            char *def_reg = curr->dst_op.reg;
+
+            // Never optimize away stack frame manipulations
+            if (!str_case_eq(def_reg, "SP") && !str_case_eq(def_reg, "BP"))
+            {
+                AsmNode *scan = curr->next;
+                while (scan)
+                {
+                    if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
+                        scan = scan->next;
+                        continue;
+                    }
+
+                    // ----------------------------------------------------
+                    // CRITICAL CHANGE 1:
+                    // Do NOT break on OP_LABEL! It is mathematically safe to scan
+                    // across labels for dead stores as long as we check reads.
+                    // Only break on branching jumps (JMP, CIB) or function calls.
+                    // ----------------------------------------------------
+                    if (str_case_eq(scan->mnemonic, "JMP") ||
+                        str_case_eq(scan->mnemonic, "CIB") ||
+                        str_case_eq(scan->mnemonic, "CALL") ||
+                        str_case_eq(scan->mnemonic, "HLT")) {
+                        break;
+                    }
+
+                    // If any instruction READS our register, the store is live! Abort scan.
+                    if (is_register_read(scan, def_reg)) {
+                        break;
+                    }
+
+                    // ----------------------------------------------------
+                    // CRITICAL CHANGE 2: Terminal Dead Store Check
+                    // If we reach a RET instruction, check if def_reg is live-out!
+                    // If it is NOT R0, SP, or BP, nobody will ever read it.
+                    // ----------------------------------------------------
+                    if (str_case_eq(scan->mnemonic, "RET"))
+                    {
+                        if (!is_live_out_register(def_reg)) {
+                            curr->type = OP_OTHER;
+                            snprintf(curr->raw, sizeof(curr->raw), "; optimized out terminal dead store: MOV %s", def_reg);
+                            optimizations++;
+                        }
+                        break; // Stop scanning after RET
+                    }
+
+                    // Standard DSE: Another MOV overwrites our register before it was read
+                    if (scan->type == OP_MOV && scan->has_dst &&
+                        scan->dst_op.mode == MODE_REG && str_case_eq(scan->dst_op.reg, def_reg))
+                    {
+                        curr->type = OP_OTHER;
+                        snprintf(curr->raw, sizeof(curr->raw), "; optimized out dead store: MOV %s", def_reg);
+                        optimizations++;
+                        break;
+                    }
+
+                    scan = scan->next;
+                }
+            }
+        }
+        curr = curr->next;
+    }
+
+    return optimizations;
+}
+
+// ===================================================================
 // PEEPHOLE: Dead Store Elimination (DSE)
 // Eliminates register writes that are overwritten before ever being read.
 // ===================================================================
+/*
 int peephole_dead_stores(AsmNode *head)
 {
     int optimizations = 0;
@@ -782,7 +875,7 @@ int peephole_dead_stores(AsmNode *head)
     }
 
     return optimizations;
-}
+}*/
 
 // ===================================================================
 // PEEPHOLE: Dead Store Elimination
