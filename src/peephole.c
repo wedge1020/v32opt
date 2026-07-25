@@ -52,7 +52,7 @@ int peephole_pairs(AsmNode *head)
         if ((n1->type == OP_IEQ || n1->type == OP_INE) &&
              n2->type == OP_CIB &&
              n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
-             str_case_eq(n1->dst_op.reg, n2->dst_op.reg) == 0)
+             str_case_eq(n1->dst_op.reg, n2->dst_op.reg))
         {
             remove_node(n2);
             optimizations++;
@@ -144,7 +144,7 @@ int peephole_pairs(AsmNode *head)
         // PUSH r; POP r → no net effect on the stack or register
         if (n1->type == OP_PUSH && n2->type == OP_POP &&
             n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
-            str_case_eq(n1->dst_op.reg, n2->dst_op.reg) == 0)
+            str_case_eq(n1->dst_op.reg, n2->dst_op.reg))
         {
             AsmNode *next_iter = n2->next;
             remove_node(n1);
@@ -180,7 +180,7 @@ int peephole_algebra(AsmNode *head)
         // Copying a register to itself is a no-op.
         if (curr->type == OP_MOV &&
             curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_REG &&
-            str_case_eq(curr->dst_op.reg, curr->src_op.reg) == 0)
+            str_case_eq(curr->dst_op.reg, curr->src_op.reg))
         {
             remove_node(curr);
             optimizations++;
@@ -225,7 +225,8 @@ int peephole_algebra(AsmNode *head)
 // HELPER: Check if an instruction modifies a specific register
 // ===================================================================
 bool modifies_register(AsmNode *node, const char *reg_name) {
-    if (!node || !reg_name) return false;
+    // CRITICAL FIX: Ignore commented-out instructions!
+    if (!node || node->type == OP_OTHER || !reg_name) return false;
 
     // Check if the node explicitly overwrites the destination register
     if (node->has_dst && node->dst_op.mode == MODE_REG) {
@@ -722,7 +723,8 @@ int peephole_shifts(AsmNode *head)
 // HELPER: Robustly check if an instruction READS a specific register
 // ===================================================================
 bool is_register_read(AsmNode *node, const char *reg_name) {
-    if (!node || !reg_name) return false;
+    // CRITICAL FIX: Ignore commented-out instructions!
+    if (!node || node->type == OP_OTHER || !reg_name) return false;
 
     // 1. Check explicit source operand (e.g., MOV R1, R0 reads R0)
     if (node->has_src && node->src_op.mode == MODE_REG) {
@@ -738,7 +740,6 @@ bool is_register_read(AsmNode *node, const char *reg_name) {
     }
 
     // 3. For ALU ops (IADD, ISUB, etc.), destination is READ and WRITTEN (read-modify-write)
-    // e.g., IADD R0, 5 READS R0 before adding 5 to it!
     if (node->type != OP_MOV && node->has_dst && node->dst_op.mode == MODE_REG) {
         if (str_case_eq(node->dst_op.reg, reg_name)) return true;
     }
@@ -765,6 +766,26 @@ bool is_live_out_register(const char *reg_name) {
 }
 
 // ===================================================================
+// HELPER: Check if an instruction is a pure register definition
+// ===================================================================
+bool is_pure_reg_def(AsmNode *node) {
+    // CRITICAL FIX: Ignore instructions that have already been converted to comments!
+    if (!node || node->type == OP_OTHER || !node->has_dst || node->dst_op.mode != MODE_REG) return false;
+
+    // Exclude instructions with architectural side effects
+    if (node->type == OP_PUSH || node->type == OP_POP || node->type == OP_LABEL) return false;
+    if (str_case_eq(node->mnemonic, "CALL") ||
+        str_case_eq(node->mnemonic, "JMP")  ||
+        str_case_eq(node->mnemonic, "CIB")  ||
+        str_case_eq(node->mnemonic, "RET")  ||
+        str_case_eq(node->mnemonic, "HLT")) {
+        return false;
+    }
+
+    return true;
+}
+
+// ===================================================================
 // PEEPHOLE: Dead Store Elimination (DSE) - Upgraded with Liveness!
 // Eliminates register writes overwritten OR dead at function exit.
 // ===================================================================
@@ -775,8 +796,8 @@ int peephole_dead_stores(AsmNode *head)
 
     while (curr)
     {
-        // We only care about pure MOV instructions that define a register
-        if (curr->type == OP_MOV && curr->has_dst && curr->dst_op.mode == MODE_REG)
+        // Check for any pure register definition (MOV, IADD, IMUL, SHL, etc.)
+        if (is_pure_reg_def(curr))
         {
             char *def_reg = curr->dst_op.reg;
 
@@ -809,27 +830,22 @@ int peephole_dead_stores(AsmNode *head)
                         break;
                     }
 
-                    // ----------------------------------------------------
-                    // CRITICAL CHANGE 2: Terminal Dead Store Check
-                    // If we reach a RET instruction, check if def_reg is live-out!
-                    // If it is NOT R0, SP, or BP, nobody will ever read it.
-                    // ----------------------------------------------------
+                    // Terminal Dead Store Check (at RET instruction)
                     if (str_case_eq(scan->mnemonic, "RET"))
                     {
                         if (!is_live_out_register(def_reg)) {
                             curr->type = OP_OTHER;
-                            snprintf(curr->raw, sizeof(curr->raw), "; optimized out terminal dead store: MOV %s", def_reg);
+                            snprintf(curr->raw, sizeof(curr->raw), "; optimized out terminal dead store: %s %s", curr->mnemonic, def_reg);
                             optimizations++;
                         }
-                        break; // Stop scanning after RET
+                        break;
                     }
 
-                    // Standard DSE: Another MOV overwrites our register before it was read
-                    if (scan->type == OP_MOV && scan->has_dst &&
-                        scan->dst_op.mode == MODE_REG && str_case_eq(scan->dst_op.reg, def_reg))
+                    // Standard DSE: Another instruction overwrites our register before it was read
+                    if (is_pure_reg_def(scan) && str_case_eq(scan->dst_op.reg, def_reg))
                     {
                         curr->type = OP_OTHER;
-                        snprintf(curr->raw, sizeof(curr->raw), "; optimized out dead store: MOV %s", def_reg);
+                        snprintf(curr->raw, sizeof(curr->raw), "; optimized out dead store: %s %s", curr->mnemonic, def_reg);
                         optimizations++;
                         break;
                     }
@@ -878,7 +894,7 @@ int peephole_loads(AsmNode *head)
         // If both loads read from the same memory location [reg+offset],
         // the second load can use the first's destination register instead.
         if (n1->src_op.mode == MODE_INDIRECT && n2->src_op.mode == MODE_INDIRECT &&
-            str_case_eq(n1->src_op.reg, n2->src_op.reg) == 0 &&
+            str_case_eq(n1->src_op.reg, n2->src_op.reg) &&
             n1->src_op.offset == n2->src_op.offset)
         {
             // Replace n2's source (memory) with n1's destination (register)
