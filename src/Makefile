@@ -1,0 +1,29 @@
+# --- Toolchain ---
+# You can freely change this to: CC = clang
+CC = gcc
+
+# --- Flags ---
+CFLAGS = -Wall -Wextra -g -DYYDEBUG=1
+CLIBS = -lm
+
+# --- Output Executable ---
+TARGET = ../v32opt
+
+# --- Object Files ---
+# Add runtime_embed.o to your object list
+OBJS = promote.o main.o
+
+# --- Build Rules ---
+all: $(TARGET)
+
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $^
+
+# Rule for standard C files
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -f $(TARGET) $(OBJS)
+
+.PHONY: all clean monorule
