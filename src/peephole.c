@@ -231,41 +231,18 @@ int peephole_algebra(AsmNode *head)
 // HELPER: Check if an instruction modifies a specific register
 // ===================================================================
 bool modifies_register(AsmNode *node, const char *reg_name) {
-    if (!node || !reg_name) return false;
-    if (is_comment_or_empty(node) || node->type == OP_LABEL) return false;
-
-    // 1. Hardware string instructions implicitly mutate DR, SR, and CR
-    if (str_case_eq(node->mnemonic, "MOVS") ||
-        str_case_eq(node->mnemonic, "SETS") ||
-        str_case_eq(node->mnemonic, "CMPS"))
-    {
-        if (str_case_eq(reg_name, "DR") ||
-            str_case_eq(reg_name, "SR") ||
-            str_case_eq(reg_name, "CR")) {
-            return true;
-        }
+    if (!node || !reg_name || !node->meta) return false;
+    
+    int reg_idx = get_reg_index(reg_name);
+    
+    // 1. Check if the instruction implicitly clobbers this register (e.g., CIB on R0, CALL on R0-R13)
+    if (reg_idx >= 0 && (node->meta->implicit_write_mask & (1 << reg_idx))) {
+        return true;
     }
 
-    // 2. Function CALLs clobber volatile scratch registers R0-R13
-    if (str_case_eq(node->mnemonic, "CALL")) {
-        int idx = get_reg_index(reg_name);
-        if (idx >= 0 && idx <= 13) return true;
-    }
-
-    // 3. Hardware IN instructions overwrite their destination register
-    if (str_case_eq(node->mnemonic, "IN")) {
-        if (node->has_dst && node->dst_op.mode == MODE_REG && 
-            str_case_eq(node->dst_op.reg, reg_name)) return true;
-    }
-
-    // 4. Standard explicit destination overwrite check
+    // 2. Check standard explicit destination operand
     if (node->has_dst && node->dst_op.mode == MODE_REG) {
         if (str_case_eq(node->dst_op.reg, reg_name)) return true;
-    }
-
-    // 5. PUSH and POP implicitly modify SP; POP also modifies its destination
-    if (node->type == OP_PUSH || node->type == OP_POP) {
-        if (str_case_eq(reg_name, "SP") || str_case_eq(reg_name, "R15")) return true;
     }
 
     return false;
@@ -278,14 +255,10 @@ bool is_control_flow_boundary(AsmNode *node) {
     if (!node) return true;
     if (node->type == OP_LABEL) return true;
     
-    if (str_case_eq(node->mnemonic, "JMP") ||
-        str_case_eq(node->mnemonic, "JT")  ||
-        str_case_eq(node->mnemonic, "JF")  ||
-        str_case_eq(node->mnemonic, "CALL") ||
-        str_case_eq(node->mnemonic, "RET") ||
-        str_case_eq(node->mnemonic, "HLT")) {
+    if (node->meta && node->meta->is_control_flow) {
         return true;
     }
+    
     return false;
 }
 
@@ -841,50 +814,54 @@ bool is_comment_or_empty(AsmNode *node) {
 // ===================================================================
 // HELPER: Check if an instruction reads a register
 // ===================================================================
+// ===================================================================
+// HELPER: Check if an instruction reads a register (UPGRADED & SAFE)
+// ===================================================================
 bool is_register_read(AsmNode *node, const char *reg_name) {
-    if (!node || !reg_name || reg_name[0] == '\0') return false;
+    if (!node || !reg_name || !node->meta) return false;
+    
+    int target_idx = get_reg_index(reg_name);
 
-    // 1. ARCHITECTURAL GUARD: Check string instructions BEFORE ignoring anything!
-    // String instructions implicitly read (and modify) DR, SR, and CR in hardware.
-    if (is_string_instruction(node)) {
-        if (str_case_eq(reg_name, "DR") ||
-            str_case_eq(reg_name, "SR") ||
-            str_case_eq(reg_name, "CR")) {
+    // 1. Check explicit SOURCE operand (Direct Register Read)
+    if (node->has_src && node->src_op.mode == MODE_REG) {
+        if (str_case_eq(node->src_op.reg, reg_name) || 
+            (target_idx >= 0 && get_reg_index(node->src_op.reg) == target_idx)) {
             return true;
         }
     }
 
-    // 2. Ignore comments, blank lines, or labels
-    if (is_comment_or_empty(node) || node->type == OP_LABEL) return false;
-
-    // 3. Explicit source operand check
-    if (node->has_src && node->src_op.mode == MODE_REG && node->src_op.reg[0] != '\0') {
-        if (str_case_eq(node->src_op.reg, reg_name)) return true;
+    // 2. CRITICAL FIX: Check INDIRECT MEMORY reads in BOTH Source and Destination!
+    // In "MOV [R1], R2" or "MOV R2, [R1+4]", R1 is being READ as a base pointer!
+    if (node->has_src && node->src_op.mode == MODE_INDIRECT) {
+        if (str_case_eq(node->src_op.reg, reg_name) || 
+            (target_idx >= 0 && get_reg_index(node->src_op.reg) == target_idx)) {
+            return true;
+        }
     }
-
-    // 4. Memory dereferences (e.g., MOV R1, [R0] or MOV [R0], R1 both READ pointer R0)
-    if (node->has_src && node->src_op.mode == MODE_INDIRECT && node->src_op.reg[0] != '\0') {
-        if (str_case_eq(node->src_op.reg, reg_name)) return true;
-    }
-    if (node->has_dst && node->dst_op.mode == MODE_INDIRECT && node->dst_op.reg[0] != '\0') {
-        if (str_case_eq(node->dst_op.reg, reg_name)) return true;
-    }
-
-    // 5. CRITICAL FIX: Destination Register Read-Modify-Write / Branch Testing!
-    // If dst_op is a register, it is READ unless the instruction is a pure overwrite (MOV, IN, POP).
-    // This protects math (IADD R1, R2), shifts (SHL R1, 2), and conditional branches (JT R1, label)!
-    if (node->has_dst && node->dst_op.mode == MODE_REG && node->dst_op.reg[0] != '\0') {
-        if (node->type != OP_MOV &&
-            !str_case_eq(node->mnemonic, "IN") &&
-            !str_case_eq(node->mnemonic, "POP")) {
-            if (str_case_eq(node->dst_op.reg, reg_name)) return true;
+    if (node->has_dst && node->dst_op.mode == MODE_INDIRECT) {
+        if (str_case_eq(node->dst_op.reg, reg_name) || 
+            (target_idx >= 0 && get_reg_index(node->dst_op.reg) == target_idx)) {
+            return true;
         }
     }
 
-    // 6. PUSH instructions read whatever register they push onto the stack
-    if (node->type == OP_PUSH) {
-        if (node->has_dst && node->dst_op.mode == MODE_REG && str_case_eq(node->dst_op.reg, reg_name)) return true;
-        if (node->has_src && node->src_op.mode == MODE_REG && str_case_eq(node->src_op.reg, reg_name)) return true;
+    // 3. CRITICAL FIX: 2-Operand ALU & Unary Read-Modify-Write check!
+    // Instructions like IADD, ISUB, AND, SHL, NOT, SIN read dst_op before writing to it!
+    // Only MOV and LEA (among explicit dst instructions) overwrite dst without reading it first.
+    if (node->has_dst && node->dst_op.mode == MODE_REG) {
+        bool is_pure_overwrite = str_case_eq(node->mnemonic, "MOV") || 
+                                 str_case_eq(node->mnemonic, "LEA");
+        if (!is_pure_overwrite) {
+            if (str_case_eq(node->dst_op.reg, reg_name) || 
+                (target_idx >= 0 && get_reg_index(node->dst_op.reg) == target_idx)) {
+                return true;
+            }
+        }
+    }
+
+    // 4. Check implicit hardware reads (e.g., RET reading SP, string ops reading SR/DR/CR)
+    if (target_idx >= 0 && (node->meta->implicit_read_mask & (1 << target_idx))) {
+        return true;
     }
 
     return false;
@@ -950,7 +927,6 @@ int peephole_dead_stores(AsmNode *head)
                         str_case_eq(scan->mnemonic, "JMP") ||
                         str_case_eq(scan->mnemonic, "JT")  ||
                         str_case_eq(scan->mnemonic, "JF")  ||
-                        str_case_eq(scan->mnemonic, "CIB") ||
                         str_case_eq(scan->mnemonic, "CALL") ||
                         str_case_eq(scan->mnemonic, "RET") ||
                         str_case_eq(scan->mnemonic, "HLT")) {

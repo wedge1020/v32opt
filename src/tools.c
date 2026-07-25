@@ -394,3 +394,15 @@ int get_log2(int x) {
     }
     return log;
 }
+
+const InstructionMeta* lookup_instruction_meta(const char *mnemonic) {
+    if (!mnemonic) return NULL;
+
+    int num_insts = sizeof(VIRCON_INST_TABLE) / sizeof(VIRCON_INST_TABLE[0]);
+    for (int i = 0; i < num_insts; i++) {
+        if (str_case_eq(VIRCON_INST_TABLE[i].mnemonic, mnemonic)) {
+            return &VIRCON_INST_TABLE[i];
+        }
+    }
+    return NULL; // Will return NULL for comments, labels, or directives
+}
