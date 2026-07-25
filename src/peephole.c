@@ -360,16 +360,20 @@ int peephole_forwarding(AsmNode *head)
                             str_case_eq(scan->src_op.reg, def_reg))
                         {
                             // ----------------------------------------------------
-                            // ARCHITECTURAL GUARD:
-                            // Vircon32 requires at least one real register (MODE_REG) in MOV/ALU instructions.
-                            // If the downstream instruction's destination is NOT a direct register (e.g., memory),
-                            // we CANNOT forward anything into its source unless what we are forwarding is ALSO a register!
+                            // ARCHITECTURAL GUARD (UPGRADED):
+                            // Check both mode AND raw syntax text ('[' or '_') to prevent
+                            // forwarding non-registers into memory operations, protecting against
+                            // AST parser default zero-initialization (MODE_REG == 0).
                             // ----------------------------------------------------
-                            bool is_illegal_mem_store = (curr->src_op.mode != MODE_REG &&
-                                                         scan->has_dst &&
-                                                         scan->dst_op.mode != MODE_REG);
+                            bool dst_is_mem = (scan->has_dst &&
+                                              (scan->dst_op.mode == MODE_INDIRECT || strchr(scan->dst_op.raw, '[') != NULL));
+                            bool src_is_not_reg = (curr->src_op.mode != MODE_REG ||
+                                                  strchr(curr->src_op.raw, '_') != NULL ||
+                                                  strchr(curr->src_op.raw, '[') != NULL);
 
-                            if (!is_illegal_mem_store) // <-- Using broadened guard
+                            bool is_illegal_mem_store = (dst_is_mem && src_is_not_reg);
+
+                            if (!is_illegal_mem_store) // <-- Using upgraded syntax-aware guard
                             {
                                 scan->src_op = curr->src_op;
 
