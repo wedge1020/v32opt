@@ -901,46 +901,75 @@ int peephole_dead_stores(AsmNode *head)
 }
 
 // ===================================================================
-// PEEPHOLE: Redundant Load Elimination
+// PEEPHOLE: Redundant Load Elimination (Upgraded Forward-Scanning)
 // Replaces a load from an address with a register if the value was
 // just loaded into another register:
-//   - MOV r1, [r2+off]; MOV r3, [r2+off] → MOV r3, r1
+//   - MOV r1, [r2+off]; ... MOV r3, [r2+off] → MOV r3, r1
 // ===================================================================
 int peephole_loads(AsmNode *head)
 {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;
 
-    while (curr && curr->next)
+    while (curr)
     {
-        AsmNode *n1 = curr;
-        AsmNode *n2 = curr->next;
-
-        // Skip if n1 is not a load (MOV from indirect address to register)
-        if (n1->type != OP_MOV || n1->dst_op.mode != MODE_REG)
-        {
+        // CRITICAL FIX: Immediately skip comments, blank lines, and labels!
+        if (curr->type == OP_OTHER || curr->type == OP_LABEL) {
             curr = curr->next;
             continue;
         }
 
-        // Skip if n2 is not also a load
-        if (n2->type != OP_MOV || n2->dst_op.mode != MODE_REG)
+        // Match: An initial load from memory into a register (MOV Reg, [Mem])
+        if (curr->type == OP_MOV &&
+            curr->dst_op.mode == MODE_REG &&
+            curr->src_op.mode == MODE_INDIRECT)
         {
-            curr = curr->next;
-            continue;
-        }
+            char *loaded_reg = curr->dst_op.reg;
+            char *mem_reg    = curr->src_op.reg;
+            int mem_off      = curr->src_op.offset;
 
-        // --- Consecutive Loads from Same Address ---
-        // If both loads read from the same memory location [reg+offset],
-        // the second load can use the first's destination register instead.
-        if (n1->src_op.mode == MODE_INDIRECT && n2->src_op.mode == MODE_INDIRECT &&
-            str_case_eq(n1->src_op.reg, n2->src_op.reg) &&
-            n1->src_op.offset == n2->src_op.offset)
-        {
-            // Replace n2's source (memory) with n1's destination (register)
-            n2->src_op = n1->dst_op;
-            snprintf(n2->raw, sizeof(n2->raw), "    MOV %s, %s", n2->dst_op.raw, n2->src_op.raw);
-            optimizations++;
+            AsmNode *scan = curr->next;
+            while (scan)
+            {
+                if (scan->type == OP_OTHER) {
+                    scan = scan->next;
+                    continue;
+                }
+
+                // 1. Stop at control flow boundaries (labels, jumps, returns)
+                if (is_control_flow_boundary(scan)) break;
+
+                // ----------------------------------------------------
+                // 2. ARCHITECTURAL MEMORY BARRIER:
+                // Abort if MOVS, SETS, or CALL silently mutates memory!
+                // ----------------------------------------------------
+                if (is_global_memory_clobber(scan)) break;
+
+                // 3. Abort if the address pointer or our cached register is overwritten
+                if (modifies_register(scan, mem_reg) || modifies_register(scan, loaded_reg)) break;
+
+                // 4. Abort if ANY direct store writes to memory (to prevent aliasing hazards)
+                if (scan->type == OP_MOV && scan->dst_op.mode == MODE_INDIRECT) {
+                    break;
+                }
+
+                // 5. Match: A downstream load reading from the exact same memory location!
+                if (scan->type == OP_MOV &&
+                    scan->dst_op.mode == MODE_REG &&
+                    scan->src_op.mode == MODE_INDIRECT)
+                {
+                    if (str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset == mem_off)
+                    {
+                        // Rewrite: MOV new_reg, [mem] -> MOV new_reg, loaded_reg
+                        scan->src_op = curr->dst_op;
+                        snprintf(scan->raw, sizeof(scan->raw), "    MOV %s, %s",
+                                 scan->dst_op.raw, scan->src_op.raw);
+                        optimizations++;
+                    }
+                }
+
+                scan = scan->next;
+            }
         }
 
         curr = curr->next;

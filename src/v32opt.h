@@ -184,6 +184,11 @@ bool     is_register_read         (AsmNode *, const char *);
 bool     is_live_out_register     (const char *);
 bool     is_pure_reg_def          (AsmNode *);
 
+// helpers.c
+//
+bool  is_global_memory_clobber (AsmNode *);
+bool  is_global_memory_read    (AsmNode *);
+
 // stack optimizations
 //
 int      omit_frame_pointers      (AsmNode *); // -O2
