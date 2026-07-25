@@ -728,19 +728,32 @@ int peephole_shifts(AsmNode *head)
     return optimizations;
 }
 
-// ===================================================================
-// HELPER: Robustly check if an instruction READS a specific register
-// ===================================================================
+bool is_string_instruction(AsmNode *node) {
+    if (!node || node->type == OP_OTHER) return false;
+    return str_case_eq(node->mnemonic, "MOVS") ||
+           str_case_eq(node->mnemonic, "SETS") ||
+           str_case_eq(node->mnemonic, "CMPS");
+}
+
 bool is_register_read(AsmNode *node, const char *reg_name) {
-    // CRITICAL FIX: Ignore commented-out instructions!
     if (!node || node->type == OP_OTHER || !reg_name) return false;
 
-    // 1. Check explicit source operand (e.g., MOV R1, R0 reads R0)
-    if (node->has_src && node->src_op.mode == MODE_REG) {
-        if (str_case_eq(node->src_op.reg, reg_name)) return true;
+    // 1. VIRCON32 ARCHITECTURAL GUARD:
+    // String instructions implicitly read (and modify) DR, SR, and CR in hardware.
+    if (is_string_instruction(node)) {
+        if (str_case_eq(reg_name, "DR") ||
+            str_case_eq(reg_name, "SR") ||
+            str_case_eq(reg_name, "CR")) {
+            return true; // Immediately stop dead-store elimination from deleting setup MOVs!
+        }
     }
 
-    // 2. Check memory dereferences! (e.g., MOV R1, [R0] or MOV [R0], R1 both READ R0)
+    // 2. Standard explicit operand checks...
+    if (node->has_src && node->src_op.mode == MODE_REG && str_case_eq(node->src_op.reg, reg_name)) {
+        return true;
+    }
+
+    // 3. Check memory dereferences! (e.g., MOV R1, [R0] or MOV [R0], R1 both READ R0)
     if (node->has_src && node->src_op.mode == MODE_INDIRECT) {
         if (str_case_eq(node->src_op.reg, reg_name)) return true;
     }
@@ -748,12 +761,12 @@ bool is_register_read(AsmNode *node, const char *reg_name) {
         if (str_case_eq(node->dst_op.reg, reg_name)) return true;
     }
 
-    // 3. For ALU ops (IADD, ISUB, etc.), destination is READ and WRITTEN (read-modify-write)
+    // 4. For ALU ops (IADD, ISUB, etc.), destination is READ and WRITTEN (read-modify-write)
     if (node->type != OP_MOV && node->has_dst && node->dst_op.mode == MODE_REG) {
         if (str_case_eq(node->dst_op.reg, reg_name)) return true;
     }
 
-    // 4. PUSH instructions read whatever register they are pushing onto the stack
+    // 5. PUSH instructions read whatever register they are pushing onto the stack
     if (node->type == OP_PUSH) {
         if (node->has_dst && node->dst_op.mode == MODE_REG && str_case_eq(node->dst_op.reg, reg_name)) return true;
         if (node->has_src && node->src_op.mode == MODE_REG && str_case_eq(node->src_op.reg, reg_name)) return true;
@@ -780,6 +793,9 @@ bool is_live_out_register(const char *reg_name) {
 bool is_pure_reg_def(AsmNode *node) {
     // CRITICAL FIX: Ignore instructions that have already been converted to comments!
     if (!node || node->type == OP_OTHER || !node->has_dst || node->dst_op.mode != MODE_REG) return false;
+
+    // Explicitly exclude instructions with complex architectural side effects!
+    if (is_string_instruction(node)) return false;
 
     // Exclude instructions with architectural side effects
     if (node->type == OP_PUSH || node->type == OP_POP || node->type == OP_LABEL) return false;
