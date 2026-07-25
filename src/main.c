@@ -371,7 +371,7 @@ int  main (int  argc, char **argv)
 
     if (config.verbose)
 	{
-		fprintf (stdout, "  (%d total enabled)\n", opt_count);
+		fprintf (stdout, "    (%d total enabled)\n", opt_count);
 	}
 
     // -------------------------------------------------------------------
