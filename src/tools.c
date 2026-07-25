@@ -49,13 +49,14 @@ char *trim(char *str) {
 // Returns: true if strings are equal (case-insensitive), false otherwise
 // ===================================================================
 bool str_case_eq(const char *s1, const char *s2) {
-    // Compare character by character (case-insensitive)
+    // CRITICAL ARCHITECTURAL SHIELD: Never segfault on NULL strings!
+    if (!s1 || !s2) return s1 == s2; 
+    
     while (*s1 && *s2) {
         if (toupper((unsigned char)*s1) != toupper((unsigned char)*s2)) 
             return false;
         s1++; s2++;
     }
-    // Both strings must reach end simultaneously
     return *s1 == *s2;
 }
 
