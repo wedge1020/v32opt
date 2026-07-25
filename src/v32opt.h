@@ -168,7 +168,7 @@ int      peephole_jmp_chain      (AsmNode *);
 
 // inline optimization
 //
-int      pass_inline_trivial_functions  (AsmNode *);
+int      inline_trivial_functions  (AsmNode *);
 
 // dead function elimination
 //
