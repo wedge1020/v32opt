@@ -188,6 +188,7 @@ int      omit_frame_pointers      (AsmNode *); // -O2
 
 // stack helpers
 //
+bool     is_reg_op                (AsmNode *, const char *);
 bool     references_bp            (AsmNode *);
 
 // inline optimization

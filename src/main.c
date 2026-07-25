@@ -514,10 +514,6 @@ int  main (int  argc, char **argv)
         if (config.enable_peephole_shifts) {
             sh_opts = peephole_shifts(program_ast);
         }
-        // omit frame pointers
-        if (config.enable_omit_frame_pointers) {
-            sh_opts = omit_frame_pointers(program_ast);
-        }
 
         // ----------------------------------------------------------------
         // 6. Control Flow & Dead Code Cleanup
@@ -528,6 +524,11 @@ int  main (int  argc, char **argv)
         }
         if (config.enable_dce) {
             d_opts = pass_dead_function_elimination(program_ast);
+        }
+
+        // omit frame pointers
+        if (config.enable_omit_frame_pointers) {
+            sh_opts = omit_frame_pointers(program_ast);
         }
 
         // Calculate total optimizations for this pass

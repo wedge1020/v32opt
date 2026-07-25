@@ -1,6 +1,17 @@
 #include "v32opt.h"
 
 // ===================================================================
+// HELPER: Check if a single-operand instruction uses a specific register
+// regardless of whether the parser stored it in dst_op or src_op.
+// ===================================================================
+bool is_reg_op(AsmNode *node, const char *reg_name) {
+    if (!node || !reg_name) return false;
+    if (node->has_dst && str_case_eq(node->dst_op.reg, reg_name)) return true;
+    if (node->has_src && str_case_eq(node->src_op.reg, reg_name)) return true;
+    return false;
+}
+
+// ===================================================================
 // HELPER: Check if an instruction references the BP register
 // ===================================================================
 bool references_bp(AsmNode *node) {
@@ -35,12 +46,13 @@ int omit_frame_pointers (AsmNode *head)
     while (curr)
     {
         // 1. Detect standard Function Prologue: PUSH BP followed by MOV BP, SP
-        if (curr->type == OP_PUSH && curr->has_src && str_case_eq(curr->src_op.reg, "BP"))
+        // Use is_reg_op to handle parsers that store PUSH's operand in dst_op vs src_op
+        if (curr->type == OP_PUSH && is_reg_op(curr, "BP"))
         {
             AsmNode *push_bp = curr;
             AsmNode *mov_bp_sp = push_bp->next;
             
-            // Skip comments/blank lines between PUSH BP and MOV BP, SP
+            // Skip ANY comments/blank lines between PUSH BP and MOV BP, SP
             while (mov_bp_sp && mov_bp_sp->type == OP_OTHER) mov_bp_sp = mov_bp_sp->next;
 
             if (mov_bp_sp && mov_bp_sp->type == OP_MOV && 
@@ -55,14 +67,16 @@ int omit_frame_pointers (AsmNode *head)
                 AsmNode *scan = mov_bp_sp->next;
                 while (scan)
                 {
-                    if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
+                    // CRITICAL FIX: Unconditionally skip ALL OP_OTHER nodes!
+                    // Do not rely on raw[0] == ';', which breaks on leading whitespace.
+                    if (scan->type == OP_OTHER) {
                         scan = scan->next;
                         continue;
                     }
 
                     // If we hit another function label before RET, abort this scan
-                    if (scan->type == OP_LABEL && strncmp(scan->raw, "__function_", 11) == 0 && 
-                        strstr(scan->raw, "_return:") == NULL) {
+                    if (scan->type == OP_LABEL && strstr(scan->raw, "__function_") && 
+                        !strstr(scan->raw, "_return:")) {
                         break;
                     }
 
@@ -75,7 +89,7 @@ int omit_frame_pointers (AsmNode *head)
                         while (next_node && next_node->type == OP_OTHER) next_node = next_node->next;
 
                         if (next_node && next_node->type == OP_POP && 
-                            next_node->has_dst && str_case_eq(next_node->dst_op.reg, "BP"))
+                            is_reg_op(next_node, "BP"))
                         {
                             epilogue_mov = scan;
                             epilogue_pop = next_node;
