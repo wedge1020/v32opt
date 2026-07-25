@@ -838,25 +838,25 @@ bool is_comment_or_empty(AsmNode *node) {
 bool is_register_read(AsmNode *node, const char *reg_name) {
     if (!node || !reg_name || reg_name[0] == '\0') return false;
 
-    // 1. ARCHITECTURAL GUARD: Check string instructions BEFORE ignoring OP_OTHER!
+    // 1. ARCHITECTURAL GUARD: Check string instructions BEFORE ignoring anything!
     // String instructions implicitly read (and modify) DR, SR, and CR in hardware.
     if (is_string_instruction(node)) {
         if (str_case_eq(reg_name, "DR") ||
             str_case_eq(reg_name, "SR") ||
             str_case_eq(reg_name, "CR")) {
-            return true; // Immediately protect setup MOVs!
+            return true;
         }
     }
 
     // 2. Ignore comments, blank lines, or labels
     if (is_comment_or_empty(node) || node->type == OP_LABEL) return false;
 
-    // 3. Explicit operand checks (with safe non-empty string checks)
+    // 3. Explicit source operand check
     if (node->has_src && node->src_op.mode == MODE_REG && node->src_op.reg[0] != '\0') {
         if (str_case_eq(node->src_op.reg, reg_name)) return true;
     }
 
-    // 4. Check memory dereferences (e.g., MOV R1, [R0] or MOV [R0], R1 both READ R0)
+    // 4. Memory dereferences (e.g., MOV R1, [R0] or MOV [R0], R1 both READ pointer R0)
     if (node->has_src && node->src_op.mode == MODE_INDIRECT && node->src_op.reg[0] != '\0') {
         if (str_case_eq(node->src_op.reg, reg_name)) return true;
     }
@@ -864,12 +864,18 @@ bool is_register_read(AsmNode *node, const char *reg_name) {
         if (str_case_eq(node->dst_op.reg, reg_name)) return true;
     }
 
-    // 5. For ALU ops (IADD, ISUB, etc.), destination is READ and WRITTEN (read-modify-write)
-    if (node->type != OP_MOV && node->has_dst && node->dst_op.mode == MODE_REG && node->dst_op.reg[0] != '\0') {
-        if (str_case_eq(node->dst_op.reg, reg_name)) return true;
+    // 5. CRITICAL FIX: Destination Register Read-Modify-Write / Branch Testing!
+    // If dst_op is a register, it is READ unless the instruction is a pure overwrite (MOV, IN, POP).
+    // This protects math (IADD R1, R2), shifts (SHL R1, 2), and conditional branches (JT R1, label)!
+    if (node->has_dst && node->dst_op.mode == MODE_REG && node->dst_op.reg[0] != '\0') {
+        if (node->type != OP_MOV &&
+            !str_case_eq(node->mnemonic, "IN") &&
+            !str_case_eq(node->mnemonic, "POP")) {
+            if (str_case_eq(node->dst_op.reg, reg_name)) return true;
+        }
     }
 
-    // 6. PUSH instructions read whatever register they are pushing onto the stack
+    // 6. PUSH instructions read whatever register they push onto the stack
     if (node->type == OP_PUSH) {
         if (node->has_dst && node->dst_op.mode == MODE_REG && str_case_eq(node->dst_op.reg, reg_name)) return true;
         if (node->has_src && node->src_op.mode == MODE_REG && str_case_eq(node->src_op.reg, reg_name)) return true;
@@ -882,14 +888,20 @@ bool is_register_read(AsmNode *node, const char *reg_name) {
 // HELPER: Check if an instruction is a pure register definition
 // ===================================================================
 bool is_pure_reg_def(AsmNode *node) {
-    // CRITICAL FIX: Must check is_comment_or_empty to avoid infinite loops on optimized-out comments!
     if (!node || is_comment_or_empty(node) || !node->has_dst || node->dst_op.mode != MODE_REG || node->dst_op.reg[0] == '\0') return false;
 
     if (is_string_instruction(node)) return false;
 
+    // Do not treat stack ops, labels, or hardware I/O as dead stores
     if (node->type == OP_PUSH || node->type == OP_POP || node->type == OP_LABEL) return false;
-    if (str_case_eq(node->mnemonic, "CALL") ||
+    if (str_case_eq(node->mnemonic, "IN") || str_case_eq(node->mnemonic, "OUT")) return false;
+
+    // Do not treat branches, calls, or halts as register definitions
+    if (is_control_flow_boundary(node) ||
+        str_case_eq(node->mnemonic, "CALL") ||
         str_case_eq(node->mnemonic, "JMP")  ||
+        str_case_eq(node->mnemonic, "JT")   ||
+        str_case_eq(node->mnemonic, "JF")   ||
         str_case_eq(node->mnemonic, "CIB")  ||
         str_case_eq(node->mnemonic, "RET")  ||
         str_case_eq(node->mnemonic, "HLT")) {
@@ -920,42 +932,47 @@ int peephole_dead_stores(AsmNode *head)
                 AsmNode *scan = curr->next;
                 while (scan)
                 {
-                    // Skip labels, comments, and blank lines safely without skipping MOVS
                     if (is_comment_or_empty(scan) || scan->type == OP_LABEL) {
                         scan = scan->next;
                         continue;
                     }
 
-                    // 1. Hard Boundaries: Stop scanning at jumps, returns, halts, OR function calls!
-                    // (CALL must act as a hard boundary so argument registers aren't deleted as dead stores)
-                    if (str_case_eq(scan->mnemonic, "JMP") ||
+                    // 1. CRITICAL FIX: Stop scanning at ANY control flow boundary!
+                    // This prevents DSE from scanning across JT/JF branches and deleting
+                    // registers that are required on the branched-to path.
+                    if (is_control_flow_boundary(scan) ||
+                        str_case_eq(scan->mnemonic, "JMP") ||
+                        str_case_eq(scan->mnemonic, "JT")  ||
+                        str_case_eq(scan->mnemonic, "JF")  ||
                         str_case_eq(scan->mnemonic, "CIB") ||
                         str_case_eq(scan->mnemonic, "CALL") ||
+                        str_case_eq(scan->mnemonic, "RET") ||
                         str_case_eq(scan->mnemonic, "HLT")) {
-                        break;
+
+                        // Terminal Dead Store Check (at RET instruction)
+                        if (str_case_eq(scan->mnemonic, "RET"))
+                        {
+                            // CRITICAL FIX: Never delete R0 (return value register), SP, or BP at function exit!
+                            if (!str_case_eq(def_reg, "R0") && !str_case_eq(def_reg, "SP") && !str_case_eq(def_reg, "BP")) {
+                                if (!is_live_out_register(def_reg)) {
+                                    curr->type = OP_OTHER;
+                                    curr->has_dst = false;
+                                    curr->has_src = false;
+                                    curr->dst_op.reg[0] = '\0';
+                                    snprintf(curr->raw, sizeof(curr->raw), "; optimized out terminal dead store: %s %s", curr->mnemonic, def_reg);
+                                    optimizations++;
+                                }
+                            }
+                        }
+                        break; // Stop scanning at the boundary!
                     }
 
-                    // 2. If any instruction READS our register (including MOVS reading DR/SR/CR),
-                    // the store is live! Abort scan and keep the MOV.
+                    // 2. If any instruction READS our register, the store is live! Abort scan.
                     if (is_register_read(scan, def_reg)) {
                         break;
                     }
 
-                    // 3. Terminal Dead Store Check (at RET instruction)
-                    if (str_case_eq(scan->mnemonic, "RET"))
-                    {
-                        if (!is_live_out_register(def_reg)) {
-                            curr->type = OP_OTHER;
-                            curr->has_dst = false;
-                            curr->has_src = false;
-                            curr->dst_op.reg[0] = '\0';
-                            snprintf(curr->raw, sizeof(curr->raw), "; optimized out terminal dead store: %s %s", curr->mnemonic, def_reg);
-                            optimizations++;
-                        }
-                        break;
-                    }
-
-                    // 4. Standard DSE: Another instruction overwrites our register before it was read
+                    // 3. Standard DSE: Another instruction overwrites our register before it was read
                     if (is_pure_reg_def(scan) && str_case_eq(scan->dst_op.reg, def_reg))
                     {
                         curr->type = OP_OTHER;
