@@ -27,20 +27,21 @@ int  main (int  argc, char **argv)
 		fprintf(stdout, "                       peephole_immediate_prop, peephole_jump_chain\n");
         fprintf(stdout, "  -O2              Enables second level (could break):\n");
         fprintf(stdout, "                       ALL included in -O1,\n");
-        fprintf(stdout, "                       dce, constant_folding\n");
+        fprintf(stdout, "                       dce, constant_folding,\n");
+        fprintf(stdout, "                       omit_frame_pointers\n");
         fprintf(stdout, "  -O3              Enables aggressive optimizations (could break):\n");
         fprintf(stdout, "                       ALL included in -O1 and -O2,\n");
         fprintf(stdout, "                       inline\n\n");
         fprintf(stdout, "Individual Optimization Toggles:\n");
         fprintf(stdout, "  -fopt_<name>     Enable specific pass (e.g., -fopt_promote_regs)\n");
         fprintf(stdout, "  -fno_opt_<name>  Disable specific pass (e.g., -fno_opt_inline)\n\n");
-        fprintf(stdout, "Available pass names:\n");
+        fprintf(stdout, "Available optimization names:\n");
         fprintf(stdout, "  peephole_pairs, peephole_algebra, peephole_forwarding,\n");
 		fprintf(stdout, "  peephole_jumps, peephole_movs, peephole_immediates,\n");
 		fprintf(stdout, "  peephole_reduce, peephole_shifts, peephole_dead_stores,\n");
 		fprintf(stdout, "  peephole_loads, peephole_immediate_prop, peephole_jump_chain,\n");
         fprintf(stdout, "  inline, dce, constant_folding, promote_regs, promote_leaf,\n");
-        fprintf(stdout, "  promote_loops\n\n");
+        fprintf(stdout, "  promote_loops, omit_frame_pointers\n\n");
         fprintf(stdout, "Diagnostic Flags:\n");
         fprintf(stdout, "  -finline-max=N   Cap the number of inlined CALL sites to N\n");
         fprintf(stdout, "  -fmax_passes=N   Cap the maximum iterative optimization passes to N\n\n");
@@ -76,7 +77,8 @@ int  main (int  argc, char **argv)
         .enable_inline                   = false,
         .enable_promote_regs             = false,
         .enable_promote_leaf             = false,
-        .enable_promote_loops            = false
+        .enable_promote_loops            = false,
+        .enable_omit_frame_pointers      = false
     };
 
     // -------------------------------------------------------------------
@@ -112,6 +114,7 @@ int  main (int  argc, char **argv)
 			config.enable_promote_regs             = false;
 			config.enable_promote_leaf             = false;
 			config.enable_promote_loops            = false;
+			config.enable_omit_frame_pointers      = false;
         } else if (strcmp(argv[i], "-O1") == 0) {
 			config.enable_peephole_pairs           = true;
 			config.enable_peephole_algebra         = true;
@@ -131,6 +134,7 @@ int  main (int  argc, char **argv)
 			config.enable_promote_regs             = false;
 			config.enable_promote_leaf             = false;
 			config.enable_promote_loops            = false;
+			config.enable_omit_frame_pointers      = false;
         } else if (strcmp(argv[i], "-O2") == 0) {
 			config.enable_peephole_pairs           = true;
 			config.enable_peephole_algebra         = true;
@@ -150,6 +154,7 @@ int  main (int  argc, char **argv)
 			config.enable_promote_regs             = false;
 			config.enable_promote_leaf             = false;
 			config.enable_promote_loops            = false;
+			config.enable_omit_frame_pointers      = true;
         } else if (strcmp(argv[i], "-O3") == 0) {
 			config.enable_peephole_pairs           = true;
 			config.enable_peephole_algebra         = true;
@@ -169,6 +174,7 @@ int  main (int  argc, char **argv)
 			config.enable_promote_regs             = false;
 			config.enable_promote_leaf             = false;
 			config.enable_promote_loops            = false;
+			config.enable_omit_frame_pointers      = true;
         } else if (strcmp(argv[i], "-fopt_peephole_pairs")      == 0) {
             config.enable_peephole_pairs           = true;
         } else if (strcmp(argv[i], "-fopt_peephole_algebra")    == 0) {
@@ -197,6 +203,8 @@ int  main (int  argc, char **argv)
             config.enable_dce = true;
         } else if (strcmp(argv[i], "-fopt_constant_folding") == 0) {
             config.enable_constant_folding = true;
+        } else if (strcmp(argv[i], "-fopt_omit_frame_pointers") == 0) {
+			config.enable_omit_frame_pointers      = true;
         } else if (strcmp(argv[i], "-fopt_inline") == 0) {
             config.enable_inline = true;
         } else if (strcmp(argv[i], "-fopt_promote_regs") == 0) {
@@ -227,6 +235,8 @@ int  main (int  argc, char **argv)
             config.enable_dce = false;
         } else if (strcmp(argv[i], "-fno_opt_constant_folding") == 0) {
             config.enable_constant_folding = false;
+        } else if (strcmp(argv[i], "-fno_opt_omit_frame_pointers") == 0) {
+			config.enable_omit_frame_pointers      = false;
         } else if (strcmp(argv[i], "-fno_opt_inline") == 0) {
             config.enable_inline = false;
         } else if (strcmp(argv[i], "-fno_opt_promote_regs") == 0) {
@@ -344,6 +354,12 @@ int  main (int  argc, char **argv)
             fprintf(stdout, "  - constant_folding\n");
 		opt_count++;
 	}
+    if (config.enable_omit_frame_pointers)
+	{
+        if (config.verbose)
+            fprintf(stdout, "  - omit_frame_pointers\n");
+		opt_count++;
+	}
     if (config.enable_inline)
 	{
         if (config.verbose)
@@ -414,6 +430,7 @@ int  main (int  argc, char **argv)
         int j_opts = 0, m_opts = 0, c_opts = 0, s_opts = 0, r_opts = 0;
         int pl_opts = 0, lp_opts = 0;
         int ds_opts = 0, ld_opts = 0, ip_opts = 0, jc_opts = 0, sh_opts = 0;
+		int ofp_opts = 0;
         pass_count++;
 
         // ----------------------------------------------------------------
@@ -497,6 +514,10 @@ int  main (int  argc, char **argv)
         if (config.enable_peephole_shifts) {
             sh_opts = peephole_shifts(program_ast);
         }
+        // omit frame pointers
+        if (config.enable_omit_frame_pointers) {
+            sh_opts = omit_frame_pointers(program_ast);
+        }
 
         // ----------------------------------------------------------------
         // 6. Control Flow & Dead Code Cleanup
@@ -512,7 +533,7 @@ int  main (int  argc, char **argv)
         // Calculate total optimizations for this pass
         opts_in_pass = p_opts + a_opts + f_opts + j_opts + m_opts + c_opts +
                        s_opts + r_opts + pl_opts + lp_opts + i_opts + d_opts +
-                       ds_opts + ld_opts + ip_opts + jc_opts + sh_opts;
+                       ds_opts + ld_opts + ip_opts + jc_opts + sh_opts + ofp_opts;
 
         total_opts += opts_in_pass;
         passes++;
@@ -554,6 +575,8 @@ int  main (int  argc, char **argv)
                 printf("  - promote_loops:           %d\n", lp_opts);
             if (r_opts  > 0)
                 printf("  - promote_regs:            %d\n", r_opts);
+            if (ofp_opts  > 0)
+                printf("  - omit_frame_pointers:     %d\n", ofp_opts);
         }
 
     } while (opts_in_pass > 0 && pass_count < max_passes);
@@ -591,7 +614,7 @@ int  main (int  argc, char **argv)
     do {
         cleanup_opts = 0;
         int c_opts = 0, s_opts = 0, a_opts = 0, p_opts = 0, m_opts = 0, j_opts = 0;
-        int ds_opts = 0, ld_opts = 0, ip_opts = 0, jc_opts = 0, sh_opts = 0;
+        int ds_opts = 0, ld_opts = 0, ip_opts = 0, jc_opts = 0, sh_opts = 0, ofp_opts = 0;
 
         if (config.enable_peephole_immediates)
             c_opts = peephole_immediates(program_ast);
@@ -615,9 +638,11 @@ int  main (int  argc, char **argv)
             jc_opts = peephole_jmp_chain(program_ast);
         if (config.enable_peephole_shifts)
             sh_opts = peephole_shifts(program_ast);
+        if (config.enable_omit_frame_pointers)
+            sh_opts = omit_frame_pointers(program_ast);
 
         cleanup_opts = c_opts + s_opts + a_opts + p_opts + m_opts + j_opts +
-                       ds_opts + ld_opts + ip_opts + jc_opts + sh_opts;
+                       ds_opts + ld_opts + ip_opts + jc_opts + sh_opts + ofp_opts;
         total_opts += cleanup_opts;
 
         if (config.verbose && cleanup_opts > 0) {
@@ -645,6 +670,8 @@ int  main (int  argc, char **argv)
                 printf("  - peephole_jmp_chain:      %d\n", jc_opts);
             if (sh_opts > 0)
                 printf("  - peephole_shifts:         %d\n", sh_opts);
+            if (ofp_opts > 0)
+                printf("  - omit_frame_pointers:     %d\n", ofp_opts);
         }
     } while (cleanup_opts > 0);
 

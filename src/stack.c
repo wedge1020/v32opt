@@ -9,13 +9,13 @@ bool references_bp(AsmNode *node) {
     // Check destination operand for BP or [BP +/- offset]
     if (node->has_dst) {
         if (str_case_eq(node->dst_op.reg, "BP")) return true;
-        if (node->dst_op.raw && strstr(node->dst_op.raw, "BP")) return true;
+        if (node->dst_op.raw[0] != '\0' && strstr(node->dst_op.raw, "BP")) return true;
     }
     
     // Check source operand for BP or [BP +/- offset]
     if (node->has_src) {
         if (str_case_eq(node->src_op.reg, "BP")) return true;
-        if (node->src_op.raw && strstr(node->src_op.raw, "BP")) return true;
+        if (node->src_op.raw[0] != '\0' && strstr(node->src_op.raw, "BP")) return true;
     }
     
     return false;
@@ -27,7 +27,7 @@ bool references_bp(AsmNode *node) {
 // strips the standard prologue (push BP / mov BP, SP) and 
 // epilogue (mov SP, BP / pop BP).
 // ===================================================================
-int optimize_frame_pointers(AsmNode *head)
+int omit_frame_pointers (AsmNode *head)
 {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;

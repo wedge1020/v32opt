@@ -123,6 +123,7 @@ typedef struct {
     bool enable_promote_regs;
     bool enable_promote_leaf;
     bool enable_promote_loops;
+    bool enable_omit_frame_pointers;
 } OptConfig;
 
 extern int g_inline_call_limit;
@@ -183,7 +184,7 @@ bool     is_live_out_register     (const char *);
 
 // stack optimizations
 //
-int      optimize_frame_pointers  (AsmNode *); // -O2
+int      omit_frame_pointers      (AsmNode *); // -O2
 
 // stack helpers
 //
