@@ -127,7 +127,7 @@ static const InstructionMeta VIRCON_INST_TABLE[] = {
 };
 
 typedef enum {
-    OP_MOV, OP_IADD, OP_ISUB, OP_IMUL, OP_IDIV, OP_IEQ, OP_INE, 
+    OP_MOV, OP_IADD, OP_ISUB, OP_IMUL, OP_IDIV, OP_IEQ, OP_INE, OP_IN, 
     OP_CIB, OP_PUSH, OP_POP, OP_BNOT, OP_SHL, OP_SHR, OP_OTHER, OP_LABEL
 } OpType;
 

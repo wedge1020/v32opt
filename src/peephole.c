@@ -800,68 +800,16 @@ bool is_string_instruction(AsmNode *node) {
 bool is_comment_or_empty(AsmNode *node) {
     if (!node) return true;
     if (node->type == OP_LABEL) return false;
+    
+    // CRITICAL FIX: If it is a real instruction type (not OP_OTHER), it is NOT a comment!
+    if (node->type != OP_OTHER) return false;
 
-    // 1. Check if the raw assembly line is commented out or blank
-    if (!node->raw) return true; // Safety guard against NULL pointer
+    if (!node->raw) return true;
     const char *p = node->raw;
     while (*p == ' ' || *p == '\t') p++;
     if (*p == ';' || *p == '\0') return true;
 
-    // 2. If it has no mnemonic (NULL pointer or empty string), treat it as empty
     if (!node->mnemonic || node->mnemonic[0] == '\0') return true;
-
-    return false;
-}
-
-// ===================================================================
-// HELPER: Check if an instruction reads a register (UPGRADED & SAFE)
-// ===================================================================
-bool is_register_read(AsmNode *node, const char *reg_name) {
-    if (!node || !reg_name || !node->meta) return false;
-    
-    int target_idx = get_reg_index(reg_name);
-
-    // 1. Check explicit SOURCE operand (Direct Register Read)
-    if (node->has_src && node->src_op.mode == MODE_REG) {
-        if (str_case_eq(node->src_op.reg, reg_name) || 
-            (target_idx >= 0 && get_reg_index(node->src_op.reg) == target_idx)) {
-            return true;
-        }
-    }
-
-    // 2. CRITICAL FIX: Check INDIRECT MEMORY reads in BOTH Source and Destination!
-    // In "MOV [R1], R2" or "MOV R2, [R1+4]", R1 is being READ as a base pointer!
-    if (node->has_src && node->src_op.mode == MODE_INDIRECT) {
-        if (str_case_eq(node->src_op.reg, reg_name) || 
-            (target_idx >= 0 && get_reg_index(node->src_op.reg) == target_idx)) {
-            return true;
-        }
-    }
-    if (node->has_dst && node->dst_op.mode == MODE_INDIRECT) {
-        if (str_case_eq(node->dst_op.reg, reg_name) || 
-            (target_idx >= 0 && get_reg_index(node->dst_op.reg) == target_idx)) {
-            return true;
-        }
-    }
-
-    // 3. CRITICAL FIX: 2-Operand ALU & Unary Read-Modify-Write check!
-    // Instructions like IADD, ISUB, AND, SHL, NOT, SIN read dst_op before writing to it!
-    // Only MOV and LEA (among explicit dst instructions) overwrite dst without reading it first.
-    if (node->has_dst && node->dst_op.mode == MODE_REG) {
-        bool is_pure_overwrite = str_case_eq(node->mnemonic, "MOV") || 
-                                 str_case_eq(node->mnemonic, "LEA");
-        if (!is_pure_overwrite) {
-            if (str_case_eq(node->dst_op.reg, reg_name) || 
-                (target_idx >= 0 && get_reg_index(node->dst_op.reg) == target_idx)) {
-                return true;
-            }
-        }
-    }
-
-    // 4. Check implicit hardware reads (e.g., RET reading SP, string ops reading SR/DR/CR)
-    if (target_idx >= 0 && (node->meta->implicit_read_mask & (1 << target_idx))) {
-        return true;
-    }
 
     return false;
 }
@@ -870,17 +818,18 @@ bool is_register_read(AsmNode *node, const char *reg_name) {
 // HELPER: Check if an instruction is a pure register definition
 // ===================================================================
 bool is_pure_reg_def(AsmNode *node) {
-    if (!node || is_comment_or_empty(node) || !node->has_dst || 
+    // CRITICAL FIX: Check dst_op.mode directly instead of relying on the has_dst boolean!
+    if (!node || is_comment_or_empty(node) || 
         node->dst_op.mode != MODE_REG || 
         !node->dst_op.reg || node->dst_op.reg[0] == '\0') return false;
 
     if (is_string_instruction(node)) return false;
 
-    // Do not treat stack ops, labels, or hardware I/O as dead stores
     if (node->type == OP_PUSH || node->type == OP_POP || node->type == OP_LABEL) return false;
-    if (str_case_eq(node->mnemonic, "IN") || str_case_eq(node->mnemonic, "OUT")) return false;
+    
+    // Check strings safely for IN/OUT without assuming enums exist
+    if (node->mnemonic && (str_case_eq(node->mnemonic, "IN") || str_case_eq(node->mnemonic, "OUT"))) return false;
 
-    // Do not treat branches, calls, or halts as register definitions
     if (is_control_flow_boundary(node) ||
         str_case_eq(node->mnemonic, "CALL") ||
         str_case_eq(node->mnemonic, "JMP")  ||
@@ -892,6 +841,61 @@ bool is_pure_reg_def(AsmNode *node) {
     }
 
     return true;
+}
+
+// ===================================================================
+// HELPER: Check if an instruction reads a register (UPGRADED & SAFE)
+// ===================================================================
+bool is_register_read(AsmNode *node, const char *reg_name) {
+    if (!node || !reg_name) return false;
+    
+    int target_idx = get_reg_index(reg_name);
+
+    // 1. Check explicit SOURCE operand (Direct Register Read)
+    if (node->src_op.mode == MODE_REG) {
+        if (str_case_eq(node->src_op.reg, reg_name) || 
+            (target_idx >= 0 && get_reg_index(node->src_op.reg) == target_idx)) {
+            return true;
+        }
+    }
+
+    // 2. Check INDIRECT MEMORY reads in BOTH Source and Destination!
+    if (node->src_op.mode == MODE_INDIRECT) {
+        if (str_case_eq(node->src_op.reg, reg_name) || 
+            (target_idx >= 0 && get_reg_index(node->src_op.reg) == target_idx)) {
+            return true;
+        }
+    }
+    if (node->dst_op.mode == MODE_INDIRECT) {
+        if (str_case_eq(node->dst_op.reg, reg_name) || 
+            (target_idx >= 0 && get_reg_index(node->dst_op.reg) == target_idx)) {
+            return true;
+        }
+    }
+
+    // 3. 2-Operand ALU & Unary Read-Modify-Write check!
+    if (node->dst_op.mode == MODE_REG) {
+        // Only MOV, POP, and IN are pure overwrites!
+        bool is_pure_overwrite = (node->type == OP_MOV) || 
+                                 (node->type == OP_POP) || 
+                                 (node->mnemonic && (str_case_eq(node->mnemonic, "MOV") || 
+                                                     str_case_eq(node->mnemonic, "POP") || 
+                                                     str_case_eq(node->mnemonic, "IN")));
+        
+        if (!is_pure_overwrite) {
+            if (str_case_eq(node->dst_op.reg, reg_name) || 
+                (target_idx >= 0 && get_reg_index(node->dst_op.reg) == target_idx)) {
+                return true;
+            }
+        }
+    }
+
+    // 4. Check implicit hardware reads (Only if metadata struct is present!)
+    if (node->meta && target_idx >= 0) {
+        if (node->meta->implicit_read_mask & (1 << target_idx)) return true;
+    }
+
+    return false;
 }
 
 // ===================================================================
