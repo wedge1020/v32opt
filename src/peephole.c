@@ -474,10 +474,11 @@ int peephole_jumps(AsmNode *head)
 }
 
 // ===================================================================
-// PEEPHOLE: Redundant & Mirror Move Elimination
-// Removes redundant MOV pairs:
-//   - MOV r1, X; MOV r1, X → remove second MOV
-//   - MOV r1, r2; MOV r2, r1 → remove second MOV (mirror)
+// PEEPHOLE: Redundant & Mirror Move Elimination (Upgraded Forward-Scanning)
+// Eliminates redundant MOV instructions across basic blocks:
+//   - Duplicate Moves: MOV r1, X; ... MOV r1, X
+//   - Mirror Moves:    MOV r1, r2; ... MOV r2, r1
+//   - Load-to-Store:   MOV r1, [mem]; ... MOV [mem], r1
 // ===================================================================
 int peephole_movs(AsmNode *head)
 {
@@ -488,50 +489,83 @@ int peephole_movs(AsmNode *head)
     {
         if (curr->type == OP_MOV)
         {
-            // Skip over comments/blank lines to find the next real instruction
-            AsmNode *n2 = curr->next;
+            // Check for self-referential load (e.g. MOV R1, [R1])
+            bool self_referential_load =
+                (curr->src_op.mode == MODE_INDIRECT) &&
+                str_case_eq(curr->src_op.reg, curr->dst_op.reg);
 
-            // For fast-forwarding a pointer to the next real instruction:
-            while (n2 && n2->type == OP_OTHER) {
-                n2 = n2->next;
-            }
-
-            if (!n2) break;
-
-            if (n2->type == OP_MOV)
+            AsmNode *scan = curr->next;
+            while (scan)
             {
-                // --- Self-Referential Load Check ---
-                // If the first MOV loads from [r1] into r1, we cannot eliminate
-                // the second MOV even if it uses r1, because the value might change.
-                bool self_referential_load =
-                    (curr->src_op.mode == MODE_INDIRECT) &&
-                    str_case_eq(curr->src_op.reg, curr->dst_op.reg);
+                if (scan->type == OP_OTHER || scan->type == OP_LABEL) {
+                    scan = scan->next;
+                    continue;
+                }
 
-                // --- Duplicate Move Elimination ---
-                // MOV r1, X; MOV r1, X → second MOV is redundant
+                // Stop at control flow boundaries or global memory clobbers
+                if (is_control_flow_boundary(scan)) break;
+                if (is_global_memory_clobber(scan)) break;
+
+                // --- 1. Duplicate Move Elimination ---
+                // MOV dst, src; ... MOV dst, src
                 if (!self_referential_load &&
-                    str_case_eq(curr->dst_op.raw, n2->dst_op.raw) &&
-                    str_case_eq(curr->src_op.raw, n2->src_op.raw))
+                    scan->type == OP_MOV &&
+                    str_case_eq(curr->dst_op.raw, scan->dst_op.raw) &&
+                    str_case_eq(curr->src_op.raw, scan->src_op.raw))
                 {
-                    remove_node(n2);
+                    AsmNode *to_remove = scan;
+                    scan = scan->next;
+                    remove_node(to_remove);
                     optimizations++;
                     continue;
                 }
 
-                // --- Mirror Move Elimination ---
-                // MOV r1, r2; MOV r2, r1 → second MOV is redundant
-                // (swapping the same two registers twice restores original state)
+                // --- 2. Mirror Move Elimination ---
+                // MOV r1, r2; ... MOV r2, r1
                 if (curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_REG &&
-                    n2->dst_op.mode == MODE_REG && n2->src_op.mode == MODE_REG)
+                    scan->type == OP_MOV &&
+                    scan->dst_op.mode == MODE_REG && scan->src_op.mode == MODE_REG)
                 {
-                    if (str_case_eq(curr->dst_op.reg, n2->src_op.reg) &&
-                        str_case_eq(curr->src_op.reg, n2->dst_op.reg))
+                    if (str_case_eq(curr->dst_op.reg, scan->src_op.reg) &&
+                        str_case_eq(curr->src_op.reg, scan->dst_op.reg))
                     {
-                        remove_node(n2);
+                        AsmNode *to_remove = scan;
+                        scan = scan->next;
+                        remove_node(to_remove);
                         optimizations++;
                         continue;
                     }
                 }
+
+                // --- 3. Load-to-Store Elimination ---
+                // MOV r1, [mem]; ... MOV [mem], r1
+                if (curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_INDIRECT &&
+                    scan->type == OP_MOV &&
+                    scan->dst_op.mode == MODE_INDIRECT && scan->src_op.mode == MODE_REG)
+                {
+                    if (str_case_eq(curr->dst_op.reg, scan->src_op.reg) &&
+                        str_case_eq(curr->src_op.reg, scan->dst_op.reg) &&
+                        curr->src_op.offset == scan->dst_op.offset)
+                    {
+                        AsmNode *to_remove = scan;
+                        scan = scan->next;
+                        remove_node(to_remove);
+                        optimizations++;
+                        continue;
+                    }
+                }
+
+                // Abort scanning if either operand of curr is modified downstream
+                if (curr->dst_op.mode == MODE_REG && modifies_register(scan, curr->dst_op.reg)) break;
+                if (curr->src_op.mode == MODE_REG && modifies_register(scan, curr->src_op.reg)) break;
+                
+                // If curr involves memory, abort if ANY direct store writes to memory
+                if ((curr->dst_op.mode == MODE_INDIRECT || curr->src_op.mode == MODE_INDIRECT) &&
+                    scan->type == OP_MOV && scan->dst_op.mode == MODE_INDIRECT) {
+                    break;
+                }
+
+                scan = scan->next;
             }
         }
         curr = curr->next;
@@ -813,13 +847,11 @@ bool is_live_out_register(const char *reg_name) {
 // HELPER: Check if an instruction is a pure register definition
 // ===================================================================
 bool is_pure_reg_def(AsmNode *node) {
-    // CRITICAL FIX: Ignore instructions that have already been converted to comments!
-    if (!node || node->type == OP_OTHER || !node->has_dst || node->dst_op.mode != MODE_REG) return false;
+    // CRITICAL FIX: Removed reliance on node->has_dst so MOV instructions are never ignored!
+    if (!node || node->type == OP_OTHER || node->dst_op.mode != MODE_REG) return false;
 
-    // Explicitly exclude instructions with complex architectural side effects!
     if (is_string_instruction(node)) return false;
 
-    // Exclude instructions with architectural side effects
     if (node->type == OP_PUSH || node->type == OP_POP || node->type == OP_LABEL) return false;
     if (str_case_eq(node->mnemonic, "CALL") ||
         str_case_eq(node->mnemonic, "JMP")  ||
@@ -834,7 +866,7 @@ bool is_pure_reg_def(AsmNode *node) {
 
 // ===================================================================
 // PEEPHOLE: Dead Store Elimination (DSE) - Upgraded with Liveness!
-// Eliminates register writes overwritten OR dead at function exit.
+// Eliminates register writes overwritten OR dead at function exit/calls.
 // ===================================================================
 int peephole_dead_stores(AsmNode *head)
 {
@@ -843,7 +875,6 @@ int peephole_dead_stores(AsmNode *head)
 
     while (curr)
     {
-        // Check for any pure register definition (MOV, IADD, IMUL, SHL, etc.)
         if (is_pure_reg_def(curr))
         {
             char *def_reg = curr->dst_op.reg;
@@ -859,15 +890,9 @@ int peephole_dead_stores(AsmNode *head)
                         continue;
                     }
 
-                    // ----------------------------------------------------
-                    // CRITICAL CHANGE 1:
-                    // Do NOT break on OP_LABEL! It is mathematically safe to scan
-                    // across labels for dead stores as long as we check reads.
-                    // Only break on branching jumps (JMP, CIB) or function calls.
-                    // ----------------------------------------------------
+                    // Only break on actual branching jumps or halt
                     if (str_case_eq(scan->mnemonic, "JMP") ||
                         str_case_eq(scan->mnemonic, "CIB") ||
-                        str_case_eq(scan->mnemonic, "CALL") ||
                         str_case_eq(scan->mnemonic, "HLT")) {
                         break;
                     }
@@ -883,6 +908,22 @@ int peephole_dead_stores(AsmNode *head)
                         if (!is_live_out_register(def_reg)) {
                             curr->type = OP_OTHER;
                             snprintf(curr->raw, sizeof(curr->raw), "; optimized out terminal dead store: %s %s", curr->mnemonic, def_reg);
+                            optimizations++;
+                        }
+                        break;
+                    }
+
+                    // ----------------------------------------------------
+                    // CRITICAL FIX: CALL Clobber Dead Store Check!
+                    // In Vircon32, CALL clobbers R1-R13. If def_reg is a scratch
+                    // register and wasn't read before the CALL, the store is dead!
+                    // ----------------------------------------------------
+                    if (str_case_eq(scan->mnemonic, "CALL"))
+                    {
+                        int idx = get_reg_index(def_reg);
+                        if (idx >= 1 && idx <= 13) {
+                            curr->type = OP_OTHER;
+                            snprintf(curr->raw, sizeof(curr->raw), "; optimized out call-clobbered dead store: %s %s", curr->mnemonic, def_reg);
                             optimizations++;
                         }
                         break;
