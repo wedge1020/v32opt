@@ -220,7 +220,45 @@ v32opt <input.asm> [-o output.asm] [options]
 | `-v` | **Verbose Mode** | Displays detailed pass statistics and optimization counts per iteration. |
 | `--dot <file>` | **CFG Export** | Exports the Control Flow Graph to a Graphviz `.dot` file for visualization. |
 
-### Individual Pass Control
+### Optimization Tier Philosophy & Debugging Considerations
+
+In `v32opt`, optimization  tiers are separated not just by  how much they
+shrink  the binary,  but  by their  computational complexity,  structural
+impact, and debugging ergonomics:
+
+*  **`-O1` (Local  Peepholes):**  Operates on  sliding  windows of  1–3
+instructions.  These  are stateless,  linear-time  passes  that clean  up
+obvious  compiler  artifacts  with  zero risk  to  program  semantics  or
+debugging ergonomics.
+
+* **`-O2`  (Global Analysis  & Structural Cleanup):**  Introduces Control
+Flow  Graphs  (CFG), program-wide  data-flow  tracking,  and stack  frame
+modifications.  These  passes  analyze  entire blocks  and  functions  to
+eliminate  unreachable  code,  fold  constants across  jumps,  and  strip
+redundant overhead.
+
+* **`-O3` (Aggressive  Interprocedural Transformations):** Makes sweeping
+architectural  modifications—such  as  function  inlining—that  trade
+binary  size  for  execution   velocity  and  completely  erase  function
+boundaries.
+
+#### Why Frame Pointer Elimination lives in `-O2`
+
+From  a  pure  compiler  design perspective,  Frame  Pointer  Elimination
+(`omit_frame_pointers`)  looks like  a  textbook  `-O1` optimization:  it
+requires only a  fast linear scan, it *always*  reduces instruction count
+and binary size,  and it offers immediate execution speed  gains for leaf
+functions.
+
+However,  we   deliberately  promote  it  to   `-O2`.  Standard  function
+prologues (`PUSH  BP` followed by  `MOV BP,  SP`) create a  stable linked
+list  of  stack frames  in  memory.  When  frame pointers  are  stripped,
+emulators  and  debuggers  can  no  longer walk  backward  from  `BP`  to
+generate clean  call-stack backtraces during runtime  crashes. By placing
+`omit_frame_pointers` in `-O2`, `-O1` remains a high-performance yet 100%
+"debug-safe" tier!
+
+### Individual Optimization Control
 
 You can enable or disable specific passes granularly using `-fopt_<name>`
 and `-fno_opt_<name>`:
@@ -255,15 +293,15 @@ destructive comparison (`IEQ`/`INE`,  which already leave a  clean `0` or
 zero-net-effect stack operations (`PUSH`/`POP`).
 
 ```vircon32
-; BEFORE                             ; AFTER
-IEQ R1, R2                           IEQ R1, R2
-CIB R1                               ; (CIB removed: IEQ already outputs 0 or 1)
+; BEFORE                 ; AFTER
+IEQ R1, R2               IEQ R1, R2
+CIB R1                   ; (CIB removed: IEQ already outputs 0 or 1)
 
 BNOT R3
-BNOT R3                              ; (Double negation cancelled out)
+BNOT R3                  ; (Double negation cancelled out)
 
 PUSH R4
-POP R4                               ; (PUSH/POP pair removed)
+POP R4                   ; (PUSH/POP pair removed)
 ```
 
 For  those  that understand  assembly,  you  should  see that  these  are
@@ -483,11 +521,36 @@ block_2:                             block_2:
     MOV R2, R1                           MOV R2, 0xA
 ```
 
+### 15. Frame Pointer Elimination (`omit_frame_pointers`)
+
+Scans  entire function  bodies to  verify  if the  Base Pointer  register
+(`BP`)  is ever  referenced or  dereferenced by  instructions within  the
+function. In  functions where `BP`  is never  touched (such as  leaf math
+helpers, getters,  or functions utilizing only  general-purpose registers
+`R0–R15`),  it completely  eliminates  the  standard function  prologue
+(`PUSH BP`, `MOV BP, SP`) and epilogue (`MOV SP, BP`, `POP BP`).
+
+This  strips  4  redundant  stack  and  memory  instructions  from  every
+invocation, noticeably reducing cycle overhead and shrinking total binary
+footprint without altering register logic.
+
+```vircon32
+; BEFORE                 ; AFTER
+__function_add:          __function_add:
+    PUSH BP                  ; (Prologue frame setup removed)
+    MOV BP, SP               ;
+    IADD R1, R2              IADD R1, R2
+    MOV R0, R1               MOV R0, R1
+    MOV SP, BP               ; (Epilogue frame teardown removed)
+    POP BP                   ;
+    RET                      RET
+```
+
 ---
 
 ## Phase 3: Interprocedural Inlining (`-O3`)
 
-### 15. Function Inlining (`inline`)
+### 16. Function Inlining (`inline`)
 
 Identifies trivial functions (short  execution lengths and simple control
 flow) and replaces their `CALL`  sites directly with the function's body.
@@ -520,7 +583,7 @@ up  and  tear down  of  a  function). But  it  also  is considered  quite
 > `-O1`/`-O2`/`-O3` optimization levels  while undergoing testing. Enable
 > them explicitly using individual `-fopt_` toggles.
 
-### 16. Stack Slot Promotion (`promote_regs` / `promote_leaf`)
+### 17. Stack Slot Promotion (`promote_regs` / `promote_leaf`)
 
 Performs  scalar  replacement  of  aggregates on  the  stack.  In  **leaf
 functions** (functions that make no `CALL`s and never take the address of
@@ -550,7 +613,7 @@ As you can  see in this (short) example, it  actually makes the footprint
 of code  larger, but if the  core action is  more than just a  few lines,
 this can start to offer real benefit.
 
-### 17. Loop-Invariant Register Promotion (`promote_loops`)
+### 18. Loop-Invariant Register Promotion (`promote_loops`)
 
 Targets call-free loops (`__for_start`, `__while_start`) to promote stack
 variables  referenced  inside the  loop  body  into CPU  registers.  This
