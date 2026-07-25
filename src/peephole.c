@@ -8,13 +8,18 @@
 // code without global analysis.
 // -------------------------------------------------------------------
 // 
-// peephole_pairs()      - adjacent instruction pair elimination
-// peephole_algebra()    - algebraic simplifications
-// peephole_forwarding() - store-to-load forwarding
-// peephole_jumps()      - redundant jump elimination
-// peephole_movs()       - redundant MOV elimination
-// peephole_immediates() - combine immediates
-// peephole_reduce()     - strength reduction
+// peephole_pairs()          - adjacent instruction pair elimination
+// peephole_algebra()        - algebraic simplifications
+// peephole_forwarding()     - store-to-load forwarding
+// peephole_jumps()          - redundant jump elimination
+// peephole_movs()           - redundant MOV elimination
+// peephole_immediates()     - combine immediates
+// peephole_reduce()         - strength reduction
+// peephole_shifts()         - shift optimizations
+// peephole_dead_stores()    - dead store elimination
+// peephole_loads()          - redundant load elimination
+// peephole_immediate_prop() - immediate propagation
+// peephole_jmp_chain()      - jump chain elimination
 //
 ////////////////////////////////////////////////////////////////////////////////////////
 
@@ -395,6 +400,250 @@ int peephole_reduce(AsmNode *head)
             }
         }
 
+        curr = curr->next;
+    }
+    return optimizations;
+}
+
+// ===================================================================
+// PEEPHOLE: Shift Optimizations
+//   - SHL/SHR r, 0 → remove (no-op)
+//   - SHL r, 1 → IADD r, r (strength reduction)
+// ===================================================================
+// ===================================================================
+// PEEPHOLE: Shift Optimizations
+//   - SHL r, 0 → remove (no-op; applies to both left and right shifts)
+//   - SHL r, 1 → IADD r, r (strength reduction for left shift by 1)
+//   - SHL r, -1 → right shift by 1; left unchanged (no cheaper equivalent)
+// ===================================================================
+int peephole_shifts(AsmNode *head)
+{
+    int optimizations = 0;
+    AsmNode *curr = head ? head->next : NULL;
+
+    while (curr)
+    {
+        if (curr->type == OP_SHL &&
+            curr->dst_op.mode == MODE_REG &&
+            curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float)
+        {
+            int shift = curr->src_op.immediate;
+            if (shift == 0)
+            {
+                // SHL by 0 is a no-op (left or right shift by 0 does nothing)
+                AsmNode *to_remove = curr;
+                curr = curr->next;
+                remove_node(to_remove);
+                optimizations++;
+                continue;
+            }
+            else if (shift == 1)
+            {
+                // Left shift by 1 → IADD r, r
+                curr->type = OP_IADD;
+                safe_str_copy(curr->mnemonic, "IADD", sizeof(curr->mnemonic));
+                curr->src_op = curr->dst_op;
+                snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%s", curr->dst_op.raw);
+                snprintf(curr->raw, sizeof(curr->raw), "    IADD %s, %s", curr->dst_op.raw, curr->src_op.raw);
+                optimizations++;
+            }
+            // Note: SHL r, -1 is a right shift by 1.
+            // Could optimize to IDIV r, 2 if that's cheaper on Vircon32,
+            // but without knowing relative costs, we leave it as-is.
+        }
+        curr = curr->next;
+    }
+    return optimizations;
+}
+
+// ===================================================================
+// PEEPHOLE: Dead Store Elimination
+// Removes stores that are immediately overwritten to the same address:
+//   - MOV [r1+off], r2; MOV [r1+off], r3 → remove first MOV
+// ===================================================================
+int peephole_dead_stores(AsmNode *head)
+{
+    int optimizations = 0;
+    AsmNode *curr = head ? head->next : NULL;
+
+    while (curr && curr->next)
+    {
+        AsmNode *n1 = curr;
+        AsmNode *n2 = curr->next;
+
+        // Skip non-MOV or non-indirect destinations
+        if (n1->type != OP_MOV || n1->dst_op.mode != MODE_INDIRECT)
+        {
+            curr = curr->next;
+            continue;
+        }
+
+        // Skip if n2 is not a MOV with indirect destination
+        if (n2->type != OP_MOV || n2->dst_op.mode != MODE_INDIRECT)
+        {
+            curr = curr->next;
+            continue;
+        }
+
+        // Check if both stores target the same memory location
+        if (str_case_eq(n1->dst_op.reg, n2->dst_op.reg) == 0 &&
+            n1->dst_op.offset == n2->dst_op.offset)
+        {
+            remove_node(n1);
+            optimizations++;
+            curr = n2; // Skip n2 in next iteration (it's now the first of the pair)
+            continue;
+        }
+
+        curr = curr->next;
+    }
+    return optimizations;
+}
+
+// ===================================================================
+// PEEPHOLE: Redundant Load Elimination
+// Replaces a load from an address with a register if the value was
+// just loaded into another register:
+//   - MOV r1, [r2+off]; MOV r3, [r2+off] → MOV r3, r1
+// ===================================================================
+int peephole_loads(AsmNode *head)
+{
+    int optimizations = 0;
+    AsmNode *curr = head ? head->next : NULL;
+
+    while (curr && curr->next)
+    {
+        AsmNode *n1 = curr;
+        AsmNode *n2 = curr->next;
+
+        // Skip non-MOV or non-register destinations
+        if (n1->type != OP_MOV || n1->dst_op.mode != MODE_REG)
+        {
+            curr = curr->next;
+            continue;
+        }
+
+        // Skip if n2 is not a MOV with register destination
+        if (n2->type != OP_MOV || n2->dst_op.mode != MODE_REG)
+        {
+            curr = curr->next;
+            continue;
+        }
+
+        // Check if both loads are from the same memory location
+        if (n1->src_op.mode == MODE_INDIRECT && n2->src_op.mode == MODE_INDIRECT &&
+            str_case_eq(n1->src_op.reg, n2->src_op.reg) == 0 &&
+            n1->src_op.offset == n2->src_op.offset)
+        {
+            // Replace n2's source with n1's destination register
+            n2->src_op = n1->dst_op;
+            snprintf(n2->raw, sizeof(n2->raw), "    MOV %s, %s", n2->dst_op.raw, n2->src_op.raw);
+            optimizations++;
+        }
+
+        curr = curr->next;
+    }
+    return optimizations;
+}
+
+// ===================================================================
+// PEEPHOLE: Immediate Propagation
+// Propagates immediate values through MOV into subsequent ops:
+//   - MOV r1, 5; IADD r2, r1 → IADD r2, 5
+//   - MOV r1, 5; ISUB r2, r1 → ISUB r2, 5
+//   - MOV r1, 5; MOV r2, r1 → MOV r2, 5
+// ===================================================================
+int peephole_immediate_prop(AsmNode *head)
+{
+    int optimizations = 0;
+    AsmNode *curr = head ? head->next : NULL;
+
+    while (curr && curr->next)
+    {
+        AsmNode *n1 = curr;
+        AsmNode *n2 = curr->next;
+
+        // Skip if n1 is not MOV with immediate source
+        if (n1->type != OP_MOV || n1->src_op.mode != MODE_IMMEDIATE)
+        {
+            curr = curr->next;
+            continue;
+        }
+
+        // Check if n2 uses n1's destination register as source
+        if (n2->src_op.mode == MODE_REG &&
+            str_case_eq(n2->src_op.reg, n1->dst_op.reg) == 0)
+        {
+            // Propagate the immediate value into n2
+            if (n2->type == OP_IADD || n2->type == OP_ISUB || n2->type == OP_IMUL || n2->type == OP_IDIV)
+            {
+                n2->src_op = n1->src_op;
+                snprintf(n2->src_op.raw, sizeof(n2->src_op.raw), "%d", n2->src_op.immediate);
+                snprintf(n2->raw, sizeof(n2->raw), "    %s %s, %s",
+                         n2->mnemonic, n2->dst_op.raw, n2->src_op.raw);
+                optimizations++;
+            }
+            else if (n2->type == OP_MOV)
+            {
+                // MOV r1, 5; MOV r2, r1 → MOV r2, 5
+                n2->src_op = n1->src_op;
+                snprintf(n2->src_op.raw, sizeof(n2->src_op.raw), "%d", n2->src_op.immediate);
+                snprintf(n2->raw, sizeof(n2->raw), "    MOV %s, %d", n2->dst_op.raw, n2->src_op.immediate);
+                optimizations++;
+            }
+        }
+
+        curr = curr->next;
+    }
+    return optimizations;
+}
+
+// ===================================================================
+// PEEPHOLE: Jump Chain Elimination
+// Chains consecutive jumps to avoid indirection:
+//   - JMP L1; L1: JMP L2 → JMP L2
+// ===================================================================
+int peephole_jmp_chain(AsmNode *head)
+{
+    int optimizations = 0;
+    AsmNode *curr = head ? head->next : NULL;
+
+    while (curr && curr->next)
+    {
+        if (str_case_eq(curr->mnemonic, "JMP"))
+        {
+            // Find the target label of the JMP
+            AsmNode *target = curr->next;
+            while (target && target->type == OP_OTHER &&
+                  (target->raw[0] == '\0' || target->raw[0] == ';'))
+            {
+                target = target->next;
+            }
+
+            // Check if the next non-comment node is a label
+            if (target && target->type == OP_LABEL)
+            {
+                // Check if the label's next non-comment node is another JMP
+                AsmNode *next_after_label = target->next;
+                while (next_after_label && next_after_label->type == OP_OTHER &&
+                      (next_after_label->raw[0] == '\0' || next_after_label->raw[0] == ';'))
+                {
+                    next_after_label = next_after_label->next;
+                }
+
+                if (next_after_label && str_case_eq(next_after_label->mnemonic, "JMP"))
+                {
+                    // Replace curr's target with next_after_label's target
+                    safe_str_copy(curr->dst_op.raw, next_after_label->dst_op.raw, sizeof(curr->dst_op.raw));
+                    snprintf(curr->raw, sizeof(curr->raw), "    JMP %s", curr->dst_op.raw);
+
+                    // Remove the label and the chained JMP
+                    remove_node(target);
+                    remove_node(next_after_label);
+                    optimizations += 2;
+                }
+            }
+        }
         curr = curr->next;
     }
     return optimizations;

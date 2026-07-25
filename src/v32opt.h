@@ -153,13 +153,18 @@ void     write_vircon32_asm (const char *, AsmNode *);
 //
 // peephole optimizations
 //
-int      peephole_pairs      (AsmNode *);
-int      peephole_algebra    (AsmNode *);
-int      peephole_forwarding (AsmNode *);
-int      peephole_jumps      (AsmNode *);
-int      peephole_movs       (AsmNode *);
-int      peephole_immediates (AsmNode *);
-int      peephole_reduce     (AsmNode *);
+int      peephole_pairs          (AsmNode *);
+int      peephole_algebra        (AsmNode *);
+int      peephole_forwarding     (AsmNode *);
+int      peephole_jumps          (AsmNode *);
+int      peephole_movs           (AsmNode *);
+int      peephole_immediates     (AsmNode *);
+int      peephole_reduce         (AsmNode *);
+int      peephole_shifts         (AsmNode *);
+int      peephole_dead_stores    (AsmNode *);
+int      peephole_loads          (AsmNode *);
+int      peephole_immediate_prop (AsmNode *);
+int      peephole_jmp_chain      (AsmNode *);
 
 // inline optimization
 //
