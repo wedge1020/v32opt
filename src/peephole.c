@@ -156,11 +156,185 @@ int peephole_algebra(AsmNode *head)
 }
 
 // ===================================================================
+// HELPER: Check if an instruction modifies a specific register
+// ===================================================================
+bool modifies_register(AsmNode *node, const char *reg_name) {
+    if (!node || !reg_name) return false;
+
+    // Check if the node explicitly overwrites the destination register
+    if (node->has_dst && node->dst_op.mode == MODE_REG) {
+        if (str_case_eq(node->dst_op.reg, reg_name)) return true;
+    }
+
+    // PUSH and POP implicitly modify SP; POP also modifies its destination
+    if (node->type == OP_PUSH || node->type == OP_POP) {
+        if (str_case_eq(reg_name, "SP") || str_case_eq(reg_name, "R15")) return true;
+    }
+
+    // In Vircon32, function CALLs clobber volatile scratch registers R0-R13
+    if (str_case_eq(node->mnemonic, "CALL")) {
+        int idx = get_reg_index(reg_name);
+        if (idx >= 0 && idx <= 13) return true;
+    }
+
+    return false;
+}
+
+// ===================================================================
+// HELPER: Check if an instruction breaks a basic block (control flow)
+// ===================================================================
+bool is_control_flow_boundary(AsmNode *node) {
+    if (!node) return true;
+    if (node->type == OP_LABEL) return true;
+    if (str_case_eq(node->mnemonic, "JMP") ||
+        str_case_eq(node->mnemonic, "CIB") ||
+        str_case_eq(node->mnemonic, "RET") ||
+        str_case_eq(node->mnemonic, "HLT")) {
+        return true;
+    }
+    return false;
+}
+
+// ===================================================================
+// PEEPHOLE: Forward-Scanning Store & Copy Propagation
+// Scans forward within basic blocks to forward:
+//   1. Store-to-Load: MOV [mem], R1; ... MOV R2, [mem] -> MOV R2, R1
+//   2. Copy Prop:     MOV R1, val;   ... OP R2, R1     -> OP R2, val
+// ===================================================================
+int peephole_forwarding(AsmNode *head)
+{
+    int optimizations = 0;
+    AsmNode *curr = head ? head->next : NULL;
+
+    while (curr)
+    {
+        if (curr->type == OP_MOV)
+        {
+            // ----------------------------------------------------------
+            // RULE 1: Store-to-Load Forwarding
+            // Forward value from memory store directly to downstream loads
+            // ----------------------------------------------------------
+            if (curr->dst_op.mode == MODE_INDIRECT && curr->src_op.mode == MODE_REG)
+            {
+                char *mem_reg = curr->dst_op.reg;
+                int mem_off   = curr->dst_op.offset;
+                char *src_reg = curr->src_op.reg;
+
+                AsmNode *scan = curr->next;
+                while (scan)
+                {
+                    // Skip blank lines and inline comments
+                    if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
+                        scan = scan->next;
+                        continue;
+                    }
+
+                    // Stop scanning at control flow boundaries or if registers change
+                    if (is_control_flow_boundary(scan)) break;
+                    if (modifies_register(scan, mem_reg) || modifies_register(scan, src_reg)) break;
+
+                    // Stop if another store overwrites this exact memory location
+                    if (scan->type == OP_MOV && scan->dst_op.mode == MODE_INDIRECT) {
+                        if (str_case_eq(scan->dst_op.reg, mem_reg) && scan->dst_op.offset == mem_off) break;
+                    }
+
+                    // Match: A load reading from the exact same memory location
+                    if (scan->type == OP_MOV &&
+                        scan->dst_op.mode == MODE_REG &&
+                        scan->src_op.mode == MODE_INDIRECT)
+                    {
+                        if (str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset == mem_off)
+                        {
+                            scan->src_op = curr->src_op;
+                            snprintf(scan->raw, sizeof(scan->raw), "    MOV %s, %s",
+                                     scan->dst_op.raw, scan->src_op.raw);
+                            optimizations++;
+                        }
+                    }
+                    scan = scan->next;
+                }
+            }
+
+            // ----------------------------------------------------------
+            // RULE 2: Register & Immediate Copy Propagation
+            // Forward registers/immediates to downstream reading instructions
+            // ----------------------------------------------------------
+            else if (curr->dst_op.mode == MODE_REG &&
+                    (curr->src_op.mode == MODE_REG || curr->src_op.mode == MODE_IMMEDIATE))
+            {
+                char *def_reg = curr->dst_op.reg;
+
+                // Protect stack frame pointers (SP/BP) from being forwarded/mangled
+                if (!str_case_eq(def_reg, "SP") && !str_case_eq(def_reg, "BP"))
+                {
+                    AsmNode *scan = curr->next;
+                    while (scan)
+                    {
+                        if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
+                            scan = scan->next;
+                            continue;
+                        }
+
+                        if (is_control_flow_boundary(scan)) break;
+
+                        // If forwarding a register, abort if that source value gets overwritten
+                        if (curr->src_op.mode == MODE_REG && modifies_register(scan, curr->src_op.reg)) {
+                            break;
+                        }
+
+						// Match: Downstream instruction reads def_reg in its SOURCE operand
+                        // CRITICAL: Only match src_op! Never match dst_op!
+                        if (scan->has_src && scan->src_op.mode == MODE_REG &&
+                            str_case_eq(scan->src_op.reg, def_reg))
+                        {
+                            // ----------------------------------------------------
+                            // ARCHITECTURAL GUARD:
+                            // Vircon32 requires at least one real register (MODE_REG) in MOV.
+                            // We cannot forward an immediate into an instruction whose
+                            // destination is NOT a direct register (e.g., MODE_INDIRECT),
+                            // as that creates illegal opcodes like: MOV [SP], -1
+                            // ----------------------------------------------------
+                            bool is_illegal_imm_store = (curr->src_op.mode == MODE_IMMEDIATE &&
+                                                         scan->has_dst &&
+                                                         scan->dst_op.mode != MODE_REG);
+
+                            if (!is_illegal_imm_store)
+                            {
+                                scan->src_op = curr->src_op;
+
+                                // Safely reconstruct the raw assembly text
+                                if (scan->has_dst) {
+                                    snprintf(scan->raw, sizeof(scan->raw), "    %s %s, %s",
+                                             scan->mnemonic, scan->dst_op.raw, scan->src_op.raw);
+                                } else {
+                                    snprintf(scan->raw, sizeof(scan->raw), "    %s %s",
+                                             scan->mnemonic, scan->src_op.raw);
+                                }
+                                optimizations++;
+                            }
+                        }
+
+                        // If the instruction overwrites def_reg, it is dead downstream. Stop scanning!
+                        if (modifies_register(scan, def_reg)) break;
+
+                        scan = scan->next;
+                    }
+                }
+            }
+        }
+        curr = curr->next;
+    }
+
+    return optimizations;
+}
+
+// ===================================================================
 // PEEPHOLE: Store-to-Load Forwarding
 // Eliminates redundant memory loads by forwarding values directly
 // from stores to subsequent loads:
 //   - MOV [r1], r2; MOV r3, [r1] → MOV r3, r2
 // ===================================================================
+/*
 int peephole_forwarding(AsmNode *head)
 {
     int optimizations = 0;
@@ -194,7 +368,7 @@ int peephole_forwarding(AsmNode *head)
     }
 
     return optimizations;
-}
+}*/
 
 // ===================================================================
 // PEEPHOLE: Redundant Jump Elimination
