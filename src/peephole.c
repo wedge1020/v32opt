@@ -797,33 +797,39 @@ bool is_live_out_register(const char *reg_name) {
 }
 
 // ===================================================================
-// HELPER: Accurately check if a node is a comment or blank line.
-// We must NOT blindly check `node->type == OP_OTHER`, because AST
-// parsers often assign OP_OTHER to 0-operand instructions like MOVS,
-// SETS, CMPS, RET, and HLT!
-// ===================================================================
-bool is_comment_or_empty(AsmNode *node) {
-    if (!node) return true;
-    
-    // Check if the raw string starts with a comment semicolon
-    const char *p = node->raw;
-    while (*p && (*p == ' ' || *p == '\t')) p++; // Skip leading whitespace
-    if (*p == ';' || *p == '\0') return true;
-    
-    if (node->mnemonic[0] == ';' || node->mnemonic[0] == '\0') return true;
-    
-    return false;
-}
-
-// ===================================================================
-// HELPER: Check string instructions without relying on node->type!
-// (Parsers often tag 0-operand instructions like MOVS as OP_OTHER)
+// HELPER: Check string instructions without triggering -Waddress warnings
 // ===================================================================
 bool is_string_instruction(AsmNode *node) {
-    if (!node || !node->mnemonic || node->mnemonic[0] == '\0') return false;
+    // Fixed -Waddress warning: mnemonic is an array, so check element [0]
+    if (!node || node->mnemonic[0] == '\0') return false;
+
+    // If an instruction was converted to a comment, it is no longer active
+    const char *p = node->raw;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == ';' || *p == '\0') return false;
+
     return str_case_eq(node->mnemonic, "MOVS") ||
            str_case_eq(node->mnemonic, "SETS") ||
            str_case_eq(node->mnemonic, "CMPS");
+}
+
+// ===================================================================
+// HELPER: Accurately identify comments or blank lines without accidentally
+// skipping zero-operand string instructions like MOVS that may be tagged OP_OTHER.
+// ===================================================================
+bool is_comment_or_empty(AsmNode *node) {
+    if (!node) return true;
+    if (node->type == OP_LABEL) return false;
+
+    // 1. Check if the raw assembly line is commented out or blank
+    const char *p = node->raw;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == ';' || *p == '\0') return true;
+
+    // 2. If tagged as OP_OTHER, it is a comment UNLESS it is an active string instruction
+    if (node->type == OP_OTHER && !is_string_instruction(node)) return true;
+
+    return false;
 }
 
 // ===================================================================
@@ -832,10 +838,8 @@ bool is_string_instruction(AsmNode *node) {
 bool is_register_read(AsmNode *node, const char *reg_name) {
     if (!node || !reg_name || reg_name[0] == '\0') return false;
 
-    // ------------------------------------------------------------------
-    // 1. VIRCON32 ARCHITECTURAL GUARD (Must check BEFORE any OP_OTHER filter!):
+    // 1. ARCHITECTURAL GUARD: Check string instructions BEFORE ignoring OP_OTHER!
     // String instructions implicitly read (and modify) DR, SR, and CR in hardware.
-    // ------------------------------------------------------------------
     if (is_string_instruction(node)) {
         if (str_case_eq(reg_name, "DR") ||
             str_case_eq(reg_name, "SR") ||
@@ -844,15 +848,15 @@ bool is_register_read(AsmNode *node, const char *reg_name) {
         }
     }
 
-    // Ignore comments or blank lines
-    if (node->type == OP_LABEL || node->raw[0] == ';' || node->mnemonic[0] == ';') return false;
+    // 2. Ignore comments, blank lines, or labels
+    if (is_comment_or_empty(node) || node->type == OP_LABEL) return false;
 
-    // 2. Standard explicit operand checks (RESTORED has_src and added reg[0] validation!)
+    // 3. Explicit operand checks (with safe non-empty string checks)
     if (node->has_src && node->src_op.mode == MODE_REG && node->src_op.reg[0] != '\0') {
         if (str_case_eq(node->src_op.reg, reg_name)) return true;
     }
 
-    // 3. Check memory dereferences! (e.g., MOV R1, [R0] or MOV [R0], R1 both READ R0)
+    // 4. Check memory dereferences (e.g., MOV R1, [R0] or MOV [R0], R1 both READ R0)
     if (node->has_src && node->src_op.mode == MODE_INDIRECT && node->src_op.reg[0] != '\0') {
         if (str_case_eq(node->src_op.reg, reg_name)) return true;
     }
@@ -860,12 +864,12 @@ bool is_register_read(AsmNode *node, const char *reg_name) {
         if (str_case_eq(node->dst_op.reg, reg_name)) return true;
     }
 
-    // 4. For ALU ops (IADD, ISUB, etc.), destination is READ and WRITTEN (read-modify-write)
+    // 5. For ALU ops (IADD, ISUB, etc.), destination is READ and WRITTEN (read-modify-write)
     if (node->type != OP_MOV && node->has_dst && node->dst_op.mode == MODE_REG && node->dst_op.reg[0] != '\0') {
         if (str_case_eq(node->dst_op.reg, reg_name)) return true;
     }
 
-    // 5. PUSH instructions read whatever register they are pushing onto the stack
+    // 6. PUSH instructions read whatever register they are pushing onto the stack
     if (node->type == OP_PUSH) {
         if (node->has_dst && node->dst_op.mode == MODE_REG && str_case_eq(node->dst_op.reg, reg_name)) return true;
         if (node->has_src && node->src_op.mode == MODE_REG && str_case_eq(node->src_op.reg, reg_name)) return true;
@@ -878,14 +882,15 @@ bool is_register_read(AsmNode *node, const char *reg_name) {
 // HELPER: Check if an instruction is a pure register definition
 // ===================================================================
 bool is_pure_reg_def(AsmNode *node) {
-    // CRITICAL: Must check has_dst AND validate that dst_op.reg is not empty!
-    if (!node || !node->has_dst || node->dst_op.mode != MODE_REG || node->dst_op.reg[0] == '\0') return false;
+    // CRITICAL FIX: Must check is_comment_or_empty to avoid infinite loops on optimized-out comments!
+    if (!node || is_comment_or_empty(node) || !node->has_dst || node->dst_op.mode != MODE_REG || node->dst_op.reg[0] == '\0') return false;
 
     if (is_string_instruction(node)) return false;
 
     if (node->type == OP_PUSH || node->type == OP_POP || node->type == OP_LABEL) return false;
     if (str_case_eq(node->mnemonic, "CALL") ||
         str_case_eq(node->mnemonic, "JMP")  ||
+        str_case_eq(node->mnemonic, "CIB")  ||
         str_case_eq(node->mnemonic, "RET")  ||
         str_case_eq(node->mnemonic, "HLT")) {
         return false;
@@ -915,8 +920,8 @@ int peephole_dead_stores(AsmNode *head)
                 AsmNode *scan = curr->next;
                 while (scan)
                 {
-                    // Skip labels, comments, and blank lines safely
-                    if (scan->type == OP_LABEL || scan->raw[0] == ';' || scan->mnemonic[0] == ';' || scan->mnemonic[0] == '\0') {
+                    // Skip labels, comments, and blank lines safely without skipping MOVS
+                    if (is_comment_or_empty(scan) || scan->type == OP_LABEL) {
                         scan = scan->next;
                         continue;
                     }
@@ -941,6 +946,9 @@ int peephole_dead_stores(AsmNode *head)
                     {
                         if (!is_live_out_register(def_reg)) {
                             curr->type = OP_OTHER;
+                            curr->has_dst = false;
+                            curr->has_src = false;
+                            curr->dst_op.reg[0] = '\0';
                             snprintf(curr->raw, sizeof(curr->raw), "; optimized out terminal dead store: %s %s", curr->mnemonic, def_reg);
                             optimizations++;
                         }
@@ -951,6 +959,9 @@ int peephole_dead_stores(AsmNode *head)
                     if (is_pure_reg_def(scan) && str_case_eq(scan->dst_op.reg, def_reg))
                     {
                         curr->type = OP_OTHER;
+                        curr->has_dst = false;
+                        curr->has_src = false;
+                        curr->dst_op.reg[0] = '\0';
                         snprintf(curr->raw, sizeof(curr->raw), "; optimized out dead store: %s %s", curr->mnemonic, def_reg);
                         optimizations++;
                         break;
