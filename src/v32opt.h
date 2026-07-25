@@ -178,6 +178,7 @@ int      peephole_jmp_chain       (AsmNode *);
 bool     modifies_register        (AsmNode *, const char *);
 bool     is_control_flow_boundary (AsmNode *);
 long     parse_imm_val            (const char *);
+bool     is_register_read         (AsmNode *, const char *);
 
 // inline optimization
 //

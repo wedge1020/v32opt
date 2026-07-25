@@ -695,10 +695,101 @@ int peephole_shifts(AsmNode *head)
 }
 
 // ===================================================================
+// HELPER: Robustly check if an instruction READS a specific register
+// ===================================================================
+bool is_register_read(AsmNode *node, const char *reg_name) {
+    if (!node || !reg_name) return false;
+
+    // 1. Check explicit source operand (e.g., MOV R1, R0 reads R0)
+    if (node->has_src && node->src_op.mode == MODE_REG) {
+        if (str_case_eq(node->src_op.reg, reg_name)) return true;
+    }
+
+    // 2. Check memory dereferences! (e.g., MOV R1, [R0] or MOV [R0], R1 both READ R0)
+    if (node->has_src && node->src_op.mode == MODE_INDIRECT) {
+        if (str_case_eq(node->src_op.reg, reg_name)) return true;
+    }
+    if (node->has_dst && node->dst_op.mode == MODE_INDIRECT) {
+        if (str_case_eq(node->dst_op.reg, reg_name)) return true;
+    }
+
+    // 3. For ALU ops (IADD, ISUB, etc.), destination is READ and WRITTEN (read-modify-write)
+    // e.g., IADD R0, 5 READS R0 before adding 5 to it!
+    if (node->type != OP_MOV && node->has_dst && node->dst_op.mode == MODE_REG) {
+        if (str_case_eq(node->dst_op.reg, reg_name)) return true;
+    }
+
+    // 4. PUSH instructions read whatever register they are pushing onto the stack
+    if (node->type == OP_PUSH) {
+        if (node->has_dst && node->dst_op.mode == MODE_REG && str_case_eq(node->dst_op.reg, reg_name)) return true;
+        if (node->has_src && node->src_op.mode == MODE_REG && str_case_eq(node->src_op.reg, reg_name)) return true;
+    }
+
+    return false;
+}
+
+// ===================================================================
+// PEEPHOLE: Dead Store Elimination (DSE)
+// Eliminates register writes that are overwritten before ever being read.
+// ===================================================================
+int peephole_dead_stores(AsmNode *head)
+{
+    int optimizations = 0;
+    AsmNode *curr = head ? head->next : NULL;
+
+    while (curr)
+    {
+        // We only care about pure MOV instructions that define a register
+        if (curr->type == OP_MOV && curr->has_dst && curr->dst_op.mode == MODE_REG)
+        {
+            char *def_reg = curr->dst_op.reg;
+
+            // Never optimize away stack frame pointers
+            if (!str_case_eq(def_reg, "SP") && !str_case_eq(def_reg, "BP"))
+            {
+                AsmNode *scan = curr->next;
+                while (scan)
+                {
+                    if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
+                        scan = scan->next;
+                        continue;
+                    }
+
+                    // Stop at control flow boundaries or function calls
+                    if (is_control_flow_boundary(scan) || str_case_eq(scan->mnemonic, "CALL")) break;
+
+                    // If any instruction READS our register, the store is live! Abort scan.
+                    if (is_register_read(scan, def_reg)) {
+                        break;
+                    }
+
+                    // If we find another pure MOV that OVERWRITES our register without reading it,
+                    // then our original 'curr' instruction was a completely Dead Store!
+                    if (scan->type == OP_MOV && scan->has_dst &&
+                        scan->dst_op.mode == MODE_REG && str_case_eq(scan->dst_op.reg, def_reg))
+                    {
+                        curr->type = OP_OTHER;
+                        snprintf(curr->raw, sizeof(curr->raw), "; optimized out dead store: MOV %s", def_reg);
+                        optimizations++;
+                        break;
+                    }
+
+                    scan = scan->next;
+                }
+            }
+        }
+        curr = curr->next;
+    }
+
+    return optimizations;
+}
+
+// ===================================================================
 // PEEPHOLE: Dead Store Elimination
 // Removes stores that are immediately overwritten to the same address:
 //   - MOV [r1+off], r2; MOV [r1+off], r3 → remove first MOV
 // ===================================================================
+/*
 int peephole_dead_stores(AsmNode *head)
 {
     int optimizations = 0;
@@ -738,7 +829,7 @@ int peephole_dead_stores(AsmNode *head)
         curr = curr->next;
     }
     return optimizations;
-}
+}*/
 
 // ===================================================================
 // PEEPHOLE: Redundant Load Elimination
