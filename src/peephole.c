@@ -42,7 +42,7 @@ int peephole_pairs(AsmNode *head)
 
     while (curr && curr->next)
     {
-		// CRITICAL FIX: Immediately skip comments, blank lines, and labels!
+        // CRITICAL FIX: Immediately skip comments, blank lines, and labels!
         if (curr->type == OP_OTHER || curr->type == OP_LABEL) {
             curr = curr->next;
             continue;
@@ -296,10 +296,10 @@ int peephole_forwarding(AsmNode *head)
                 AsmNode *scan = curr->next;
                 while (scan)
                 {
-					if (scan->type == OP_OTHER) {
-						scan = scan->next;
-						continue;
-					}
+                    if (scan->type == OP_OTHER) {
+                        scan = scan->next;
+                        continue;
+                    }
 
                     // Stop scanning at control flow boundaries or if registers change
                     if (is_control_flow_boundary(scan)) break;
@@ -342,10 +342,10 @@ int peephole_forwarding(AsmNode *head)
                     AsmNode *scan = curr->next;
                     while (scan)
                     {
-						if (scan->type == OP_OTHER) {
-							scan = scan->next;
-							continue;
-						}
+                        if (scan->type == OP_OTHER) {
+                            scan = scan->next;
+                            continue;
+                        }
 
                         if (is_control_flow_boundary(scan)) break;
 
@@ -361,16 +361,15 @@ int peephole_forwarding(AsmNode *head)
                         {
                             // ----------------------------------------------------
                             // ARCHITECTURAL GUARD:
-                            // Vircon32 requires at least one real register (MODE_REG) in MOV.
-                            // We cannot forward an immediate into an instruction whose
-                            // destination is NOT a direct register (e.g., MODE_INDIRECT),
-                            // as that creates illegal opcodes like: MOV [SP], -1
+                            // Vircon32 requires at least one real register (MODE_REG) in MOV/ALU instructions.
+                            // If the downstream instruction's destination is NOT a direct register (e.g., memory),
+                            // we CANNOT forward anything into its source unless what we are forwarding is ALSO a register!
                             // ----------------------------------------------------
-                            bool is_illegal_imm_store = (curr->src_op.mode == MODE_IMMEDIATE &&
+                            bool is_illegal_mem_store = (curr->src_op.mode != MODE_REG &&
                                                          scan->has_dst &&
                                                          scan->dst_op.mode != MODE_REG);
 
-                            if (!is_illegal_imm_store)
+                            if (!is_illegal_mem_store) // <-- Using broadened guard
                             {
                                 scan->src_op = curr->src_op;
 
@@ -417,10 +416,10 @@ int peephole_jumps(AsmNode *head)
             // Skip over comments/blank lines to find the next real instruction
             AsmNode *next_node = curr->next;
 
-			// For fast-forwarding a pointer to the next real instruction:
-			while (next_node && next_node->type == OP_OTHER) {
-				next_node = next_node->next;
-			}
+            // For fast-forwarding a pointer to the next real instruction:
+            while (next_node && next_node->type == OP_OTHER) {
+                next_node = next_node->next;
+            }
 
             // --- Jump to Next Label ---
             // If the next non-comment node is a label, and the JMP targets
@@ -466,8 +465,8 @@ int peephole_movs(AsmNode *head)
             // Skip over comments/blank lines to find the next real instruction
             AsmNode *n2 = curr->next;
 
-			// For fast-forwarding a pointer to the next real instruction:
-			while (n2 && n2->type == OP_OTHER) {
+            // For fast-forwarding a pointer to the next real instruction:
+            while (n2 && n2->type == OP_OTHER) {
                 n2 = n2->next;
             }
 
@@ -534,8 +533,8 @@ int peephole_immediates(AsmNode *head)
             // Skip over comments/blank lines to find the next real instruction
             AsmNode *n2 = curr->next;
 
-			// For fast-forwarding a pointer to the next real instruction:
-			while (n2 && n2->type == OP_OTHER) {
+            // For fast-forwarding a pointer to the next real instruction:
+            while (n2 && n2->type == OP_OTHER) {
                 n2 = n2->next;
             }
 
@@ -813,10 +812,10 @@ int peephole_dead_stores(AsmNode *head)
                 AsmNode *scan = curr->next;
                 while (scan)
                 {
-					if (scan->type == OP_OTHER) {
-						scan = scan->next;
-						continue;
-					}
+                    if (scan->type == OP_OTHER) {
+                        scan = scan->next;
+                        continue;
+                    }
 
                     // ----------------------------------------------------
                     // CRITICAL CHANGE 1:
@@ -934,7 +933,7 @@ int peephole_immediate_prop(AsmNode *head)
 
     while (curr)
     {
-		// CRITICAL FIX: Immediately skip comments, blank lines, and labels!
+        // CRITICAL FIX: Immediately skip comments, blank lines, and labels!
         if (curr->type == OP_OTHER || curr->type == OP_LABEL) {
             curr = curr->next;
             continue;
@@ -975,10 +974,10 @@ int peephole_immediate_prop(AsmNode *head)
             AsmNode *scan = curr->next;
             while (scan)
             {
-				if (scan->type == OP_OTHER) {
-					scan = scan->next;
-					continue;
-				}
+                if (scan->type == OP_OTHER) {
+                    scan = scan->next;
+                    continue;
+                }
                 if (is_control_flow_boundary(scan)) break;
 
                 // If target_reg is read as a SOURCE (e.g., in MOV [SP], R1), we cannot fold
@@ -1033,10 +1032,10 @@ int peephole_immediate_prop(AsmNode *head)
             AsmNode *scan = curr->next;
             while (scan)
             {
-				if (scan->type == OP_OTHER) {
-					scan = scan->next;
-					continue;
-				}
+                if (scan->type == OP_OTHER) {
+                    scan = scan->next;
+                    continue;
+                }
                 if (is_control_flow_boundary(scan)) break;
                 if (scan->has_src && scan->src_op.mode == MODE_REG && str_case_eq(scan->src_op.reg, target_reg)) break;
 
@@ -1095,8 +1094,8 @@ int peephole_jmp_chain(AsmNode *head)
             // Skip over comments/blank lines to find the target label
             AsmNode *target = curr->next;
 
-			// For fast-forwarding a pointer to the next real instruction:
-			while (target && target->type == OP_OTHER) {
+            // For fast-forwarding a pointer to the next real instruction:
+            while (target && target->type == OP_OTHER) {
                 target = target->next;
             }
 
@@ -1108,8 +1107,8 @@ int peephole_jmp_chain(AsmNode *head)
                 // Find the instruction after the label (skip comments)
                 AsmNode *next_after_label = target->next;
 
-				// For fast-forwarding a pointer to the next real instruction:
-				while (next_after_label && next_after_label->type == OP_OTHER) {
+                // For fast-forwarding a pointer to the next real instruction:
+                while (next_after_label && next_after_label->type == OP_OTHER) {
                     next_after_label = next_after_label->next;
                 }
 
