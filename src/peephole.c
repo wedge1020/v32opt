@@ -784,53 +784,6 @@ int peephole_shifts(AsmNode *head)
     return optimizations;
 }
 
-bool is_string_instruction(AsmNode *node) {
-    if (!node || node->type == OP_OTHER) return false;
-    return str_case_eq(node->mnemonic, "MOVS") ||
-           str_case_eq(node->mnemonic, "SETS") ||
-           str_case_eq(node->mnemonic, "CMPS");
-}
-
-bool is_register_read(AsmNode *node, const char *reg_name) {
-    if (!node || node->type == OP_OTHER || !reg_name) return false;
-
-    // 1. VIRCON32 ARCHITECTURAL GUARD:
-    // String instructions implicitly read (and modify) DR, SR, and CR in hardware.
-    if (is_string_instruction(node)) {
-        if (str_case_eq(reg_name, "DR") ||
-            str_case_eq(reg_name, "SR") ||
-            str_case_eq(reg_name, "CR")) {
-            return true; // Immediately stop dead-store elimination from deleting setup MOVs!
-        }
-    }
-
-    // 2. Standard explicit operand checks...
-    if (node->has_src && node->src_op.mode == MODE_REG && str_case_eq(node->src_op.reg, reg_name)) {
-        return true;
-    }
-
-    // 3. Check memory dereferences! (e.g., MOV R1, [R0] or MOV [R0], R1 both READ R0)
-    if (node->has_src && node->src_op.mode == MODE_INDIRECT) {
-        if (str_case_eq(node->src_op.reg, reg_name)) return true;
-    }
-    if (node->has_dst && node->dst_op.mode == MODE_INDIRECT) {
-        if (str_case_eq(node->dst_op.reg, reg_name)) return true;
-    }
-
-    // 4. For ALU ops (IADD, ISUB, etc.), destination is READ and WRITTEN (read-modify-write)
-    if (node->type != OP_MOV && node->has_dst && node->dst_op.mode == MODE_REG) {
-        if (str_case_eq(node->dst_op.reg, reg_name)) return true;
-    }
-
-    // 5. PUSH instructions read whatever register they are pushing onto the stack
-    if (node->type == OP_PUSH) {
-        if (node->has_dst && node->dst_op.mode == MODE_REG && str_case_eq(node->dst_op.reg, reg_name)) return true;
-        if (node->has_src && node->src_op.mode == MODE_REG && str_case_eq(node->src_op.reg, reg_name)) return true;
-    }
-
-    return false;
-}
-
 // ===================================================================
 // HELPER: Check if a register is "Live-Out" across function returns
 // In Vircon32, only R0 (return value), SP, and BP survive a RET.
@@ -844,11 +797,77 @@ bool is_live_out_register(const char *reg_name) {
 }
 
 // ===================================================================
+// HELPER: Accurately check if a node is a comment or blank line.
+// We must NOT blindly check `node->type == OP_OTHER`, because AST
+// parsers often assign OP_OTHER to 0-operand instructions like MOVS,
+// SETS, CMPS, RET, and HLT!
+// ===================================================================
+bool is_comment_or_empty(AsmNode *node) {
+    if (!node) return true;
+    
+    // Check if the raw string starts with a comment semicolon
+    const char *p = node->raw;
+    while (*p && (*p == ' ' || *p == '\t')) p++; // Skip leading whitespace
+    if (*p == ';' || *p == '\0') return true;
+    
+    if (node->mnemonic[0] == ';' || node->mnemonic[0] == '\0') return true;
+    
+    return false;
+}
+
+bool is_string_instruction(AsmNode *node) {
+    // CRITICAL FIX: Use is_comment_or_empty instead of node->type == OP_OTHER
+    if (!node || is_comment_or_empty(node)) return false;
+    return str_case_eq(node->mnemonic, "MOVS") ||
+           str_case_eq(node->mnemonic, "SETS") ||
+           str_case_eq(node->mnemonic, "CMPS");
+}
+
+bool is_register_read(AsmNode *node, const char *reg_name) {
+    if (!node || !reg_name || is_comment_or_empty(node)) return false;
+
+    // 1. VIRCON32 ARCHITECTURAL GUARD:
+    // String instructions implicitly read (and modify) DR, SR, and CR in hardware.
+    if (is_string_instruction(node)) {
+        if (str_case_eq(reg_name, "DR") ||
+            str_case_eq(reg_name, "SR") ||
+            str_case_eq(reg_name, "CR")) {
+            return true; // Immediately stop dead-store elimination from deleting setup MOVs!
+        }
+    }
+
+    // 2. Standard explicit operand checks (removed reliance on has_src / has_dst flags!)
+    if (node->src_op.mode == MODE_REG && str_case_eq(node->src_op.reg, reg_name)) {
+        return true;
+    }
+
+    // 3. Check memory dereferences! (e.g., MOV R1, [R0] or MOV [R0], R1 both READ R0)
+    if (node->src_op.mode == MODE_INDIRECT && str_case_eq(node->src_op.reg, reg_name)) {
+        return true;
+    }
+    if (node->dst_op.mode == MODE_INDIRECT && str_case_eq(node->dst_op.reg, reg_name)) {
+        return true;
+    }
+
+    // 4. For ALU ops (IADD, ISUB, etc.), destination is READ and WRITTEN (read-modify-write)
+    if (node->type != OP_MOV && node->dst_op.mode == MODE_REG && str_case_eq(node->dst_op.reg, reg_name)) {
+        return true;
+    }
+
+    // 5. PUSH instructions read whatever register they are pushing onto the stack
+    if (node->type == OP_PUSH) {
+        if (node->dst_op.mode == MODE_REG && str_case_eq(node->dst_op.reg, reg_name)) return true;
+        if (node->src_op.mode == MODE_REG && str_case_eq(node->src_op.reg, reg_name)) return true;
+    }
+
+    return false;
+}
+
+// ===================================================================
 // HELPER: Check if an instruction is a pure register definition
 // ===================================================================
 bool is_pure_reg_def(AsmNode *node) {
-    // CRITICAL FIX: Removed reliance on node->has_dst so MOV instructions are never ignored!
-    if (!node || node->type == OP_OTHER || node->dst_op.mode != MODE_REG) return false;
+    if (!node || is_comment_or_empty(node) || node->dst_op.mode != MODE_REG) return false;
 
     if (is_string_instruction(node)) return false;
 
@@ -865,8 +884,8 @@ bool is_pure_reg_def(AsmNode *node) {
 }
 
 // ===================================================================
-// PEEPHOLE: Dead Store Elimination (DSE) - Upgraded with Liveness!
-// Eliminates register writes overwritten OR dead at function exit/calls.
+// PEEPHOLE: Dead Store Elimination (DSE) - Upgraded & Safe!
+// Eliminates register writes overwritten OR dead at function exit.
 // ===================================================================
 int peephole_dead_stores(AsmNode *head)
 {
@@ -885,24 +904,28 @@ int peephole_dead_stores(AsmNode *head)
                 AsmNode *scan = curr->next;
                 while (scan)
                 {
-                    if (scan->type == OP_OTHER) {
+                    // CRITICAL FIX: Use is_comment_or_empty so MOVS is never skipped!
+                    if (is_comment_or_empty(scan)) {
                         scan = scan->next;
                         continue;
                     }
 
-                    // Only break on actual branching jumps or halt
+                    // 1. Stop scanning at branching jumps, returns, halts, OR function calls.
+                    // (CALL must act as a hard boundary to protect argument registers!)
                     if (str_case_eq(scan->mnemonic, "JMP") ||
                         str_case_eq(scan->mnemonic, "CIB") ||
+                        str_case_eq(scan->mnemonic, "CALL") ||
                         str_case_eq(scan->mnemonic, "HLT")) {
                         break;
                     }
 
-                    // If any instruction READS our register, the store is live! Abort scan.
+                    // 2. If any instruction READS our register (including MOVS reading DR/SR/CR),
+                    // the store is live! Abort scan and keep the MOV.
                     if (is_register_read(scan, def_reg)) {
                         break;
                     }
 
-                    // Terminal Dead Store Check (at RET instruction)
+                    // 3. Terminal Dead Store Check (at RET instruction)
                     if (str_case_eq(scan->mnemonic, "RET"))
                     {
                         if (!is_live_out_register(def_reg)) {
@@ -913,23 +936,7 @@ int peephole_dead_stores(AsmNode *head)
                         break;
                     }
 
-                    // ----------------------------------------------------
-                    // CRITICAL FIX: CALL Clobber Dead Store Check!
-                    // In Vircon32, CALL clobbers R1-R13. If def_reg is a scratch
-                    // register and wasn't read before the CALL, the store is dead!
-                    // ----------------------------------------------------
-                    if (str_case_eq(scan->mnemonic, "CALL"))
-                    {
-                        int idx = get_reg_index(def_reg);
-                        if (idx >= 1 && idx <= 13) {
-                            curr->type = OP_OTHER;
-                            snprintf(curr->raw, sizeof(curr->raw), "; optimized out call-clobbered dead store: %s %s", curr->mnemonic, def_reg);
-                            optimizations++;
-                        }
-                        break;
-                    }
-
-                    // Standard DSE: Another instruction overwrites our register before it was read
+                    // 4. Standard DSE: Another instruction overwrites our register before it was read
                     if (is_pure_reg_def(scan) && str_case_eq(scan->dst_op.reg, def_reg))
                     {
                         curr->type = OP_OTHER;
