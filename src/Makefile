@@ -3,7 +3,7 @@
 CC = gcc
 
 # --- Flags ---
-CFLAGS = -Wall -Wextra -g -DYYDEBUG=1
+CFLAGS = -Wall -Wextra -g
 CLIBS = -lm
 
 # --- Output Executable ---
