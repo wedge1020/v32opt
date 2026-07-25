@@ -145,19 +145,21 @@ bool     is_branch_or_call       (AsmNode *);
 AsmNode *parse_vircon32_asm (const char *);
 void     write_vircon32_asm (const char *, AsmNode *);
 
-  peephole, algebraic, forwarding, jump_next, redundant_movs,
-  combine_immediates, strength_reduction, inline, dce,
-  constant_folding, promote_regs, promote_leaf, promote_loops
+// peephole, algebraic, forwarding, jump_next, redundant_movs,
+// combine_immediates, strength_reduction, inline, dce,
+// constant_folding, promote_regs, promote_leaf, promote_loops
 
+//////////////////////////////////////////////////////////////////////////////
+//
 // peephole optimizations
 //
-int      pass_peephole_window2          (AsmNode *); // peephole
-int      pass_algebraic_simplifications (AsmNode *); // algebraic
-int      pass_store_to_load_forwarding  (AsmNode *); // forwarding
-int      pass_redundant_jumps           (AsmNode *); // jump_next
-int      pass_redundant_movs            (AsmNode *); // redundant_movs
-int      pass_combine_immediates        (AsmNode *); // combine_immediates
-int      pass_strength_reduction        (AsmNode *); // strength_reduction
+int      peephole_pairs      (AsmNode *);
+int      peephole_algebra    (AsmNode *);
+int      peephole_forwarding (AsmNode *);
+int      peephole_jumps      (AsmNode *);
+int      peephole_movs       (AsmNode *);
+int      peephole_immediates (AsmNode *);
+int      peephole_reduce     (AsmNode *);
 
 // inline optimization
 //
