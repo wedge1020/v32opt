@@ -120,6 +120,10 @@ typedef struct {
     bool enable_promote_loops;
 } OptConfig;
 
+extern int g_inline_call_limit;
+extern int g_inline_calls_so_far;
+extern char g_inline_exclude_name[1024];
+
 ////////////////////////////////////////////////////////////////////////////////////////
 //
 // general utility function prototypes
@@ -173,6 +177,18 @@ int      inline_trivial_functions  (AsmNode *);
 // dead function elimination
 //
 int      pass_dead_function_elimination (AsmNode *);
+
+// Add to "control flow graph" section:
+BasicBlock* find_block_by_label(ControlFlowGraph *, const char *);
+ControlFlowGraph* build_cfg(AsmNode *);
+void export_cfg_to_dot(const char *, ControlFlowGraph *);
+void free_cfg(ControlFlowGraph *);
+
+// Add to a new "global data-flow analysis" section:
+RegState merge_reg(RegState, RegState);
+bool apply_transfer_function(BasicBlock *);
+void propagate_constants_cfg(ControlFlowGraph *);
+int fold_constants_cfg(ControlFlowGraph *);
 
 // control flow graph
 //
