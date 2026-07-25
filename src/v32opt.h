@@ -105,16 +105,21 @@ typedef struct {
 
 typedef struct {
     bool verbose;
-    bool enable_peephole;
-    bool enable_algebraic;
-    bool enable_forwarding;
-    bool enable_inline;
+    bool enable_peephole_pairs;
+    bool enable_peephole_algebra;
+    bool enable_peephole_forwarding;
+    bool enable_peephole_jumps;
+    bool enable_peephole_movs;
+    bool enable_peephole_immediates;
+    bool enable_peephole_reduce;
+    bool enable_peephole_shifts;
+    bool enable_peephole_dead_stores;
+    bool enable_peephole_loads;
+    bool enable_peephole_immediate_prop;
+    bool enable_peephole_jmp_chain;
     bool enable_dce;
     bool enable_constant_folding;
-    bool enable_jump_next;
-    bool enable_redundant_movs;
-    bool enable_combine_immediates;
-    bool enable_strength_reduction;
+    bool enable_inline;
     bool enable_promote_regs;
     bool enable_promote_leaf;
     bool enable_promote_loops;

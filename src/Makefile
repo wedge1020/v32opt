@@ -11,7 +11,7 @@ TARGET = ../v32opt
 
 # --- Object Files ---
 # Add runtime_embed.o to your object list
-OBJS = peephole.c promote.o inline.o cfg.o dead.o tools.o main.o
+OBJS = peephole.o promote.o inline.o cfg.o dead.o tools.o main.o
 
 # --- Build Rules ---
 all: $(TARGET)
