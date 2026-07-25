@@ -124,29 +124,40 @@ typedef struct {
 //
 // general utility function prototypes
 //
-void     safe_str_copy (char       *, const char *, size_t);
-char    *trim          (char       *);
-bool     str_case_eq   (const char *, const char *);
-int      get_reg_index (const char *);
+void     safe_str_copy   (char       *, const char *, size_t);
+char    *trim            (char       *);
+bool     str_case_eq     (const char *, const char *);
+int      get_reg_index   (const char *);
+bool     is_power_of_two (int);
+int      get_log2        (int);
 
 Operand  parse_operand (const char *);
 AsmNode *create_node   (const char *, OpType, const char *, const char *, const char *);
 void     remove_node   (AsmNode    *);
 AsmNode *clone_node    (AsmNode    *);
 
+bool     is_unconditional_branch (AsmNode *);
+bool     is_conditional_branch   (AsmNode *);
+bool     is_branch_or_call       (AsmNode *);
+
 // parsing / writing functions
 //
 AsmNode *parse_vircon32_asm (const char *);
 void     write_vircon32_asm (const char *, AsmNode *);
 
+  peephole, algebraic, forwarding, jump_next, redundant_movs,
+  combine_immediates, strength_reduction, inline, dce,
+  constant_folding, promote_regs, promote_leaf, promote_loops
+
 // peephole optimizations
 //
-int      pass_peephole_window2          (AsmNode *);
-int      pass_algebraic_simplifications (AsmNode *);
-int      pass_store_to_load_forwarding  (AsmNode *);
-int      pass_redundant_jumps           (AsmNode *);
-int      pass_redundant_movs            (AsmNode *);
-int      pass_combine_immediates        (AsmNode *);
+int      pass_peephole_window2          (AsmNode *); // peephole
+int      pass_algebraic_simplifications (AsmNode *); // algebraic
+int      pass_store_to_load_forwarding  (AsmNode *); // forwarding
+int      pass_redundant_jumps           (AsmNode *); // jump_next
+int      pass_redundant_movs            (AsmNode *); // redundant_movs
+int      pass_combine_immediates        (AsmNode *); // combine_immediates
+int      pass_strength_reduction        (AsmNode *); // strength_reduction
 
 // inline optimization
 //
