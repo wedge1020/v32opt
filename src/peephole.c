@@ -815,49 +815,60 @@ bool is_comment_or_empty(AsmNode *node) {
     return false;
 }
 
+// ===================================================================
+// HELPER: Check string instructions without relying on node->type!
+// (Parsers often tag 0-operand instructions like MOVS as OP_OTHER)
+// ===================================================================
 bool is_string_instruction(AsmNode *node) {
-    // CRITICAL FIX: Use is_comment_or_empty instead of node->type == OP_OTHER
-    if (!node || is_comment_or_empty(node)) return false;
+    if (!node || !node->mnemonic || node->mnemonic[0] == '\0') return false;
     return str_case_eq(node->mnemonic, "MOVS") ||
            str_case_eq(node->mnemonic, "SETS") ||
            str_case_eq(node->mnemonic, "CMPS");
 }
 
+// ===================================================================
+// HELPER: Check if an instruction reads a register
+// ===================================================================
 bool is_register_read(AsmNode *node, const char *reg_name) {
-    if (!node || !reg_name || is_comment_or_empty(node)) return false;
+    if (!node || !reg_name || reg_name[0] == '\0') return false;
 
-    // 1. VIRCON32 ARCHITECTURAL GUARD:
+    // ------------------------------------------------------------------
+    // 1. VIRCON32 ARCHITECTURAL GUARD (Must check BEFORE any OP_OTHER filter!):
     // String instructions implicitly read (and modify) DR, SR, and CR in hardware.
+    // ------------------------------------------------------------------
     if (is_string_instruction(node)) {
         if (str_case_eq(reg_name, "DR") ||
             str_case_eq(reg_name, "SR") ||
             str_case_eq(reg_name, "CR")) {
-            return true; // Immediately stop dead-store elimination from deleting setup MOVs!
+            return true; // Immediately protect setup MOVs!
         }
     }
 
-    // 2. Standard explicit operand checks (removed reliance on has_src / has_dst flags!)
-    if (node->src_op.mode == MODE_REG && str_case_eq(node->src_op.reg, reg_name)) {
-        return true;
+    // Ignore comments or blank lines
+    if (node->type == OP_LABEL || node->raw[0] == ';' || node->mnemonic[0] == ';') return false;
+
+    // 2. Standard explicit operand checks (RESTORED has_src and added reg[0] validation!)
+    if (node->has_src && node->src_op.mode == MODE_REG && node->src_op.reg[0] != '\0') {
+        if (str_case_eq(node->src_op.reg, reg_name)) return true;
     }
 
     // 3. Check memory dereferences! (e.g., MOV R1, [R0] or MOV [R0], R1 both READ R0)
-    if (node->src_op.mode == MODE_INDIRECT && str_case_eq(node->src_op.reg, reg_name)) {
-        return true;
+    if (node->has_src && node->src_op.mode == MODE_INDIRECT && node->src_op.reg[0] != '\0') {
+        if (str_case_eq(node->src_op.reg, reg_name)) return true;
     }
-    if (node->dst_op.mode == MODE_INDIRECT && str_case_eq(node->dst_op.reg, reg_name)) {
-        return true;
+    if (node->has_dst && node->dst_op.mode == MODE_INDIRECT && node->dst_op.reg[0] != '\0') {
+        if (str_case_eq(node->dst_op.reg, reg_name)) return true;
     }
 
     // 4. For ALU ops (IADD, ISUB, etc.), destination is READ and WRITTEN (read-modify-write)
-    if (node->type != OP_MOV && node->dst_op.mode == MODE_REG && str_case_eq(node->dst_op.reg, reg_name)) {
-        return true;
+    if (node->type != OP_MOV && node->has_dst && node->dst_op.mode == MODE_REG && node->dst_op.reg[0] != '\0') {
+        if (str_case_eq(node->dst_op.reg, reg_name)) return true;
     }
 
     // 5. PUSH instructions read whatever register they are pushing onto the stack
     if (node->type == OP_PUSH) {
-        if (node->dst_op.mode == MODE_REG && str_case_eq(node->dst_op.reg, reg_name)) return true;
-        if (node->src_op.mode == MODE_REG && str_case_eq(node->src_op.reg, reg_name)) return true;
+        if (node->has_dst && node->dst_op.mode == MODE_REG && str_case_eq(node->dst_op.reg, reg_name)) return true;
+        if (node->has_src && node->src_op.mode == MODE_REG && str_case_eq(node->src_op.reg, reg_name)) return true;
     }
 
     return false;
@@ -867,14 +878,14 @@ bool is_register_read(AsmNode *node, const char *reg_name) {
 // HELPER: Check if an instruction is a pure register definition
 // ===================================================================
 bool is_pure_reg_def(AsmNode *node) {
-    if (!node || is_comment_or_empty(node) || node->dst_op.mode != MODE_REG) return false;
+    // CRITICAL: Must check has_dst AND validate that dst_op.reg is not empty!
+    if (!node || !node->has_dst || node->dst_op.mode != MODE_REG || node->dst_op.reg[0] == '\0') return false;
 
     if (is_string_instruction(node)) return false;
 
     if (node->type == OP_PUSH || node->type == OP_POP || node->type == OP_LABEL) return false;
     if (str_case_eq(node->mnemonic, "CALL") ||
         str_case_eq(node->mnemonic, "JMP")  ||
-        str_case_eq(node->mnemonic, "CIB")  ||
         str_case_eq(node->mnemonic, "RET")  ||
         str_case_eq(node->mnemonic, "HLT")) {
         return false;
@@ -904,14 +915,14 @@ int peephole_dead_stores(AsmNode *head)
                 AsmNode *scan = curr->next;
                 while (scan)
                 {
-                    // CRITICAL FIX: Use is_comment_or_empty so MOVS is never skipped!
-                    if (is_comment_or_empty(scan)) {
+                    // Skip labels, comments, and blank lines safely
+                    if (scan->type == OP_LABEL || scan->raw[0] == ';' || scan->mnemonic[0] == ';' || scan->mnemonic[0] == '\0') {
                         scan = scan->next;
                         continue;
                     }
 
-                    // 1. Stop scanning at branching jumps, returns, halts, OR function calls.
-                    // (CALL must act as a hard boundary to protect argument registers!)
+                    // 1. Hard Boundaries: Stop scanning at jumps, returns, halts, OR function calls!
+                    // (CALL must act as a hard boundary so argument registers aren't deleted as dead stores)
                     if (str_case_eq(scan->mnemonic, "JMP") ||
                         str_case_eq(scan->mnemonic, "CIB") ||
                         str_case_eq(scan->mnemonic, "CALL") ||
