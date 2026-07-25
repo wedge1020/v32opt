@@ -318,6 +318,13 @@ int peephole_forwarding(AsmNode *head)
 
                     // Stop scanning at control flow boundaries or if registers change
                     if (is_control_flow_boundary(scan)) break;
+
+                    // ----------------------------------------------------
+                    // CRITICAL FIX: Add the missing global memory barrier here!
+                    // Abort if MOVS, SETS, or CALL silently mutates memory!
+                    // ----------------------------------------------------
+                    if (is_global_memory_clobber(scan)) break;
+
                     if (modifies_register(scan, mem_reg) || modifies_register(scan, src_reg)) break;
 
                     // Stop if another store overwrites this exact memory location
@@ -1142,7 +1149,7 @@ int peephole_immediate_prop(AsmNode *head)
 }
 
 // ===================================================================
-// PEEPHOLE: Jump Chain Elimination
+// PEEPHOLE: Jump Chain Elimination (FIXED & SAFE)
 // Chains consecutive jumps to avoid indirection:
 //   - JMP L1; L1: JMP L2 → JMP L2
 // ===================================================================
@@ -1155,37 +1162,31 @@ int peephole_jmp_chain(AsmNode *head)
     {
         if (str_case_eq(curr->mnemonic, "JMP"))
         {
-            // Skip over comments/blank lines to find the target label
             AsmNode *target = curr->next;
-
-            // For fast-forwarding a pointer to the next real instruction:
             while (target && target->type == OP_OTHER) {
                 target = target->next;
             }
 
-            // --- Jump to Label Followed by Another Jump ---
-            // If the target is a label and the next instruction after it is a JMP,
-            // we can chain the jumps: JMP L1; L1: JMP L2 → JMP L2
             if (target && target->type == OP_LABEL)
             {
-                // Find the instruction after the label (skip comments)
                 AsmNode *next_after_label = target->next;
-
-                // For fast-forwarding a pointer to the next real instruction:
                 while (next_after_label && next_after_label->type == OP_OTHER) {
                     next_after_label = next_after_label->next;
                 }
 
                 if (next_after_label && str_case_eq(next_after_label->mnemonic, "JMP"))
                 {
-                    // Update curr to jump directly to next_after_label's target
-                    safe_str_copy(curr->dst_op.raw, next_after_label->dst_op.raw, sizeof(curr->dst_op.raw));
-                    snprintf(curr->raw, sizeof(curr->raw), "    JMP %s", curr->dst_op.raw);
-
-                    // Remove the intermediate label and JMP
-                    remove_node(target);
-                    remove_node(next_after_label);
-                    optimizations += 2;
+                    // Guard against infinite compiler loops if a label jumps to itself!
+                    if (!str_case_eq(curr->dst_op.raw, next_after_label->dst_op.raw)) 
+                    {
+                        // Rewrite: JMP L1 -> JMP L2
+                        safe_str_copy(curr->dst_op.raw, next_after_label->dst_op.raw, sizeof(curr->dst_op.raw));
+                        snprintf(curr->raw, sizeof(curr->raw), "    JMP %s", curr->dst_op.raw);
+                        optimizations++;
+                        
+                        // CRITICAL FIX: We DO NOT remove target (L1) or next_after_label (JMP L2)!
+                        // Other branches in the program may still rely on L1 existing.
+                    }
                 }
             }
         }
