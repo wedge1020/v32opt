@@ -231,8 +231,23 @@ int peephole_algebra(AsmNode *head)
 // HELPER: Check if an instruction modifies a specific register
 // ===================================================================
 bool modifies_register(AsmNode *node, const char *reg_name) {
-    // CRITICAL FIX: Ignore commented-out instructions!
     if (!node || node->type == OP_OTHER || !reg_name) return false;
+
+    // ------------------------------------------------------------------
+    // CRITICAL VIRCON32 HARDWARE GUARD:
+    // String instructions implicitly mutate DR, SR, and CR during execution!
+    // Never allow copy propagation or constant folding to scan across them!
+    // ------------------------------------------------------------------
+    if (str_case_eq(node->mnemonic, "MOVS") ||
+        str_case_eq(node->mnemonic, "SETS") ||
+        str_case_eq(node->mnemonic, "CMPS"))
+    {
+        if (str_case_eq(reg_name, "DR") ||
+            str_case_eq(reg_name, "SR") ||
+            str_case_eq(reg_name, "CR")) {
+            return true; // Stop scanning immediately!
+        }
+    }
 
     // Check if the node explicitly overwrites the destination register
     if (node->has_dst && node->dst_op.mode == MODE_REG) {
