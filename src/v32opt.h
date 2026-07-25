@@ -183,6 +183,7 @@ bool     is_string_instruction    (AsmNode *);
 bool     is_register_read         (AsmNode *, const char *);
 bool     is_live_out_register     (const char *);
 bool     is_pure_reg_def          (AsmNode *);
+bool     is_comment_or_empty      (AsmNode *);
 
 // helpers.c
 //

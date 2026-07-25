@@ -231,13 +231,10 @@ int peephole_algebra(AsmNode *head)
 // HELPER: Check if an instruction modifies a specific register
 // ===================================================================
 bool modifies_register(AsmNode *node, const char *reg_name) {
-    if (!node || node->type == OP_OTHER || !reg_name) return false;
+    if (!node || !reg_name) return false;
+    if (is_comment_or_empty(node) || node->type == OP_LABEL) return false;
 
-    // ------------------------------------------------------------------
-    // CRITICAL VIRCON32 HARDWARE GUARD:
-    // String instructions implicitly mutate DR, SR, and CR during execution!
-    // Never allow copy propagation or constant folding to scan across them!
-    // ------------------------------------------------------------------
+    // 1. Hardware string instructions implicitly mutate DR, SR, and CR
     if (str_case_eq(node->mnemonic, "MOVS") ||
         str_case_eq(node->mnemonic, "SETS") ||
         str_case_eq(node->mnemonic, "CMPS"))
@@ -245,24 +242,30 @@ bool modifies_register(AsmNode *node, const char *reg_name) {
         if (str_case_eq(reg_name, "DR") ||
             str_case_eq(reg_name, "SR") ||
             str_case_eq(reg_name, "CR")) {
-            return true; // Stop scanning immediately!
+            return true;
         }
     }
 
-    // Check if the node explicitly overwrites the destination register
+    // 2. Function CALLs clobber volatile scratch registers R0-R13
+    if (str_case_eq(node->mnemonic, "CALL")) {
+        int idx = get_reg_index(reg_name);
+        if (idx >= 0 && idx <= 13) return true;
+    }
+
+    // 3. Hardware IN instructions overwrite their destination register
+    if (str_case_eq(node->mnemonic, "IN")) {
+        if (node->has_dst && node->dst_op.mode == MODE_REG && 
+            str_case_eq(node->dst_op.reg, reg_name)) return true;
+    }
+
+    // 4. Standard explicit destination overwrite check
     if (node->has_dst && node->dst_op.mode == MODE_REG) {
         if (str_case_eq(node->dst_op.reg, reg_name)) return true;
     }
 
-    // PUSH and POP implicitly modify SP; POP also modifies its destination
+    // 5. PUSH and POP implicitly modify SP; POP also modifies its destination
     if (node->type == OP_PUSH || node->type == OP_POP) {
         if (str_case_eq(reg_name, "SP") || str_case_eq(reg_name, "R15")) return true;
-    }
-
-    // In Vircon32, function CALLs clobber volatile scratch registers R0-R13
-    if (str_case_eq(node->mnemonic, "CALL")) {
-        int idx = get_reg_index(reg_name);
-        if (idx >= 0 && idx <= 13) return true;
     }
 
     return false;
@@ -274,8 +277,11 @@ bool modifies_register(AsmNode *node, const char *reg_name) {
 bool is_control_flow_boundary(AsmNode *node) {
     if (!node) return true;
     if (node->type == OP_LABEL) return true;
+    
     if (str_case_eq(node->mnemonic, "JMP") ||
-        str_case_eq(node->mnemonic, "CIB") ||
+        str_case_eq(node->mnemonic, "JT")  ||
+        str_case_eq(node->mnemonic, "JF")  ||
+        str_case_eq(node->mnemonic, "CALL") ||
         str_case_eq(node->mnemonic, "RET") ||
         str_case_eq(node->mnemonic, "HLT")) {
         return true;
@@ -826,8 +832,8 @@ bool is_comment_or_empty(AsmNode *node) {
     while (*p == ' ' || *p == '\t') p++;
     if (*p == ';' || *p == '\0') return true;
 
-    // 2. If tagged as OP_OTHER, it is a comment UNLESS it is an active string instruction
-    if (node->type == OP_OTHER && !is_string_instruction(node)) return true;
+    // 2. If it has no mnemonic, treat it as empty
+    if (node->mnemonic[0] == '\0') return true;
 
     return false;
 }

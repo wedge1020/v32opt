@@ -139,10 +139,17 @@ Operand parse_operand(const char *str) {
         op.is_float = (strchr(str, '.') != NULL);
         op.immediate = op.is_float ? 0 : (int)strtoul(str, NULL, 0);
     }
-    // --- Register: "R0", "SP", "BP" ---
+    // --- Register or Symbol ---
     else {
-        op.mode = MODE_REG;
-        safe_str_copy(op.reg, str, sizeof(op.reg));
+        if (get_reg_index(str) != -1) {
+            op.mode = MODE_REG;
+            safe_str_copy(op.reg, str, sizeof(op.reg));
+        } else {
+            // It is a label, global symbol, or constant name (e.g., my_buffer)
+            op.mode = MODE_IMMEDIATE;
+            op.is_float = false;
+            op.immediate = 0; // Symbol address resolved at link/assemble time
+        }
     }
 
     return op;
