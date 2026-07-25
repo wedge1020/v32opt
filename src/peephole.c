@@ -59,19 +59,85 @@ int peephole_pairs(AsmNode *head)
             continue; // Skip n2, continue from n1->next (which is now n2->next)
         }
 
-        // --- Double BNOT Elimination ---
-        // BNOT x; BNOT x → x ^ x ^ x = x (identity)
-        // The two operations cancel out, so both can be removed.
-        if (n1->type == OP_BNOT && n2->type == OP_BNOT &&
-            n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
-            str_case_eq(n1->dst_op.reg, n2->dst_op.reg) == 0)
+        // ----------------------------------------------------------------
+        // PATTERN: Self-Inverting Pairs (Involutions)
+        // Identical consecutive operations that cancel each other out:
+        //   - BNOT R4 ; BNOT R4 -> (Bitwise NOT twice = Identity)
+        //   - INEG R4 ; INEG R4 -> (Two's complement negate twice = Identity)
+        //   - NOT R4  ; NOT R4  -> (Logical NOT twice = Identity)
+        // ----------------------------------------------------------------
+        if (str_case_eq(curr->mnemonic, "BNOT") ||
+            str_case_eq(curr->mnemonic, "INEG") ||
+            str_case_eq(curr->mnemonic, "NEG")  ||
+            str_case_eq(curr->mnemonic, "NOT"))
         {
-            AsmNode *next_iter = n2->next;
-            remove_node(n1);
-            remove_node(n2);
-            curr = next_iter; // Jump to the node after the removed pair
-            optimizations += 2;
-            continue;
+            AsmNode *next = curr->next;
+            // Safely skip any inline comments or blank lines between the pair
+            while (next && next->type == OP_OTHER) next = next->next;
+
+            if (next && str_case_eq(next->mnemonic, curr->mnemonic))
+            {
+                // Safely extract the target register regardless of whether your AST
+                // stores 1-operand targets in dst_op or src_op!
+                char *reg1 = curr->has_dst ? curr->dst_op.reg : (curr->has_src ? curr->src_op.reg : NULL);
+                char *reg2 = next->has_dst ? next->dst_op.reg : (next->has_src ? next->src_op.reg : NULL);
+
+                if (reg1 && reg2 && str_case_eq(reg1, reg2))
+                {
+                    // Both instructions cancel out! Convert both to comments.
+                    curr->type = OP_OTHER;
+                    snprintf(curr->raw, sizeof(curr->raw), "; optimized out pair: %s %s", curr->mnemonic, reg1);
+
+                    next->type = OP_OTHER;
+                    snprintf(next->raw, sizeof(next->raw), "; optimized out pair: %s %s", next->mnemonic, reg2);
+
+                    optimizations += 2;
+                    curr = next; // Fast-forward loop past the second instruction
+                    continue;
+                }
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // BONUS PATTERN: Identical XOR Pairs
+        // Toggling a register with the exact same value twice cancels out:
+        //   - XOR R1, R2 ; XOR R1, R2 -> cancels out!
+        //   - XOR R1, 42 ; XOR R1, 42 -> cancels out!
+        // ----------------------------------------------------------------
+        if (str_case_eq(curr->mnemonic, "XOR"))
+        {
+            AsmNode *next = curr->next;
+            while (next && next->type == OP_OTHER) next = next->next;
+
+            if (next && str_case_eq(next->mnemonic, "XOR"))
+            {
+                // Verify destination registers match
+                if (curr->has_dst && next->has_dst && str_case_eq(curr->dst_op.reg, next->dst_op.reg))
+                {
+                    bool src_match = false;
+
+                    // Check if both XOR with the same register
+                    if (curr->src_op.mode == MODE_REG && next->src_op.mode == MODE_REG) {
+                        if (str_case_eq(curr->src_op.reg, next->src_op.reg)) src_match = true;
+                    }
+                    // Check if both XOR with the exact same immediate value
+                    else if (curr->src_op.mode == MODE_IMMEDIATE && next->src_op.mode == MODE_IMMEDIATE) {
+                        if (curr->src_op.offset == next->src_op.offset &&
+                            str_case_eq(curr->src_op.raw, next->src_op.raw)) src_match = true;
+                    }
+
+                    if (src_match)
+                    {
+                        curr->type = OP_OTHER;
+                        snprintf(curr->raw, sizeof(curr->raw), "; optimized out pair: XOR toggle");
+                        next->type = OP_OTHER;
+                        snprintf(next->raw, sizeof(next->raw), "; optimized out pair: XOR toggle");
+                        optimizations += 2;
+                        curr = next;
+                        continue;
+                    }
+                }
+            }
         }
 
         // --- PUSH/POP Pair Elimination ---
@@ -282,7 +348,7 @@ int peephole_forwarding(AsmNode *head)
                             break;
                         }
 
-						// Match: Downstream instruction reads def_reg in its SOURCE operand
+                        // Match: Downstream instruction reads def_reg in its SOURCE operand
                         // CRITICAL: Only match src_op! Never match dst_op!
                         if (scan->has_src && scan->src_op.mode == MODE_REG &&
                             str_case_eq(scan->src_op.reg, def_reg))
@@ -327,48 +393,6 @@ int peephole_forwarding(AsmNode *head)
 
     return optimizations;
 }
-
-// ===================================================================
-// PEEPHOLE: Store-to-Load Forwarding
-// Eliminates redundant memory loads by forwarding values directly
-// from stores to subsequent loads:
-//   - MOV [r1], r2; MOV r3, [r1] → MOV r3, r2
-// ===================================================================
-/*
-int peephole_forwarding(AsmNode *head)
-{
-    int optimizations = 0;
-    AsmNode *curr = head ? head->next : NULL;
-
-    while (curr && curr->next)
-    {
-        AsmNode *n1 = curr;
-        AsmNode *n2 = curr->next;
-
-        // --- Store-to-Load Forwarding ---
-        // If n1 stores a register to memory and n2 loads from the same
-        // memory location into another register, we can replace the load
-        // with a direct register-to-register move.
-        if (n1->type == OP_MOV && n2->type == OP_MOV &&
-            n1->dst_op.mode == MODE_INDIRECT && n1->src_op.mode == MODE_REG &&
-            n2->dst_op.mode == MODE_REG      && n2->src_op.mode == MODE_INDIRECT)
-        {
-            // Check if both operations target the same memory address
-            if (str_case_eq(n1->dst_op.reg, n2->src_op.reg) == 0 &&
-                n1->dst_op.offset == n2->src_op.offset)
-            {
-                // Replace n2's source (memory) with n1's source (register)
-                n2->src_op = n1->src_op;
-                snprintf(n2->raw, sizeof(n2->raw), "    MOV %s, %s", n2->dst_op.reg, n2->src_op.reg);
-                optimizations++;
-            }
-        }
-
-        curr = curr->next;
-    }
-
-    return optimizations;
-}*/
 
 // ===================================================================
 // PEEPHOLE: Redundant Jump Elimination
@@ -821,110 +845,6 @@ int peephole_dead_stores(AsmNode *head)
 }
 
 // ===================================================================
-// PEEPHOLE: Dead Store Elimination (DSE)
-// Eliminates register writes that are overwritten before ever being read.
-// ===================================================================
-/*
-int peephole_dead_stores(AsmNode *head)
-{
-    int optimizations = 0;
-    AsmNode *curr = head ? head->next : NULL;
-
-    while (curr)
-    {
-        // We only care about pure MOV instructions that define a register
-        if (curr->type == OP_MOV && curr->has_dst && curr->dst_op.mode == MODE_REG)
-        {
-            char *def_reg = curr->dst_op.reg;
-
-            // Never optimize away stack frame pointers
-            if (!str_case_eq(def_reg, "SP") && !str_case_eq(def_reg, "BP"))
-            {
-                AsmNode *scan = curr->next;
-                while (scan)
-                {
-                    if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
-                        scan = scan->next;
-                        continue;
-                    }
-
-                    // Stop at control flow boundaries or function calls
-                    if (is_control_flow_boundary(scan) || str_case_eq(scan->mnemonic, "CALL")) break;
-
-                    // If any instruction READS our register, the store is live! Abort scan.
-                    if (is_register_read(scan, def_reg)) {
-                        break;
-                    }
-
-                    // If we find another pure MOV that OVERWRITES our register without reading it,
-                    // then our original 'curr' instruction was a completely Dead Store!
-                    if (scan->type == OP_MOV && scan->has_dst &&
-                        scan->dst_op.mode == MODE_REG && str_case_eq(scan->dst_op.reg, def_reg))
-                    {
-                        curr->type = OP_OTHER;
-                        snprintf(curr->raw, sizeof(curr->raw), "; optimized out dead store: MOV %s", def_reg);
-                        optimizations++;
-                        break;
-                    }
-
-                    scan = scan->next;
-                }
-            }
-        }
-        curr = curr->next;
-    }
-
-    return optimizations;
-}*/
-
-// ===================================================================
-// PEEPHOLE: Dead Store Elimination
-// Removes stores that are immediately overwritten to the same address:
-//   - MOV [r1+off], r2; MOV [r1+off], r3 → remove first MOV
-// ===================================================================
-/*
-int peephole_dead_stores(AsmNode *head)
-{
-    int optimizations = 0;
-    AsmNode *curr = head ? head->next : NULL;
-
-    while (curr && curr->next)
-    {
-        AsmNode *n1 = curr;
-        AsmNode *n2 = curr->next;
-
-        // Skip if n1 is not a store (MOV to indirect address)
-        if (n1->type != OP_MOV || n1->dst_op.mode != MODE_INDIRECT)
-        {
-            curr = curr->next;
-            continue;
-        }
-
-        // Skip if n2 is not also a store
-        if (n2->type != OP_MOV || n2->dst_op.mode != MODE_INDIRECT)
-        {
-            curr = curr->next;
-            continue;
-        }
-
-        // --- Consecutive Stores to Same Address ---
-        // If both stores target the same memory location [reg+offset],
-        // the first store's value is never read, so it can be removed.
-        if (str_case_eq(n1->dst_op.reg, n2->dst_op.reg) == 0 &&
-            n1->dst_op.offset == n2->dst_op.offset)
-        {
-            remove_node(n1);
-            optimizations++;
-            curr = n2; // Continue from n2 (now the first in the pair)
-            continue;
-        }
-
-        curr = curr->next;
-    }
-    return optimizations;
-}*/
-
-// ===================================================================
 // PEEPHOLE: Redundant Load Elimination
 // Replaces a load from an address with a register if the value was
 // just loaded into another register:
@@ -1129,61 +1049,6 @@ int peephole_immediate_prop(AsmNode *head)
 
     return optimizations;
 }
-
-// ===================================================================
-// PEEPHOLE: Immediate Propagation
-// Propagates immediate values through MOV into subsequent ops:
-//   - MOV r1, 5; IADD r2, r1 → IADD r2, 5
-//   - MOV r1, 5; ISUB r2, r1 → ISUB r2, 5
-//   - MOV r1, 5; MOV r2, r1 → MOV r2, 5
-// ===================================================================
-/*
-int peephole_immediate_prop(AsmNode *head)
-{
-    int optimizations = 0;
-    AsmNode *curr = head ? head->next : NULL;
-
-    while (curr && curr->next)
-    {
-        AsmNode *n1 = curr;
-        AsmNode *n2 = curr->next;
-
-        // Skip if n1 is not MOV with immediate source
-        if (n1->type != OP_MOV || n1->src_op.mode != MODE_IMMEDIATE)
-        {
-            curr = curr->next;
-            continue;
-        }
-
-        // Check if n2 uses n1's destination register as its source
-        if (n2->src_op.mode == MODE_REG &&
-            str_case_eq(n2->src_op.reg, n1->dst_op.reg) == 0)
-        {
-            // --- Propagate into Arithmetic Ops ---
-            // Replace the register source with the immediate value
-            if (n2->type == OP_IADD || n2->type == OP_ISUB || n2->type == OP_IMUL || n2->type == OP_IDIV)
-            {
-                n2->src_op = n1->src_op;
-                snprintf(n2->src_op.raw, sizeof(n2->src_op.raw), "%d", n2->src_op.immediate);
-                snprintf(n2->raw, sizeof(n2->raw), "    %s %s, %s",
-                         n2->mnemonic, n2->dst_op.raw, n2->src_op.raw);
-                optimizations++;
-            }
-            // --- Propagate into MOV ---
-            // MOV r1, 5; MOV r2, r1 → MOV r2, 5
-            else if (n2->type == OP_MOV)
-            {
-                n2->src_op = n1->src_op;
-                snprintf(n2->src_op.raw, sizeof(n2->src_op.raw), "%d", n2->src_op.immediate);
-                snprintf(n2->raw, sizeof(n2->raw), "    MOV %s, %d", n2->dst_op.raw, n2->src_op.immediate);
-                optimizations++;
-            }
-        }
-
-        curr = curr->next;
-    }
-    return optimizations;
-}*/
 
 // ===================================================================
 // PEEPHOLE: Jump Chain Elimination

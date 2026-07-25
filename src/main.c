@@ -528,7 +528,7 @@ int  main (int  argc, char **argv)
 
         // omit frame pointers
         if (config.enable_omit_frame_pointers) {
-            sh_opts = omit_frame_pointers(program_ast);
+            ofp_opts = omit_frame_pointers(program_ast);
         }
 
         // Calculate total optimizations for this pass
