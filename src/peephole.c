@@ -42,6 +42,12 @@ int peephole_pairs(AsmNode *head)
 
     while (curr && curr->next)
     {
+		// CRITICAL FIX: Immediately skip comments, blank lines, and labels!
+        if (curr->type == OP_OTHER || curr->type == OP_LABEL) {
+            curr = curr->next;
+            continue;
+        }
+
         AsmNode *n1 = curr;
         AsmNode *n2 = curr->next;
 
@@ -290,11 +296,10 @@ int peephole_forwarding(AsmNode *head)
                 AsmNode *scan = curr->next;
                 while (scan)
                 {
-                    // Skip blank lines and inline comments
-                    if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
-                        scan = scan->next;
-                        continue;
-                    }
+					if (scan->type == OP_OTHER) {
+						scan = scan->next;
+						continue;
+					}
 
                     // Stop scanning at control flow boundaries or if registers change
                     if (is_control_flow_boundary(scan)) break;
@@ -337,10 +342,10 @@ int peephole_forwarding(AsmNode *head)
                     AsmNode *scan = curr->next;
                     while (scan)
                     {
-                        if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
-                            scan = scan->next;
-                            continue;
-                        }
+						if (scan->type == OP_OTHER) {
+							scan = scan->next;
+							continue;
+						}
 
                         if (is_control_flow_boundary(scan)) break;
 
@@ -411,11 +416,11 @@ int peephole_jumps(AsmNode *head)
         {
             // Skip over comments/blank lines to find the next real instruction
             AsmNode *next_node = curr->next;
-            while (next_node && next_node->type == OP_OTHER &&
-                  (next_node->raw[0] == '\0' || next_node->raw[0] == ';'))
-            {
-                next_node = next_node->next;
-            }
+
+			// For fast-forwarding a pointer to the next real instruction:
+			while (next_node && next_node->type == OP_OTHER) {
+				next_node = next_node->next;
+			}
 
             // --- Jump to Next Label ---
             // If the next non-comment node is a label, and the JMP targets
@@ -460,11 +465,12 @@ int peephole_movs(AsmNode *head)
         {
             // Skip over comments/blank lines to find the next real instruction
             AsmNode *n2 = curr->next;
-            while (n2 && n2->type == OP_OTHER &&
-                  (n2->raw[0] == '\0' || n2->raw[0] == ';'))
-            {
+
+			// For fast-forwarding a pointer to the next real instruction:
+			while (n2 && n2->type == OP_OTHER) {
                 n2 = n2->next;
             }
+
             if (!n2) break;
 
             if (n2->type == OP_MOV)
@@ -527,9 +533,9 @@ int peephole_immediates(AsmNode *head)
         {
             // Skip over comments/blank lines to find the next real instruction
             AsmNode *n2 = curr->next;
-            while (n2 && n2->type == OP_OTHER &&
-                  (n2->raw[0] == '\0' || n2->raw[0] == ';'))
-            {
+
+			// For fast-forwarding a pointer to the next real instruction:
+			while (n2 && n2->type == OP_OTHER) {
                 n2 = n2->next;
             }
 
@@ -807,10 +813,10 @@ int peephole_dead_stores(AsmNode *head)
                 AsmNode *scan = curr->next;
                 while (scan)
                 {
-                    if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
-                        scan = scan->next;
-                        continue;
-                    }
+					if (scan->type == OP_OTHER) {
+						scan = scan->next;
+						continue;
+					}
 
                     // ----------------------------------------------------
                     // CRITICAL CHANGE 1:
@@ -928,6 +934,12 @@ int peephole_immediate_prop(AsmNode *head)
 
     while (curr)
     {
+		// CRITICAL FIX: Immediately skip comments, blank lines, and labels!
+        if (curr->type == OP_OTHER || curr->type == OP_LABEL) {
+            curr = curr->next;
+            continue;
+        }
+
         // ----------------------------------------------------------
         // PATTERN 1: Identity Math Elimination (e.g., IADD R1, 0)
         // ----------------------------------------------------------
@@ -963,10 +975,10 @@ int peephole_immediate_prop(AsmNode *head)
             AsmNode *scan = curr->next;
             while (scan)
             {
-                if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
-                    scan = scan->next;
-                    continue;
-                }
+				if (scan->type == OP_OTHER) {
+					scan = scan->next;
+					continue;
+				}
                 if (is_control_flow_boundary(scan)) break;
 
                 // If target_reg is read as a SOURCE (e.g., in MOV [SP], R1), we cannot fold
@@ -1021,10 +1033,10 @@ int peephole_immediate_prop(AsmNode *head)
             AsmNode *scan = curr->next;
             while (scan)
             {
-                if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
-                    scan = scan->next;
-                    continue;
-                }
+				if (scan->type == OP_OTHER) {
+					scan = scan->next;
+					continue;
+				}
                 if (is_control_flow_boundary(scan)) break;
                 if (scan->has_src && scan->src_op.mode == MODE_REG && str_case_eq(scan->src_op.reg, target_reg)) break;
 
@@ -1082,9 +1094,9 @@ int peephole_jmp_chain(AsmNode *head)
         {
             // Skip over comments/blank lines to find the target label
             AsmNode *target = curr->next;
-            while (target && target->type == OP_OTHER &&
-                  (target->raw[0] == '\0' || target->raw[0] == ';'))
-            {
+
+			// For fast-forwarding a pointer to the next real instruction:
+			while (target && target->type == OP_OTHER) {
                 target = target->next;
             }
 
@@ -1095,9 +1107,9 @@ int peephole_jmp_chain(AsmNode *head)
             {
                 // Find the instruction after the label (skip comments)
                 AsmNode *next_after_label = target->next;
-                while (next_after_label && next_after_label->type == OP_OTHER &&
-                      (next_after_label->raw[0] == '\0' || next_after_label->raw[0] == ';'))
-                {
+
+				// For fast-forwarding a pointer to the next real instruction:
+				while (next_after_label && next_after_label->type == OP_OTHER) {
                     next_after_label = next_after_label->next;
                 }
 
