@@ -1,23 +1,22 @@
-# Compiler and Flags
-CC      := gcc
-CFLAGS  := -Wall -Wextra -O2 -std=c99
-TARGET  := v32opt
-SRC     := v32opt.c
-OBJ     := $(SRC:.c=.o)
+# --- Base Project Makefile ---
 
-# Default rule
-all: $(TARGET)
+.PHONY: all clean install tests
 
-# Link the executable
-$(TARGET): $(OBJ)
-	$(CC) $(CFLAGS) -o $@ $^
+# Default target: build the main compiler executable inside src/
+all:
+	$(MAKE) -C src
 
-# Compile source files to object files
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-# Clean build artifacts
+# Clean both the build files in src/ and the generated assembly in testing/
 clean:
-	rm -f $(OBJ) $(TARGET)
+	rm -f err.txt v32lua.[ch]
+	$(MAKE) -C src clean
+	$(MAKE) -C testing clean
 
-.PHONY: all clean
+# Pass the install target down to the src directory
+install:
+	$(MAKE) -C src install
+
+# Run the test compilations. 
+# We explicitly depend on the optimizer binary ('v32opt') being built first!
+tests: v32opt
+	$(MAKE) -C testing
