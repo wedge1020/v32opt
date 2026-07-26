@@ -36,8 +36,8 @@ This project and  this documentation - was built with  the help of AI:
 5. [Phase 3: Interprocedural Inlining (-O3)](#phase-3-interprocedural-inlining--o3)
 6. [Experimental Passes: Memory-to-Register Promotion](#experimental-passes-memory-to-register-promotion)
 7. [CFG Visualization](#cfg-visualization)
-8. [Safety and Correctness Guardrails](#safety and correctness guardrails)
-9. [Diagnostic and Debug Options](#diagnostic and debug options)
+8. [Safety and Correctness Guardrails](#safety-and-correctness-guardrails)
+9. [Diagnostic and Debug Options](#diagnostic-and-debug-options)
 
 ---
 
