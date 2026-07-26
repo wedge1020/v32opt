@@ -990,9 +990,6 @@ int peephole_immediate_prop(AsmNode *head)
 // Chains consecutive jumps to avoid indirection:
 //   - JMP L1; L1: JMP L2 → JMP L2
 // ===================================================================
-// ===================================================================
-// PEEPHOLE: Jump Chain Elimination
-// ===================================================================
 int peephole_jmp_chain(AsmNode *head)
 {
     int optimizations = 0;
@@ -1013,6 +1010,19 @@ int peephole_jmp_chain(AsmNode *head)
             // --- Jump to Label Followed by Another Jump ---
             if (target && target->type == OP_LABEL)
             {
+                // FIX: Extract and verify the JMP's target matches this label
+                char lbl[128] = {0};
+                safe_str_copy(lbl, target->raw, sizeof(lbl));
+                char *colon = strchr(lbl, ':');
+                if (colon) *colon = '\0';
+                trim(lbl);
+
+                // Only chain if JMP targets this specific label
+                if (!str_case_eq(trim(curr->dst_op.raw), lbl)) {
+                    curr = curr->next;
+                    continue;
+                }
+
                 // Find the instruction after the label (skip comments)
                 AsmNode *next_after_label = target->next;
                 while (next_after_label && next_after_label->type == OP_OTHER &&
@@ -1027,7 +1037,7 @@ int peephole_jmp_chain(AsmNode *head)
                     safe_str_copy(curr->dst_op.raw, next_after_label->dst_op.raw, sizeof(curr->dst_op.raw));
                     snprintf(curr->raw, sizeof(curr->raw), "    JMP %s", curr->dst_op.raw);
 
-                    // FIX: Don't delete the label - just comment out the intermediate JMP
+                    // Don't delete the label - just comment out the intermediate JMP
                     next_after_label->type = OP_OTHER;
                     snprintf(next_after_label->raw, sizeof(next_after_label->raw),
                              "; optimized out jump chain");
