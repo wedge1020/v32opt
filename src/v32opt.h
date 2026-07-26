@@ -195,6 +195,7 @@ typedef struct {
 typedef struct {
     bool verbose;
     bool testing;
+	bool debug;
     bool enable_peephole_pairs;
     bool enable_peephole_algebra;
     bool enable_peephole_forwarding;

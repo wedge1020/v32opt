@@ -15,6 +15,8 @@ int  main (int  argc, char **argv)
                 argv[0]);
         fprintf(stdout, "Options:\n");
         fprintf(stdout, "  -v               Verbose output (show pass statistics)\n");
+        fprintf(stdout, "  -d               In-code debugging (mark the hits)\n");
+        fprintf(stdout, "  -t               Testing mode: just display opt:hits\n");
         fprintf(stdout, "  --dot <cfg.dot>  Export Control Flow Graph to DOT format\n");
         fprintf(stdout, "  -o <file>        Specify output assembly file name\n");
         fprintf(stdout, "  -O0              Disable all optimizations [default]\n");
@@ -45,7 +47,7 @@ int  main (int  argc, char **argv)
         fprintf(stdout, "  -finline-max=N   Cap the number of inlined CALL sites to N\n");
         fprintf(stdout, "  -fmax_passes=N   Cap the maximum iterative optimization passes to N\n\n");
         fprintf(stdout, "NOTE: peephole_dead_stores, omit_frame_pointers,\n");
-		fprintf(stdout, "promote_regs, promote_leaf, and promote_loops not yet\n");
+        fprintf(stdout, "promote_regs, promote_leaf, and promote_loops not yet\n");
         fprintf(stdout, "connected to any optimization category. Test and bugfix first\n\n");
         return (1);
     }
@@ -56,9 +58,9 @@ int  main (int  argc, char **argv)
     int  max_passes   = 1000;
     OptType tally[MAX_OPTIMIZATION_ALGORITHMS]  = { 0 };
 
-	//for (int index  = 0; index <  MAX_OPTIMIZATION_ALGORITHMS; index++)
-//	{
-//		tally[index
+    //for (int index  = 0; index <  MAX_OPTIMIZATION_ALGORITHMS; index++)
+//    {
+//        tally[index
 
     // -------------------------------------------------------------------
     // Optimization Configuration
@@ -66,6 +68,7 @@ int  main (int  argc, char **argv)
     OptConfig config = {
         .verbose                         = false,
         .testing                         = false,
+        .debug                           = false,
         .enable_peephole_pairs           = false,
         .enable_peephole_algebra         = false,
         .enable_peephole_forwarding      = false,
@@ -103,6 +106,8 @@ int  main (int  argc, char **argv)
             config.verbose = true;
         } else if (strcmp(argv[i], "-t") == 0) {
             config.testing = true;
+        } else if (strcmp(argv[i], "-d") == 0) {
+            config.debug   = true;
         } else if (strcmp(argv[i], "-O0") == 0) {
             config.enable_peephole_pairs           = false;
             config.enable_peephole_algebra         = false;
@@ -869,88 +874,88 @@ int  main (int  argc, char **argv)
     // -------------------------------------------------------------------
     if (config.testing)
     {
-		for (int index  = 0; index <  MAX_OPTIMIZATION_ALGORITHMS; index++)
-		{
-			if (tally[index] >  0)
-			{
-				switch (index)
-				{
-					case OPT_PEEPHOLE_PAIRS:
-						fprintf (stdout, "peephole_pairs:");
-						break;
+        for (int index  = 0; index <  MAX_OPTIMIZATION_ALGORITHMS; index++)
+        {
+            if (tally[index] >  0)
+            {
+                switch (index)
+                {
+                    case OPT_PEEPHOLE_PAIRS:
+                        fprintf (stdout, "peephole_pairs:");
+                        break;
 
-					case OPT_PEEPHOLE_ALGEBRA:
-						fprintf (stdout, "peephole_algebra:");
-						break;
+                    case OPT_PEEPHOLE_ALGEBRA:
+                        fprintf (stdout, "peephole_algebra:");
+                        break;
 
-					case OPT_PEEPHOLE_FORWARDING:
-						fprintf (stdout, "peephole_forwarding:");
-						break;
+                    case OPT_PEEPHOLE_FORWARDING:
+                        fprintf (stdout, "peephole_forwarding:");
+                        break;
 
-					case OPT_PEEPHOLE_JUMPS:
-						fprintf (stdout, "peephole_jumps:");
-						break;
+                    case OPT_PEEPHOLE_JUMPS:
+                        fprintf (stdout, "peephole_jumps:");
+                        break;
 
-					case OPT_PEEPHOLE_MOVS:
-						fprintf (stdout, "peephole_movs:");
-						break;
+                    case OPT_PEEPHOLE_MOVS:
+                        fprintf (stdout, "peephole_movs:");
+                        break;
 
-					case OPT_PEEPHOLE_IMMEDIATES:
-						fprintf (stdout, "peephole_immediates:");
-						break;
+                    case OPT_PEEPHOLE_IMMEDIATES:
+                        fprintf (stdout, "peephole_immediates:");
+                        break;
 
-					case OPT_PEEPHOLE_REDUCE:
-						fprintf (stdout, "peephole_reduce:");
-						break;
+                    case OPT_PEEPHOLE_REDUCE:
+                        fprintf (stdout, "peephole_reduce:");
+                        break;
 
-					case OPT_PEEPHOLE_DEAD_STORES:
-						fprintf (stdout, "peephole_dead_stores:");
-						break;
+                    case OPT_PEEPHOLE_DEAD_STORES:
+                        fprintf (stdout, "peephole_dead_stores:");
+                        break;
 
-					case OPT_PEEPHOLE_LOADS:
-						fprintf (stdout, "peephole_loads:");
-						break;
+                    case OPT_PEEPHOLE_LOADS:
+                        fprintf (stdout, "peephole_loads:");
+                        break;
 
-					case OPT_PEEPHOLE_IMMEDIATE_PROP:
-						fprintf (stdout, "peephole_immediate_prop: ");
-						break;
+                    case OPT_PEEPHOLE_IMMEDIATE_PROP:
+                        fprintf (stdout, "peephole_immediate_prop: ");
+                        break;
 
-					case OPT_PEEPHOLE_JMP_CHAIN:
-						fprintf (stdout, "peephole_jmp_chain:");
-						break;
+                    case OPT_PEEPHOLE_JMP_CHAIN:
+                        fprintf (stdout, "peephole_jmp_chain:");
+                        break;
 
-					case OPT_PEEPHOLE_SHIFTS:
-						fprintf (stdout, "peephole_shifts:");
-						break;
+                    case OPT_PEEPHOLE_SHIFTS:
+                        fprintf (stdout, "peephole_shifts:");
+                        break;
 
-					case OPT_DCE:
-						fprintf (stdout, "dce:");
-						break;
+                    case OPT_DCE:
+                        fprintf (stdout, "dce:");
+                        break;
 
-					case OPT_CONSTANT_FOLDING:
-						fprintf (stdout, "constant_folding:");
-						break;
+                    case OPT_CONSTANT_FOLDING:
+                        fprintf (stdout, "constant_folding:");
+                        break;
 
-					case OPT_INLINE:
-						fprintf (stdout, "inline:");
-						break;
+                    case OPT_INLINE:
+                        fprintf (stdout, "inline:");
+                        break;
 
-					case OPT_PROMOTE_REGS:
-						fprintf (stdout, "promote_regs:");
-						break;
+                    case OPT_PROMOTE_REGS:
+                        fprintf (stdout, "promote_regs:");
+                        break;
 
-					case OPT_PROMOTE_LEAF:
-						fprintf (stdout, "promote_leaf:");
-						break;
+                    case OPT_PROMOTE_LEAF:
+                        fprintf (stdout, "promote_leaf:");
+                        break;
 
-					case OPT_PROMOTE_LOOPS:
-						fprintf (stdout, "promote_loops:");
-						break;
+                    case OPT_PROMOTE_LOOPS:
+                        fprintf (stdout, "promote_loops:");
+                        break;
 
-					case OPT_OMIT_FRAME_POINTERS:
-						fprintf (stdout, "omit_frame_pointers:");
-						break;
-				}
+                    case OPT_OMIT_FRAME_POINTERS:
+                        fprintf (stdout, "omit_frame_pointers:");
+                        break;
+                }
 
                     fprintf (stdout, "%d\n", tally[index]);
                 }
