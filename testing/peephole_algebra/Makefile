@@ -1,5 +1,5 @@
 # --- Configuration ---
-TEST             = peephole_forwarding
+TEST             = peephole_algebra
 OPTIMIZER        = ../../v32opt
 COMPILER         = compile
 ASSEMBLER        = assemble
