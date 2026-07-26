@@ -139,11 +139,18 @@ Operand parse_operand(const char *str) {
         op.is_float = (strchr(str, '.') != NULL);
         op.immediate = op.is_float ? 0 : (int)strtoul(str, NULL, 0);
     }
-    // --- Register: "R0", "SP", "BP" ---
-    else {
-        op.mode = MODE_REG;
-        safe_str_copy(op.reg, str, sizeof(op.reg));
-    }
+	// --- Register: ONLY R0-R15, SP, BP ---
+	else if (get_reg_index(str) >= 0)
+	{
+		op.mode = MODE_REG;
+		safe_str_copy(op.reg, str, sizeof(op.reg));
+	}
+	// --- Labels/Symbols: Everything else (e.g., __literal_string_11455) ---
+	else {
+		op.mode = MODE_IMMEDIATE;  // Treat as address (resolved by assembler)
+		op.immediate = 0;
+		op.is_float = false;
+	}
 
     return op;
 }
