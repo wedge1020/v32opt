@@ -49,14 +49,13 @@ char *trim(char *str) {
 // Returns: true if strings are equal (case-insensitive), false otherwise
 // ===================================================================
 bool str_case_eq(const char *s1, const char *s2) {
-    // CRITICAL ARCHITECTURAL SHIELD: Never segfault on NULL strings!
-    if (!s1 || !s2) return s1 == s2; 
-    
+    // Compare character by character (case-insensitive)
     while (*s1 && *s2) {
         if (toupper((unsigned char)*s1) != toupper((unsigned char)*s2)) 
             return false;
         s1++; s2++;
     }
+    // Both strings must reach end simultaneously
     return *s1 == *s2;
 }
 
@@ -140,17 +139,10 @@ Operand parse_operand(const char *str) {
         op.is_float = (strchr(str, '.') != NULL);
         op.immediate = op.is_float ? 0 : (int)strtoul(str, NULL, 0);
     }
-    // --- Register or Symbol ---
+    // --- Register: "R0", "SP", "BP" ---
     else {
-        if (get_reg_index(str) != -1) {
-            op.mode = MODE_REG;
-            safe_str_copy(op.reg, str, sizeof(op.reg));
-        } else {
-            // It is a label, global symbol, or constant name (e.g., my_buffer)
-            op.mode = MODE_IMMEDIATE;
-            op.is_float = false;
-            op.immediate = 0; // Symbol address resolved at link/assemble time
-        }
+        op.mode = MODE_REG;
+        safe_str_copy(op.reg, str, sizeof(op.reg));
     }
 
     return op;
@@ -394,16 +386,4 @@ int get_log2(int x) {
         log++;
     }
     return log;
-}
-
-const InstructionMeta* lookup_instruction_meta(const char *mnemonic) {
-    if (!mnemonic) return NULL;
-
-    int num_insts = sizeof(VIRCON_INST_TABLE) / sizeof(VIRCON_INST_TABLE[0]);
-    for (int i = 0; i < num_insts; i++) {
-        if (str_case_eq(VIRCON_INST_TABLE[i].mnemonic, mnemonic)) {
-            return &VIRCON_INST_TABLE[i];
-        }
-    }
-    return NULL; // Will return NULL for comments, labels, or directives
 }

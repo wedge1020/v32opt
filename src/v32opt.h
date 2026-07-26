@@ -5,131 +5,109 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <ctype.h>
 
-#define MAX_INLINE_CANDIDATES 64
-#define MAX_BODY_INS 8
-#define MAX_FUNCTIONS 4096
+#define  MAX_OPTIMIZATION_ALGORITHMS 19
+#define  MAX_INLINE_CANDIDATES 64
+#define  MAX_BODY_INS 8
+#define  MAX_FUNCTIONS 4096
 
 // -------------------------------------------------------------------
 // Enums & Data Structures
 // -------------------------------------------------------------------
-#include <stdbool.h>
-#include <stdint.h>
 
-// Behavioral categories based on Vircon32 instruction operand semantics
-typedef enum {
-    INST_NORMAL,      // Standard explicit dst/src operations (MOV, IADD, etc.)
-    INST_UNARY_RMW,   // Read-Modify-Write on a single operand (CIB, NOT, SIN, etc.)
-    INST_BRANCH,      // Control flow and program redirection (JMP, JT, CALL, HLT, etc.)
-    INST_STRING,      // Hardware iterative string ops (MOVS, SETS, CMPS)
-    INST_STACK        // Hardware stack ops (PUSH, POP)
-} InstBehavior;
-
-typedef struct {
-    const char *mnemonic;
-    InstBehavior behavior;
-    bool is_control_flow;
-    uint32_t implicit_read_mask;  // Bitmask of hardware registers implicitly read
-    uint32_t implicit_write_mask; // Bitmask of hardware registers implicitly written
-} InstructionMeta;
-
-// Vircon32 Register Bitmasks (R0 is bit 0 ... R15 is bit 15)
-#define MASK_R11_CR (1 << 11) // R11: String Count Register (CR)
-#define MASK_R12_SR (1 << 12) // R12: String Source Register (SR)
-#define MASK_R13_DR (1 << 13) // R13: String Destination Register (DR)
-#define MASK_R15_SP (1 << 15) // R15: Stack Pointer (SP)
-
-#define MASK_STRING_ALL (MASK_R11_CR | MASK_R12_SR | MASK_R13_DR)
-
-// Exhaustive table of all 64 Vircon32 CPU Instructions (Opcodes 0x00 to 0x3F)
-static const InstructionMeta VIRCON_INST_TABLE[] = {
-    // Control & Branch Instructions (Opcodes 0x00 - 0x06)
-    { "HLT",   INST_BRANCH,    true,  0, 0 },                                  // 0x00: Halt CPU
-    { "WAIT",  INST_BRANCH,    true,  0, 0 },                                  // 0x01: Wait for next frame
-    { "JMP",   INST_BRANCH,    true,  0, 0 },                                  // 0x02: Unconditional jump
-    { "CALL",  INST_BRANCH,    true,  MASK_R15_SP, MASK_R15_SP },              // 0x03: Call subroutine (pushes IP to stack)
-    { "RET",   INST_BRANCH,    true,  MASK_R15_SP, MASK_R15_SP },              // 0x04: Return from subroutine (pops IP from stack)
-    { "JT",    INST_BRANCH,    true,  0, 0 },                                  // 0x05: Jump if true (non-zero)
-    { "JF",    INST_BRANCH,    true,  0, 0 },                                  // 0x06: Jump if false (zero)
-
-    // Comparison Instructions (Opcodes 0x07 - 0x12)
-    { "IEQ",   INST_NORMAL,    false, 0, 0 },                                  // 0x07: Integer equal
-    { "INE",   INST_NORMAL,    false, 0, 0 },                                  // 0x08: Integer not equal
-    { "IGT",   INST_NORMAL,    false, 0, 0 },                                  // 0x09: Integer greater than
-    { "IGE",   INST_NORMAL,    false, 0, 0 },                                  // 0x0A: Integer greater than or equal
-    { "ILT",   INST_NORMAL,    false, 0, 0 },                                  // 0x0B: Integer less than
-    { "ILE",   INST_NORMAL,    false, 0, 0 },                                  // 0x0C: Integer less than or equal
-    { "FEQ",   INST_NORMAL,    false, 0, 0 },                                  // 0x0D: Float equal
-    { "FNE",   INST_NORMAL,    false, 0, 0 },                                  // 0x0E: Float not equal
-    { "FGT",   INST_NORMAL,    false, 0, 0 },                                  // 0x0F: Float greater than
-    { "FGE",   INST_NORMAL,    false, 0, 0 },                                  // 0x10: Float greater than or equal
-    { "FLT",   INST_NORMAL,    false, 0, 0 },                                  // 0x11: Float less than
-    { "FLE",   INST_NORMAL,    false, 0, 0 },                                  // 0x12: Float less than or equal
-
-    // Data & Memory Instructions (Opcodes 0x13 - 0x1B)
-    { "MOV",   INST_NORMAL,    false, 0, 0 },                                  // 0x13: Copy data
-    { "LEA",   INST_NORMAL,    false, 0, 0 },                                  // 0x14: Load effective address
-    { "PUSH",  INST_STACK,     false, MASK_R15_SP, MASK_R15_SP },              // 0x15: Push to stack (decrements SP)
-    { "POP",   INST_STACK,     false, MASK_R15_SP, MASK_R15_SP },              // 0x16: Pop from stack (increments SP)
-    { "IN",    INST_NORMAL,    false, 0, 0 },                                  // 0x17: Read from I/O port
-    { "OUT",   INST_NORMAL,    false, 0, 0 },                                  // 0x18: Write to I/O port
-    { "MOVS",  INST_STRING,    false, MASK_STRING_ALL, MASK_STRING_ALL },      // 0x19: Copy string (loops CR, reads SR/DR, modifies DR/SR/CR)
-    { "SETS",  INST_STRING,    false, MASK_STRING_ALL, MASK_R13_DR | MASK_R11_CR }, // 0x1A: Set string (loops CR, reads SR/DR, modifies DR/CR)
-    { "CMPS",  INST_STRING,    false, MASK_STRING_ALL, MASK_STRING_ALL },      // 0x1B: Compare string (loops CR, reads/modifies DR/SR/CR)
-
-    // Conversion Instructions (Opcodes 0x1C - 0x1F)
-    { "CIF",   INST_UNARY_RMW, false, 0, 0 },                                  // 0x1C: Convert integer to float
-    { "CFI",   INST_UNARY_RMW, false, 0, 0 },                                  // 0x1D: Convert float to integer
-    { "CIB",   INST_UNARY_RMW, false, 0, 0 },                                  // 0x1E: Convert integer to boolean
-    { "CFB",   INST_UNARY_RMW, false, 0, 0 },                                  // 0x1F: Convert float to boolean
-
-    // Logic Instructions (Opcodes 0x20 - 0x25)
-    { "NOT",   INST_UNARY_RMW, false, 0, 0 },                                  // 0x20: Bitwise NOT
-    { "AND",   INST_NORMAL,    false, 0, 0 },                                  // 0x21: Bitwise AND
-    { "OR",    INST_NORMAL,    false, 0, 0 },                                  // 0x22: Bitwise inclusive OR
-    { "XOR",   INST_NORMAL,    false, 0, 0 },                                  // 0x23: Bitwise exclusive OR
-    { "BNOT",  INST_UNARY_RMW, false, 0, 0 },                                  // 0x24: Boolean NOT
-    { "SHL",   INST_NORMAL,    false, 0, 0 },                                  // 0x25: Bitwise shift left
-
-    // Integer Arithmetic Instructions (Opcodes 0x26 - 0x2E)
-    { "IADD",  INST_NORMAL,    false, 0, 0 },                                  // 0x26: Integer addition
-    { "ISUB",  INST_NORMAL,    false, 0, 0 },                                  // 0x27: Integer subtraction
-    { "IMUL",  INST_NORMAL,    false, 0, 0 },                                  // 0x28: Integer multiplication
-    { "IDIV",  INST_NORMAL,    false, 0, 0 },                                  // 0x29: Integer division
-    { "IMOD",  INST_NORMAL,    false, 0, 0 },                                  // 0x2A: Integer modulus
-    { "ISGN",  INST_UNARY_RMW, false, 0, 0 },                                  // 0x2B: Integer sign toggle
-    { "IMIN",  INST_NORMAL,    false, 0, 0 },                                  // 0x2C: Integer minimum
-    { "IMAX",  INST_NORMAL,    false, 0, 0 },                                  // 0x2D: Integer maximum
-    { "IABS",  INST_UNARY_RMW, false, 0, 0 },                                  // 0x2E: Integer absolute value
-
-    // Floating Point Arithmetic Instructions (Opcodes 0x2F - 0x37)
-    { "FADD",  INST_NORMAL,    false, 0, 0 },                                  // 0x2F: Float addition
-    { "FSUB",  INST_NORMAL,    false, 0, 0 },                                  // 0x30: Float subtraction
-    { "FMUL",  INST_NORMAL,    false, 0, 0 },                                  // 0x31: Float multiplication
-    { "FDIV",  INST_NORMAL,    false, 0, 0 },                                  // 0x32: Float division
-    { "FMOD",  INST_NORMAL,    false, 0, 0 },                                  // 0x33: Float modulus
-    { "FSGN",  INST_UNARY_RMW, false, 0, 0 },                                  // 0x34: Float sign toggle
-    { "FMIN",  INST_NORMAL,    false, 0, 0 },                                  // 0x35: Float minimum
-    { "FMAX",  INST_NORMAL,    false, 0, 0 },                                  // 0x36: Float maximum
-    { "FABS",  INST_UNARY_RMW, false, 0, 0 },                                  // 0x37: Float absolute value
-
-    // Float Math Instructions (Opcodes 0x38 - 0x3F)
-    { "FLR",   INST_UNARY_RMW, false, 0, 0 },                                  // 0x38: Float floor
-    { "CEIL",  INST_UNARY_RMW, false, 0, 0 },                                  // 0x39: Float ceiling
-    { "ROUND", INST_UNARY_RMW, false, 0, 0 },                                  // 0x3A: Float rounding
-    { "SIN",   INST_UNARY_RMW, false, 0, 0 },                                  // 0x3B: Float sine
-    { "ACOS",  INST_UNARY_RMW, false, 0, 0 },                                  // 0x3C: Float arc cosine
-    { "ATAN2", INST_NORMAL,    false, 0, 0 },                                  // 0x3D: Float arc tangent (takes 2 operands)
-    { "LOG",   INST_UNARY_RMW, false, 0, 0 },                                  // 0x3E: Float natural log
-    { "POW",   INST_NORMAL,    false, 0, 0 }                                   // 0x3F: Float power (takes 2 operands)
-};
-
-typedef enum {
-    OP_MOV, OP_IADD, OP_ISUB, OP_IMUL, OP_IDIV, OP_IEQ, OP_INE, OP_IN, 
-    OP_CIB, OP_PUSH, OP_POP, OP_BNOT, OP_SHL, OP_SHR, OP_OTHER, OP_LABEL
+typedef enum
+{
+    OP_HLT   = 0,
+    OP_WAIT,
+    OP_JMP,
+    OP_CALL,
+    OP_RET,
+    OP_JT,
+    OP_JF,
+    OP_IEQ,
+    OP_INE,
+    OP_IGT,
+    OP_IGE,
+    OP_ILT,
+    OP_ILE,
+    OP_FEQ,
+    OP_FNE,
+    OP_FGT,
+    OP_FGE,
+    OP_FLT,
+    OP_FLE,
+    OP_MOV,
+    OP_LEA,
+    OP_PUSH,
+    OP_POP,
+    OP_IN,
+    OP_OUT,
+    OP_MOVS,
+    OP_SETS,
+    OP_CMPS,
+    OP_CIF,
+    OP_CFI,
+    OP_CIB,
+    OP_CFB,
+    OP_NOT,
+    OP_AND,
+    OP_OR,
+    OP_XOR,
+    OP_BNOT,
+    OP_SHL,
+    OP_IADD,
+    OP_ISUB,
+    OP_IMUL,
+    OP_IDIV,
+    OP_IMOD,
+    OP_ISGN,
+    OP_IMIN,
+    OP_IMAX,
+    OP_IABS,
+    OP_FADD,
+    OP_FSUB,
+    OP_FMUL,
+    OP_FDIV,
+    OP_FMOD,
+    OP_FSGN,
+    OP_FMIN,
+    OP_FMAX,
+    OP_FABS,
+    OP_FLR,
+    OP_CEIL,
+    OP_ROUND,
+    OP_SIN,
+    OP_ACOS,
+    OP_ATAN2,
+    OP_LOG,
+    OP_POW,
+	OP_OTHER,
+	OP_LABEL
 } OpType;
+
+typedef enum
+{
+	OPT_PEEPHOLE_PAIRS,
+	OPT_PEEPHOLE_ALGEBRA,
+	OPT_PEEPHOLE_FORWARDING,
+	OPT_PEEPHOLE_JUMPS,
+	OPT_PEEPHOLE_MOVS,
+	OPT_PEEPHOLE_IMMEDIATES,
+	OPT_PEEPHOLE_REDUCE,
+	OPT_PEEPHOLE_SHIFTS,
+	OPT_PEEPHOLE_DEAD_STORES,
+	OPT_PEEPHOLE_LOADS,
+	OPT_PEEPHOLE_IMMEDIATE_PROP,
+	OPT_PEEPHOLE_JMP_CHAIN,
+	OPT_DCE,
+	OPT_CONSTANT_FOLDING,
+	OPT_INLINE,
+	OPT_PROMOTE_REGS,
+	OPT_PROMOTE_LEAF,
+	OPT_PROMOTE_LOOPS,
+	OPT_OMIT_FRAME_POINTERS
+} OptType;
 
 typedef enum {
     MODE_NONE,
@@ -148,19 +126,17 @@ typedef struct {
 } Operand;
 
 typedef struct AsmNode {
-    int type;                   // e.g., OP_INST, OP_LABEL, etc.
+    OpType type;
     char raw[8192];      
-    char *mnemonic;             // e.g., "MOV", "CIB", "JT"
-    Operand dst_op;             // First operand
-    Operand src_op;             // Second operand
+    char mnemonic[32];  
+    
+    Operand dst_op;
+    Operand src_op;
     bool has_dst;
     bool has_src;
 
-    // --> ADD THIS LINE: <--
-    const InstructionMeta *meta; // Pointer to the architectural instruction properties
-
-    struct AsmNode *next;
     struct AsmNode *prev;
+    struct AsmNode *next;
 } AsmNode;
 
 // Lattice states for Global Constant Propagation
@@ -218,6 +194,7 @@ typedef struct {
 
 typedef struct {
     bool verbose;
+    bool testing;
     bool enable_peephole_pairs;
     bool enable_peephole_algebra;
     bool enable_peephole_forwarding;
@@ -259,9 +236,14 @@ AsmNode *create_node   (const char *, OpType, const char *, const char *, const 
 void     remove_node   (AsmNode    *);
 AsmNode *clone_node    (AsmNode    *);
 
-bool     is_unconditional_branch (AsmNode *);
-bool     is_conditional_branch   (AsmNode *);
-bool     is_branch_or_call       (AsmNode *);
+bool     is_unconditional_branch  (AsmNode    *);
+bool     is_conditional_branch    (AsmNode    *);
+bool     is_branch_or_call        (AsmNode    *);
+bool     modifies_register        (AsmNode    *, const char *);
+bool     is_control_flow_boundary (AsmNode    *);
+bool     is_register_read         (AsmNode    *, const char *);
+bool     is_live_out_register     (const char *);
+long     parse_imm_val            (const char *);
 
 // parsing / writing functions
 //
@@ -292,18 +274,8 @@ int      peephole_jmp_chain       (AsmNode *);
 bool     modifies_register        (AsmNode *, const char *);
 bool     is_control_flow_boundary (AsmNode *);
 long     parse_imm_val            (const char *);
-bool     is_string_instruction    (AsmNode *);
 bool     is_register_read         (AsmNode *, const char *);
 bool     is_live_out_register     (const char *);
-bool     is_pure_reg_def          (AsmNode *);
-bool     is_comment_or_empty      (AsmNode *);
-
-const InstructionMeta* lookup_instruction_meta (const char *);
-
-// helpers.c
-//
-bool  is_global_memory_clobber (AsmNode *);
-bool  is_global_memory_read    (AsmNode *);
 
 // stack optimizations
 //
