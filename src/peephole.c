@@ -848,6 +848,11 @@ int peephole_immediate_prop(AsmNode *head)
         // ----------------------------------------------------------
         if (curr->type == OP_MOV && curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE)
         {
+			// Skip if source is a label, not a numeric immediate
+			if (!is_numeric_immediate(&curr->src_op)) {
+				curr = curr->next;
+				continue;
+			}
             char *target_reg = curr->dst_op.reg;
             long imm1 = parse_imm_val(curr->src_op.raw);
 
@@ -905,6 +910,11 @@ int peephole_immediate_prop(AsmNode *head)
         else if ((str_case_eq(curr->mnemonic, "IADD") || str_case_eq(curr->mnemonic, "ISUB")) &&
                  curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE)
         {
+			// Skip if source is a label, not a numeric immediate
+			if (!is_numeric_immediate(&curr->src_op)) {
+				curr = curr->next;
+				continue;
+			}
             char *target_reg = curr->dst_op.reg;
             long imm1 = parse_imm_val(curr->src_op.raw);
             if (str_case_eq(curr->mnemonic, "ISUB")) imm1 = -imm1; // Normalize to addition
