@@ -54,7 +54,11 @@ int  main (int  argc, char **argv)
     char outFile[256] = {0};
     char dotFile[256] = {0};
     int  max_passes   = 1000;
-    OptType tally[MAX_OPTIMIZATION_ALGORITHMS];
+    OptType tally[MAX_OPTIMIZATION_ALGORITHMS]  = { 0 };
+
+	//for (int index  = 0; index <  MAX_OPTIMIZATION_ALGORITHMS; index++)
+//	{
+//		tally[index
 
     // -------------------------------------------------------------------
     // Optimization Configuration
@@ -861,6 +865,93 @@ int  main (int  argc, char **argv)
     // -------------------------------------------------------------------
     if (config.testing)
     {
+		for (int index  = 0; index <  MAX_OPTIMIZATION_ALGORITHMS; index++)
+		{
+			if (tally[index] >  0)
+			{
+				switch (index)
+				{
+					case OPT_PEEPHOLE_PAIRS:
+						fprintf (stdout, "peephole_pairs:");
+						break;
+
+					case OPT_PEEPHOLE_ALGEBRA:
+						fprintf (stdout, "peephole_algebra:");
+						break;
+
+					case OPT_PEEPHOLE_FORWARDING:
+						fprintf (stdout, "peephole_forwarding:");
+						break;
+
+					case OPT_PEEPHOLE_JUMPS:
+						fprintf (stdout, "peephole_jumps:");
+						break;
+
+					case OPT_PEEPHOLE_MOVS:
+						fprintf (stdout, "peephole_movs:");
+						break;
+
+					case OPT_PEEPHOLE_IMMEDIATES:
+						fprintf (stdout, "peephole_immediates:");
+						break;
+
+					case OPT_PEEPHOLE_REDUCE:
+						fprintf (stdout, "peephole_reduce:");
+						break;
+
+					case OPT_PEEPHOLE_DEAD_STORES:
+						fprintf (stdout, "peephole_dead_stores:");
+						break;
+
+					case OPT_PEEPHOLE_LOADS:
+						fprintf (stdout, "peephole_loads:");
+						break;
+
+					case OPT_PEEPHOLE_IMMEDIATE_PROP:
+						fprintf (stdout, "peephole_immediate_prop: ");
+						break;
+
+					case OPT_PEEPHOLE_JMP_CHAIN:
+						fprintf (stdout, "peephole_jmp_chain:");
+						break;
+
+					case OPT_PEEPHOLE_SHIFTS:
+						fprintf (stdout, "peephole_shifts:");
+						break;
+
+					case OPT_DCE:
+						fprintf (stdout, "dce:");
+						break;
+
+					case OPT_CONSTANT_FOLDING:
+						fprintf (stdout, "constant_folding:");
+						break;
+
+					case OPT_INLINE:
+						fprintf (stdout, "inline:");
+						break;
+
+					case OPT_PROMOTE_REGS:
+						fprintf (stdout, "promote_regs:");
+						break;
+
+					case OPT_PROMOTE_LEAF:
+						fprintf (stdout, "promote_leaf:");
+						break;
+
+					case OPT_PROMOTE_LOOPS:
+						fprintf (stdout, "promote_loops:");
+						break;
+
+					case OPT_OMIT_FRAME_POINTERS:
+						fprintf (stdout, "omit_frame_pointers:");
+						break;
+				}
+
+                    fprintf (stdout, "%d\n", tally[index]);
+                }
+            }
+
         fprintf (stdout, "total:%d\n", total_opts);
     }
 
