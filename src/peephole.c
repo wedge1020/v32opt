@@ -239,9 +239,6 @@ int peephole_algebra(AsmNode *head)
 //   1. Store-to-Load: MOV [mem], R1; ... MOV R2, [mem] -> MOV R2, R1
 //   2. Copy Prop:     MOV R1, val;   ... OP R2, R1     -> OP R2, val
 // ===================================================================
-// ===================================================================
-// PEEPHOLE: Forward-Scanning Store & Copy Propagation
-// ===================================================================
 int peephole_forwarding(AsmNode *head)
 {
     int optimizations = 0;
@@ -260,7 +257,6 @@ int peephole_forwarding(AsmNode *head)
                 int mem_off   = curr->dst_op.offset;
                 char *src_reg = curr->src_op.reg;
 
-                // FIX: Only forward to the VERY NEXT real instruction
                 AsmNode *scan = curr->next;
                 while (scan && (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';'))) {
                     scan = scan->next;
@@ -271,7 +267,6 @@ int peephole_forwarding(AsmNode *head)
                     continue;
                 }
 
-                // Stop at control flow boundaries or register modifications
                 if (is_control_flow_boundary(scan)) {
                     curr = curr->next;
                     continue;
@@ -281,14 +276,12 @@ int peephole_forwarding(AsmNode *head)
                     continue;
                 }
 
-                // Stop if another store overwrites this memory location
                 if (scan->type == OP_MOV && scan->dst_op.mode == MODE_INDIRECT &&
                     str_case_eq(scan->dst_op.reg, mem_reg) && scan->dst_op.offset == mem_off) {
                     curr = curr->next;
                     continue;
                 }
 
-                // Match: Load from same memory location
                 if (scan->type == OP_MOV && scan->dst_op.mode == MODE_REG &&
                     scan->src_op.mode == MODE_INDIRECT &&
                     str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset == mem_off) {
@@ -307,10 +300,8 @@ int peephole_forwarding(AsmNode *head)
             {
                 char *def_reg = curr->dst_op.reg;
 
-                // Protect SP/BP
                 if (!str_case_eq(def_reg, "SP") && !str_case_eq(def_reg, "BP"))
                 {
-                    // FIX: Only propagate to the VERY NEXT real instruction
                     AsmNode *scan = curr->next;
                     while (scan && (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';'))) {
                         scan = scan->next;
@@ -326,13 +317,11 @@ int peephole_forwarding(AsmNode *head)
                         continue;
                     }
 
-                    // If forwarding a register, abort if source is overwritten
                     if (curr->src_op.mode == MODE_REG && modifies_register(scan, curr->src_op.reg)) {
                         curr = curr->next;
                         continue;
                     }
 
-                    // Match: Reads def_reg in SOURCE operand
                     if (scan->has_src && scan->src_op.mode == MODE_REG &&
                         str_case_eq(scan->src_op.reg, def_reg))
                     {
@@ -348,7 +337,6 @@ int peephole_forwarding(AsmNode *head)
                             continue;
                         }
 
-                        // ARCHITECTURAL GUARD: Prevent illegal MOV [mem], imm
                         bool is_illegal_imm_store = (curr->src_op.mode == MODE_IMMEDIATE &&
                                                      scan->has_dst &&
                                                      scan->dst_op.mode != MODE_REG);
@@ -367,7 +355,6 @@ int peephole_forwarding(AsmNode *head)
                         }
                     }
 
-                    // Stop if def_reg is overwritten
                     if (modifies_register(scan, def_reg)) {
                         curr = curr->next;
                         continue;
