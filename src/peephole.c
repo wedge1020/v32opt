@@ -54,10 +54,22 @@ int peephole_pairs(AsmNode *head)
              n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
              str_case_eq(n1->dst_op.reg, n2->dst_op.reg) == 0)
         {
-            remove_node(n2);
-            optimizations++;
-            continue; // Skip n2, continue from n1->next (which is now n2->next)
-        }
+			// 🔥 NEW: Don't remove CIB if next non-comment is JT/JF
+			AsmNode *after_cib = n2->next;
+			while (after_cib && after_cib->type == OP_OTHER &&
+				   (after_cib->raw[0] == '\0' || after_cib->raw[0] == ';')) {
+				after_cib = after_cib->next;
+			}
+			if (after_cib && (str_case_eq(after_cib->mnemonic, "JT") ||
+							   str_case_eq(after_cib->mnemonic, "JF"))) {
+				curr = curr->next;
+				continue;
+			}
+
+			remove_node(n2);
+			optimizations++;
+			continue;
+		}
 
         // ----------------------------------------------------------------
         // PATTERN: Self-Inverting Pairs (Involutions)
@@ -238,7 +250,6 @@ int peephole_forwarding(AsmNode *head)
         {
             // ----------------------------------------------------------
             // RULE 1: Store-to-Load Forwarding
-            // Forward value from memory store directly to downstream loads
             // ----------------------------------------------------------
             if (curr->dst_op.mode == MODE_INDIRECT && curr->src_op.mode == MODE_REG)
             {
@@ -246,104 +257,111 @@ int peephole_forwarding(AsmNode *head)
                 int mem_off   = curr->dst_op.offset;
                 char *src_reg = curr->src_op.reg;
 
+                // FIX: Only forward to the VERY NEXT real instruction
                 AsmNode *scan = curr->next;
-                while (scan)
-                {
-                    // Skip blank lines and inline comments
-                    if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
-                        scan = scan->next;
-                        continue;
-                    }
-
-                    // Stop scanning at control flow boundaries or if registers change
-                    if (is_control_flow_boundary(scan)) break;
-                    if (modifies_register(scan, mem_reg) || modifies_register(scan, src_reg)) break;
-
-                    // Stop if another store overwrites this exact memory location
-                    if (scan->type == OP_MOV && scan->dst_op.mode == MODE_INDIRECT) {
-                        if (str_case_eq(scan->dst_op.reg, mem_reg) && scan->dst_op.offset == mem_off) break;
-                    }
-
-                    // Match: A load reading from the exact same memory location
-                    if (scan->type == OP_MOV &&
-                        scan->dst_op.mode == MODE_REG &&
-                        scan->src_op.mode == MODE_INDIRECT)
-                    {
-                        if (str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset == mem_off)
-                        {
-                            scan->src_op = curr->src_op;
-                            snprintf(scan->raw, sizeof(scan->raw), "    MOV %s, %s",
-                                     scan->dst_op.raw, scan->src_op.raw);
-                            optimizations++;
-                        }
-                    }
+                while (scan && (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';'))) {
                     scan = scan->next;
+                }
+
+                if (!scan || scan->type == OP_OTHER) {
+                    curr = curr->next;
+                    continue;
+                }
+
+                // Stop at control flow boundaries or register modifications
+                if (is_control_flow_boundary(scan)) {
+                    curr = curr->next;
+                    continue;
+                }
+                if (modifies_register(scan, mem_reg) || modifies_register(scan, src_reg)) {
+                    curr = curr->next;
+                    continue;
+                }
+
+                // Stop if another store overwrites this memory location
+                if (scan->type == OP_MOV && scan->dst_op.mode == MODE_INDIRECT &&
+                    str_case_eq(scan->dst_op.reg, mem_reg) && scan->dst_op.offset == mem_off) {
+                    curr = curr->next;
+                    continue;
+                }
+
+                // Match: Load from same memory location
+                if (scan->type == OP_MOV && scan->dst_op.mode == MODE_REG &&
+                    scan->src_op.mode == MODE_INDIRECT &&
+                    str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset == mem_off) {
+                    scan->src_op = curr->src_op;
+                    snprintf(scan->raw, sizeof(scan->raw), "    MOV %s, %s",
+                             scan->dst_op.raw, scan->src_op.raw);
+                    optimizations++;
                 }
             }
 
             // ----------------------------------------------------------
             // RULE 2: Register & Immediate Copy Propagation
-            // Forward registers/immediates to downstream reading instructions
             // ----------------------------------------------------------
             else if (curr->dst_op.mode == MODE_REG &&
                     (curr->src_op.mode == MODE_REG || curr->src_op.mode == MODE_IMMEDIATE))
             {
                 char *def_reg = curr->dst_op.reg;
 
-                // Protect stack frame pointers (SP/BP) from being forwarded/mangled
+                // Protect SP/BP
                 if (!str_case_eq(def_reg, "SP") && !str_case_eq(def_reg, "BP"))
                 {
+                    // FIX: Only propagate to the VERY NEXT real instruction
                     AsmNode *scan = curr->next;
-                    while (scan)
+                    while (scan && (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';'))) {
+                        scan = scan->next;
+                    }
+
+                    if (!scan || scan->type == OP_OTHER) {
+                        curr = curr->next;
+                        continue;
+                    }
+
+                    if (is_control_flow_boundary(scan)) {
+                        curr = curr->next;
+                        continue;
+                    }
+
+                    // If forwarding a register, abort if source is overwritten
+                    if (curr->src_op.mode == MODE_REG && modifies_register(scan, curr->src_op.reg)) {
+                        curr = curr->next;
+                        continue;
+                    }
+
+                    // Match: Reads def_reg in SOURCE operand
+                    if (scan->has_src && scan->src_op.mode == MODE_REG &&
+                        str_case_eq(scan->src_op.reg, def_reg))
                     {
-                        if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
-                            scan = scan->next;
+                        // FIX: Block POW/ATAN2 (require register operands only)
+                        if (str_case_eq(scan->mnemonic, "POW") || str_case_eq(scan->mnemonic, "ATAN2")) {
+                            curr = curr->next;
                             continue;
                         }
 
-                        if (is_control_flow_boundary(scan)) break;
+                        // ARCHITECTURAL GUARD: Prevent illegal MOV [mem], imm
+                        bool is_illegal_imm_store = (curr->src_op.mode == MODE_IMMEDIATE &&
+                                                     scan->has_dst &&
+                                                     scan->dst_op.mode != MODE_REG);
 
-                        // If forwarding a register, abort if that source value gets overwritten
-                        if (curr->src_op.mode == MODE_REG && modifies_register(scan, curr->src_op.reg)) {
-                            break;
-                        }
-
-                        // Match: Downstream instruction reads def_reg in its SOURCE operand
-                        // CRITICAL: Only match src_op! Never match dst_op!
-                        if (scan->has_src && scan->src_op.mode == MODE_REG &&
-                            str_case_eq(scan->src_op.reg, def_reg))
+                        if (!is_illegal_imm_store)
                         {
-                            // ----------------------------------------------------
-                            // ARCHITECTURAL GUARD:
-                            // Vircon32 requires at least one real register (MODE_REG) in MOV.
-                            // We cannot forward an immediate into an instruction whose
-                            // destination is NOT a direct register (e.g., MODE_INDIRECT),
-                            // as that creates illegal opcodes like: MOV [SP], -1
-                            // ----------------------------------------------------
-                            bool is_illegal_imm_store = (curr->src_op.mode == MODE_IMMEDIATE &&
-                                                         scan->has_dst &&
-                                                         scan->dst_op.mode != MODE_REG);
-
-                            if (!is_illegal_imm_store)
-                            {
-                                scan->src_op = curr->src_op;
-
-                                // Safely reconstruct the raw assembly text
-                                if (scan->has_dst) {
-                                    snprintf(scan->raw, sizeof(scan->raw), "    %s %s, %s",
-                                             scan->mnemonic, scan->dst_op.raw, scan->src_op.raw);
-                                } else {
-                                    snprintf(scan->raw, sizeof(scan->raw), "    %s %s",
-                                             scan->mnemonic, scan->src_op.raw);
-                                }
-                                optimizations++;
+                            scan->src_op = curr->src_op;
+                            if (scan->has_dst) {
+                                snprintf(scan->raw, sizeof(scan->raw), "    %s %s, %s",
+                                         scan->mnemonic, scan->dst_op.raw, scan->src_op.raw);
+                            } else {
+                                snprintf(scan->raw, sizeof(scan->raw), "    %s %s",
+                                         scan->mnemonic, scan->src_op.raw);
                             }
+                            optimizations++;
                         }
+                    }
 
-                        // If the instruction overwrites def_reg, it is dead downstream. Stop scanning!
-                        if (modifies_register(scan, def_reg)) break;
-
-                        scan = scan->next;
+                    // Stop if def_reg is overwritten
+                    if (modifies_register(scan, def_reg)) {
+                        curr = curr->next;
+                        continue;
                     }
                 }
             }
@@ -821,140 +839,144 @@ int peephole_immediate_prop(AsmNode *head)
         // ----------------------------------------------------------
         // PATTERN 1: Identity Math Elimination (e.g., IADD R1, 0)
         // ----------------------------------------------------------
-        if (curr->has_src && curr->src_op.mode == MODE_IMMEDIATE &&
-            curr->has_dst && curr->dst_op.mode == MODE_REG)
+        if (curr->type == OP_IADD || curr->type == OP_ISUB || curr->type == OP_IMUL || curr->type == OP_IDIV)
         {
-            // FIX: Skip if immediate is a label, not a numeric value
-            if (!is_numeric_immediate(&curr->src_op)) {
-                curr = curr->next;
-                continue;
-            }
+            if (curr->has_src && curr->has_dst &&
+                curr->src_op.mode == MODE_IMMEDIATE && curr->dst_op.mode == MODE_REG)
+            {
+                long val = parse_imm_val(curr->src_op.raw);
+                bool is_identity = false;
 
-            long val = parse_imm_val(curr->src_op.raw);
-            bool is_identity = false;
+                if ((curr->type == OP_IADD || curr->type == OP_ISUB) && val == 0) {
+                    is_identity = true;
+                } else if ((curr->type == OP_IMUL || curr->type == OP_IDIV) && val == 1) {
+                    is_identity = true;
+                }
 
-            if ((str_case_eq(curr->mnemonic, "IADD") || str_case_eq(curr->mnemonic, "ISUB")) && val == 0) {
-                is_identity = true;
-            } else if ((str_case_eq(curr->mnemonic, "IMUL") || str_case_eq(curr->mnemonic, "IDIV")) && val == 1) {
-                is_identity = true;
-            }
-
-            if (is_identity) {
-                curr->type = OP_OTHER;
-                snprintf(curr->raw, sizeof(curr->raw), "; optimized out identity: %s", curr->mnemonic);
-                optimizations++;
-                curr = curr->next;
-                continue;
+                if (is_identity) {
+                    curr->type = OP_OTHER;
+                    snprintf(curr->raw, sizeof(curr->raw), "; optimized out identity: %s", curr->mnemonic);
+                    optimizations++;
+                    curr = curr->next;
+                    continue;
+                }
             }
         }
 
         // ----------------------------------------------------------
-        // PATTERN 2: Constant Folding (MOV Reg, Imm1 -> ... -> ALU Reg, Imm2)
+        // PATTERN 2: Constant Folding (MOV Reg, Imm -> next ALU Reg, Imm)
         // ----------------------------------------------------------
-        if (curr->type == OP_MOV && curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE) {
-            // FIX: Skip if immediate is a label, not a numeric value
-            if (!is_numeric_immediate(&curr->src_op)) {
-                curr = curr->next;
-                continue;
-            }
-
+        if (curr->type == OP_MOV && curr->has_dst && curr->has_src &&
+            curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE)
+        {
             char *target_reg = curr->dst_op.reg;
             long imm1 = parse_imm_val(curr->src_op.raw);
 
-            // FIX: Only consider the VERY NEXT real instruction (no chain reactions)
-            AsmNode *scan = curr->next;
-            while (scan && (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';'))) {
-                scan = scan->next;
+            // Get the very next non-comment/blank instruction
+            AsmNode *next_real = curr->next;
+            while (next_real && next_real->type == OP_OTHER &&
+                   (next_real->raw[0] == '\0' || next_real->raw[0] == ';')) {
+                next_real = next_real->next;
             }
 
-            if (!scan || scan->type == OP_OTHER) {
+            if (!next_real || next_real->type == OP_OTHER || next_real->type == OP_LABEL) {
                 curr = curr->next;
                 continue;
             }
 
-            if (scan->has_dst && scan->dst_op.mode == MODE_REG &&
-                str_case_eq(scan->dst_op.reg, target_reg) &&
-                scan->has_src && scan->src_op.mode == MODE_IMMEDIATE) {
-
-                // FIX: Skip if the ALU's immediate is a label
-                if (!is_numeric_immediate(&scan->src_op)) {
+            // Only fold if it's IADD/ISUB/IMUL on target_reg with immediate
+            if (next_real->has_dst && next_real->has_src &&
+                next_real->dst_op.mode == MODE_REG &&
+                str_case_eq(next_real->dst_op.reg, target_reg) &&
+                next_real->src_op.mode == MODE_IMMEDIATE)
+            {
+                // Skip POW/ATAN2 (require register operands only)
+                if (str_case_eq(next_real->mnemonic, "POW") ||
+                    str_case_eq(next_real->mnemonic, "ATAN2")) {
                     curr = curr->next;
                     continue;
                 }
 
-                long imm2 = parse_imm_val(scan->src_op.raw);
+                // Only fold IADD/ISUB/IMUL
+                if (next_real->type != OP_IADD && next_real->type != OP_ISUB && next_real->type != OP_IMUL) {
+                    curr = curr->next;
+                    continue;
+                }
+
+                long imm2 = parse_imm_val(next_real->src_op.raw);
                 long folded_val = 0;
                 bool folded = false;
 
-                if (str_case_eq(scan->mnemonic, "IADD")) { folded_val = imm1 + imm2; folded = true; }
-                else if (str_case_eq(scan->mnemonic, "ISUB")) { folded_val = imm1 - imm2; folded = true; }
-                else if (str_case_eq(scan->mnemonic, "IMUL")) { folded_val = imm1 * imm2; folded = true; }
+                if (next_real->type == OP_IADD) { folded_val = imm1 + imm2; folded = true; }
+                else if (next_real->type == OP_ISUB) { folded_val = imm1 - imm2; folded = true; }
+                else if (next_real->type == OP_IMUL) { folded_val = imm1 * imm2; folded = true; }
 
                 if (folded) {
-                    scan->type = OP_MOV;
-                    strcpy(scan->mnemonic, "MOV");
-                    scan->src_op.mode = MODE_IMMEDIATE;
-                    scan->src_op.offset = (int)folded_val;
-                    snprintf(scan->src_op.raw, sizeof(scan->src_op.raw), "%ld", folded_val);
-                    snprintf(scan->raw, sizeof(scan->raw), "    MOV %s, %ld", scan->dst_op.raw, folded_val);
+                    next_real->type = OP_MOV;
+                    strcpy(next_real->mnemonic, "MOV");
+                    next_real->has_dst = true;
+                    next_real->has_src = true;
+                    next_real->src_op.mode = MODE_IMMEDIATE;
+                    next_real->src_op.offset = (int)folded_val;
+                    snprintf(next_real->src_op.raw, sizeof(next_real->src_op.raw), "%ld", folded_val);
+                    snprintf(next_real->raw, sizeof(next_real->raw), "    MOV %s, %ld",
+                             next_real->dst_op.raw, folded_val);
                     optimizations++;
                 }
             }
         }
 
         // ----------------------------------------------------------
-        // PATTERN 3: Sequential Math Combining (IADD Reg, Imm1 -> IADD Reg, Imm2)
+        // PATTERN 3: Sequential Math Combining (IADD/ISUB Reg, Imm -> next IADD/ISUB Reg, Imm)
         // ----------------------------------------------------------
-        else if ((str_case_eq(curr->mnemonic, "IADD") || str_case_eq(curr->mnemonic, "ISUB")) &&
-                 curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE) {
-
-            // FIX: Skip if immediate is a label
-            if (!is_numeric_immediate(&curr->src_op)) {
-                curr = curr->next;
-                continue;
-            }
-
+        else if ((curr->type == OP_IADD || curr->type == OP_ISUB) &&
+                 curr->has_dst && curr->has_src &&
+                 curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE)
+        {
             char *target_reg = curr->dst_op.reg;
             long imm1 = parse_imm_val(curr->src_op.raw);
-            if (str_case_eq(curr->mnemonic, "ISUB")) imm1 = -imm1;
+            if (curr->type == OP_ISUB) imm1 = -imm1;
 
-            // FIX: Only consider the VERY NEXT real instruction
-            AsmNode *scan = curr->next;
-            while (scan && (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';'))) {
-                scan = scan->next;
+            // Get the very next non-comment/blank instruction
+            AsmNode *next_real = curr->next;
+            while (next_real && next_real->type == OP_OTHER &&
+                   (next_real->raw[0] == '\0' || next_real->raw[0] == ';')) {
+                next_real = next_real->next;
             }
 
-            if (!scan || scan->type == OP_OTHER) {
+            if (!next_real || next_real->type == OP_OTHER || next_real->type == OP_LABEL) {
                 curr = curr->next;
                 continue;
             }
 
-            if ((str_case_eq(scan->mnemonic, "IADD") || str_case_eq(scan->mnemonic, "ISUB")) &&
-                scan->dst_op.mode == MODE_REG && str_case_eq(scan->dst_op.reg, target_reg) &&
-                scan->src_op.mode == MODE_IMMEDIATE) {
-
-                // FIX: Skip if the second immediate is a label
-                if (!is_numeric_immediate(&scan->src_op)) {
-                    curr = curr->next;
-                    continue;
-                }
-
-                long imm2 = parse_imm_val(scan->src_op.raw);
-                if (str_case_eq(scan->mnemonic, "ISUB")) imm2 = -imm2;
+            // Only combine if it's IADD/ISUB on same register with immediate
+            if (next_real->has_dst && next_real->has_src &&
+                next_real->dst_op.mode == MODE_REG &&
+                str_case_eq(next_real->dst_op.reg, target_reg) &&
+                next_real->src_op.mode == MODE_IMMEDIATE &&
+                (next_real->type == OP_IADD || next_real->type == OP_ISUB))
+            {
+                long imm2 = parse_imm_val(next_real->src_op.raw);
+                if (next_real->type == OP_ISUB) imm2 = -imm2;
 
                 long combined = imm1 + imm2;
 
-                strcpy(curr->mnemonic, "IADD");
-                if (combined < 0) {
+                // Update type to match new mnemonic
+                if (combined >= 0) {
+                    curr->type = OP_IADD;
+                    strcpy(curr->mnemonic, "IADD");
+                } else {
+                    curr->type = OP_ISUB;
                     strcpy(curr->mnemonic, "ISUB");
                     combined = -combined;
                 }
                 curr->src_op.offset = (int)combined;
                 snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%ld", combined);
-                snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %ld", curr->mnemonic, curr->dst_op.raw, combined);
+                snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %ld",
+                         curr->mnemonic, curr->dst_op.raw, combined);
 
-                scan->type = OP_OTHER;
-                snprintf(scan->raw, sizeof(scan->raw), "; optimized out combined math");
+                next_real->type = OP_OTHER;
+                snprintf(next_real->raw, sizeof(next_real->raw), "; optimized out combined math");
                 optimizations++;
             }
         }
@@ -969,6 +991,9 @@ int peephole_immediate_prop(AsmNode *head)
 // PEEPHOLE: Jump Chain Elimination
 // Chains consecutive jumps to avoid indirection:
 //   - JMP L1; L1: JMP L2 → JMP L2
+// ===================================================================
+// ===================================================================
+// PEEPHOLE: Jump Chain Elimination
 // ===================================================================
 int peephole_jmp_chain(AsmNode *head)
 {
@@ -988,8 +1013,6 @@ int peephole_jmp_chain(AsmNode *head)
             }
 
             // --- Jump to Label Followed by Another Jump ---
-            // If the target is a label and the next instruction after it is a JMP,
-            // we can chain the jumps: JMP L1; L1: JMP L2 → JMP L2
             if (target && target->type == OP_LABEL)
             {
                 // Find the instruction after the label (skip comments)
@@ -1006,10 +1029,11 @@ int peephole_jmp_chain(AsmNode *head)
                     safe_str_copy(curr->dst_op.raw, next_after_label->dst_op.raw, sizeof(curr->dst_op.raw));
                     snprintf(curr->raw, sizeof(curr->raw), "    JMP %s", curr->dst_op.raw);
 
-                    // Remove the intermediate label and JMP
-                    remove_node(target);
-                    remove_node(next_after_label);
-                    optimizations += 2;
+                    // FIX: Don't delete the label - just comment out the intermediate JMP
+                    next_after_label->type = OP_OTHER;
+                    snprintf(next_after_label->raw, sizeof(next_after_label->raw),
+                             "; optimized out jump chain");
+                    optimizations++;
                 }
             }
         }
