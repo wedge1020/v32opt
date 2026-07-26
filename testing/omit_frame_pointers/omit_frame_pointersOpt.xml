@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<rom-definition version="1.0">
+    <rom type="cartridge" title="v32opt omit_frame_pointers test [optimized]" version="1.0" />
+<binary path="omit_frame_pointersOpt.vbin" />
+<textures />
+<sounds />
+</rom-definition>
