@@ -810,7 +810,6 @@ int peephole_loads(AsmNode *head)
 
 // ===================================================================
 // PEEPHOLE: Immediate Propagation & Constant Folding
-// Targets ALU math folding, sequential combining, and identity removal
 // ===================================================================
 int peephole_immediate_prop(AsmNode *head)
 {
@@ -825,6 +824,12 @@ int peephole_immediate_prop(AsmNode *head)
         if (curr->has_src && curr->src_op.mode == MODE_IMMEDIATE &&
             curr->has_dst && curr->dst_op.mode == MODE_REG)
         {
+            // FIX: Skip if immediate is a label, not a numeric value
+            if (!is_numeric_immediate(&curr->src_op)) {
+                curr = curr->next;
+                continue;
+            }
+
             long val = parse_imm_val(curr->src_op.raw);
             bool is_identity = false;
 
@@ -846,61 +851,54 @@ int peephole_immediate_prop(AsmNode *head)
         // ----------------------------------------------------------
         // PATTERN 2: Constant Folding (MOV Reg, Imm1 -> ... -> ALU Reg, Imm2)
         // ----------------------------------------------------------
-        if (curr->type == OP_MOV && curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE)
-        {
-			// Skip if source is a label, not a numeric immediate
-			if (!is_numeric_immediate(&curr->src_op)) {
-				curr = curr->next;
-				continue;
-			}
+        if (curr->type == OP_MOV && curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE) {
+            // FIX: Skip if immediate is a label, not a numeric value
+            if (!is_numeric_immediate(&curr->src_op)) {
+                curr = curr->next;
+                continue;
+            }
+
             char *target_reg = curr->dst_op.reg;
             long imm1 = parse_imm_val(curr->src_op.raw);
 
+            // FIX: Only consider the VERY NEXT real instruction (no chain reactions)
             AsmNode *scan = curr->next;
-            while (scan)
-            {
-                if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
-                    scan = scan->next;
+            while (scan && (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';'))) {
+                scan = scan->next;
+            }
+
+            if (!scan || scan->type == OP_OTHER) {
+                curr = curr->next;
+                continue;
+            }
+
+            if (scan->has_dst && scan->dst_op.mode == MODE_REG &&
+                str_case_eq(scan->dst_op.reg, target_reg) &&
+                scan->has_src && scan->src_op.mode == MODE_IMMEDIATE) {
+
+                // FIX: Skip if the ALU's immediate is a label
+                if (!is_numeric_immediate(&scan->src_op)) {
+                    curr = curr->next;
                     continue;
                 }
-                if (is_control_flow_boundary(scan)) break;
 
-                // If target_reg is read as a SOURCE (e.g., in MOV [SP], R1), we cannot fold
-                // across it without altering that intermediate read! Stop scanning.
-                if (scan->has_src && scan->src_op.mode == MODE_REG && str_case_eq(scan->src_op.reg, target_reg)) {
-                    break;
+                long imm2 = parse_imm_val(scan->src_op.raw);
+                long folded_val = 0;
+                bool folded = false;
+
+                if (str_case_eq(scan->mnemonic, "IADD")) { folded_val = imm1 + imm2; folded = true; }
+                else if (str_case_eq(scan->mnemonic, "ISUB")) { folded_val = imm1 - imm2; folded = true; }
+                else if (str_case_eq(scan->mnemonic, "IMUL")) { folded_val = imm1 * imm2; folded = true; }
+
+                if (folded) {
+                    scan->type = OP_MOV;
+                    strcpy(scan->mnemonic, "MOV");
+                    scan->src_op.mode = MODE_IMMEDIATE;
+                    scan->src_op.offset = (int)folded_val;
+                    snprintf(scan->src_op.raw, sizeof(scan->src_op.raw), "%ld", folded_val);
+                    snprintf(scan->raw, sizeof(scan->raw), "    MOV %s, %ld", scan->dst_op.raw, folded_val);
+                    optimizations++;
                 }
-
-                // Match: An ALU instruction modifying our target_reg with an immediate
-                if (scan->has_dst && scan->dst_op.mode == MODE_REG &&
-                    str_case_eq(scan->dst_op.reg, target_reg) &&
-                    scan->has_src && scan->src_op.mode == MODE_IMMEDIATE)
-                {
-                    long imm2 = parse_imm_val(scan->src_op.raw);
-                    long folded_val = 0;
-                    bool folded = false;
-
-                    if (str_case_eq(scan->mnemonic, "IADD")) { folded_val = imm1 + imm2; folded = true; }
-                    else if (str_case_eq(scan->mnemonic, "ISUB")) { folded_val = imm1 - imm2; folded = true; }
-                    else if (str_case_eq(scan->mnemonic, "IMUL")) { folded_val = imm1 * imm2; folded = true; }
-
-                    if (folded) {
-                        // Transform downstream ALU op directly into a MOV with the new result!
-                        scan->type = OP_MOV;
-                        strcpy(scan->mnemonic, "MOV");
-                        scan->src_op.offset = (int)folded_val;
-                        snprintf(scan->src_op.raw, sizeof(scan->src_op.raw), "%ld", folded_val);
-                        snprintf(scan->raw, sizeof(scan->raw), "    MOV %s, %ld", scan->dst_op.raw, folded_val);
-
-                        optimizations++;
-                        break; // The math is folded; stop scanning for this MOV
-                    }
-                }
-
-                // If anything else modifies target_reg, our immediate is dead. Stop scanning.
-                if (modifies_register(scan, target_reg)) break;
-
-                scan = scan->next;
             }
         }
 
@@ -908,56 +906,56 @@ int peephole_immediate_prop(AsmNode *head)
         // PATTERN 3: Sequential Math Combining (IADD Reg, Imm1 -> IADD Reg, Imm2)
         // ----------------------------------------------------------
         else if ((str_case_eq(curr->mnemonic, "IADD") || str_case_eq(curr->mnemonic, "ISUB")) &&
-                 curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE)
-        {
-			// Skip if source is a label, not a numeric immediate
-			if (!is_numeric_immediate(&curr->src_op)) {
-				curr = curr->next;
-				continue;
-			}
+                 curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE) {
+
+            // FIX: Skip if immediate is a label
+            if (!is_numeric_immediate(&curr->src_op)) {
+                curr = curr->next;
+                continue;
+            }
+
             char *target_reg = curr->dst_op.reg;
             long imm1 = parse_imm_val(curr->src_op.raw);
-            if (str_case_eq(curr->mnemonic, "ISUB")) imm1 = -imm1; // Normalize to addition
+            if (str_case_eq(curr->mnemonic, "ISUB")) imm1 = -imm1;
 
+            // FIX: Only consider the VERY NEXT real instruction
             AsmNode *scan = curr->next;
-            while (scan)
-            {
-                if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
-                    scan = scan->next;
+            while (scan && (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';'))) {
+                scan = scan->next;
+            }
+
+            if (!scan || scan->type == OP_OTHER) {
+                curr = curr->next;
+                continue;
+            }
+
+            if ((str_case_eq(scan->mnemonic, "IADD") || str_case_eq(scan->mnemonic, "ISUB")) &&
+                scan->dst_op.mode == MODE_REG && str_case_eq(scan->dst_op.reg, target_reg) &&
+                scan->src_op.mode == MODE_IMMEDIATE) {
+
+                // FIX: Skip if the second immediate is a label
+                if (!is_numeric_immediate(&scan->src_op)) {
+                    curr = curr->next;
                     continue;
                 }
-                if (is_control_flow_boundary(scan)) break;
-                if (scan->has_src && scan->src_op.mode == MODE_REG && str_case_eq(scan->src_op.reg, target_reg)) break;
 
-                if ((str_case_eq(scan->mnemonic, "IADD") || str_case_eq(scan->mnemonic, "ISUB")) &&
-                    scan->dst_op.mode == MODE_REG && str_case_eq(scan->dst_op.reg, target_reg) &&
-                    scan->src_op.mode == MODE_IMMEDIATE)
-                {
-                    long imm2 = parse_imm_val(scan->src_op.raw);
-                    if (str_case_eq(scan->mnemonic, "ISUB")) imm2 = -imm2;
+                long imm2 = parse_imm_val(scan->src_op.raw);
+                if (str_case_eq(scan->mnemonic, "ISUB")) imm2 = -imm2;
 
-                    long combined = imm1 + imm2;
+                long combined = imm1 + imm2;
 
-                    // Update curr to hold the combined value
-                    strcpy(curr->mnemonic, "IADD");
-                    if (combined < 0) {
-                        strcpy(curr->mnemonic, "ISUB");
-                        combined = -combined;
-                    }
-                    curr->src_op.offset = (int)combined;
-                    snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%ld", combined);
-                    snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %ld", curr->mnemonic, curr->dst_op.raw, combined);
-
-                    // Convert the downstream redundant math into a comment
-                    scan->type = OP_OTHER;
-                    snprintf(scan->raw, sizeof(scan->raw), "; optimized out combined math");
-
-                    optimizations++;
-                    break;
+                strcpy(curr->mnemonic, "IADD");
+                if (combined < 0) {
+                    strcpy(curr->mnemonic, "ISUB");
+                    combined = -combined;
                 }
+                curr->src_op.offset = (int)combined;
+                snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%ld", combined);
+                snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %ld", curr->mnemonic, curr->dst_op.raw, combined);
 
-                if (modifies_register(scan, target_reg)) break;
-                scan = scan->next;
+                scan->type = OP_OTHER;
+                snprintf(scan->raw, sizeof(scan->raw), "; optimized out combined math");
+                optimizations++;
             }
         }
 

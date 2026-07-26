@@ -97,5 +97,11 @@ long parse_imm_val(const char *raw_val) {
 bool is_numeric_immediate(const Operand *op) {
     if (op->mode != MODE_IMMEDIATE || op->is_float) return false;
     const char *raw = op->raw;
-    return *raw == '-' || isdigit(*raw) || (*raw == '0' && (raw[1] == 'x' || raw[1] == 'X'));
+    if (!raw || raw[0] == '\0') return false;
+    // Skip leading whitespace
+    while (isspace((unsigned char)*raw)) raw++;
+    if (isdigit((unsigned char)raw[0])) return true;
+    if (raw[0] == '-' && isdigit((unsigned char)raw[1])) return true;
+    if (raw[0] == '0' && (raw[1] == 'x' || raw[1] == 'X')) return true;
+    return false;
 }
