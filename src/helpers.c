@@ -94,6 +94,9 @@ long parse_imm_val(const char *raw_val) {
     return strtol(raw_val, NULL, 0);
 }
 
+// ===================================================================
+// HELPER:
+// ===================================================================
 bool is_numeric_immediate(const Operand *op) {
     if (op->mode != MODE_IMMEDIATE || op->is_float) return false;
     const char *raw = op->raw;

@@ -52,24 +52,24 @@ int peephole_pairs(AsmNode *head)
         if ((n1->type == OP_IEQ || n1->type == OP_INE) &&
              n2->type == OP_CIB &&
              n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
-             str_case_eq(n1->dst_op.reg, n2->dst_op.reg) == 0)
+             str_case_eq(n1->dst_op.reg, n2->dst_op.reg))
         {
-			// 🔥 NEW: Don't remove CIB if next non-comment is JT/JF
-			AsmNode *after_cib = n2->next;
-			while (after_cib && after_cib->type == OP_OTHER &&
-				   (after_cib->raw[0] == '\0' || after_cib->raw[0] == ';')) {
-				after_cib = after_cib->next;
-			}
-			if (after_cib && (str_case_eq(after_cib->mnemonic, "JT") ||
-							   str_case_eq(after_cib->mnemonic, "JF"))) {
-				curr = curr->next;
-				continue;
-			}
+            // 🔥 NEW: Don't remove CIB if next non-comment is JT/JF
+            AsmNode *after_cib = n2->next;
+            while (after_cib && after_cib->type == OP_OTHER &&
+                   (after_cib->raw[0] == '\0' || after_cib->raw[0] == ';')) {
+                after_cib = after_cib->next;
+            }
+            if (after_cib && (str_case_eq(after_cib->mnemonic, "JT") ||
+                               str_case_eq(after_cib->mnemonic, "JF"))) {
+                curr = curr->next;
+                continue;
+            }
 
-			remove_node(n2);
-			optimizations++;
-			continue;
-		}
+            remove_node(n2);
+            optimizations++;
+            continue;
+        }
 
         // ----------------------------------------------------------------
         // PATTERN: Self-Inverting Pairs (Involutions)
@@ -156,7 +156,7 @@ int peephole_pairs(AsmNode *head)
         // PUSH r; POP r → no net effect on the stack or register
         if (n1->type == OP_PUSH && n2->type == OP_POP &&
             n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
-            str_case_eq(n1->dst_op.reg, n2->dst_op.reg) == 0)
+            str_case_eq(n1->dst_op.reg, n2->dst_op.reg))
         {
             AsmNode *next_iter = n2->next;
             remove_node(n1);
@@ -192,7 +192,7 @@ int peephole_algebra(AsmNode *head)
         // Copying a register to itself is a no-op.
         if (curr->type == OP_MOV &&
             curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_REG &&
-            str_case_eq(curr->dst_op.reg, curr->src_op.reg) == 0)
+            str_case_eq(curr->dst_op.reg, curr->src_op.reg))
         {
             remove_node(curr);
             optimizations++;
@@ -238,6 +238,9 @@ int peephole_algebra(AsmNode *head)
 // Scans forward within basic blocks to forward:
 //   1. Store-to-Load: MOV [mem], R1; ... MOV R2, [mem] -> MOV R2, R1
 //   2. Copy Prop:     MOV R1, val;   ... OP R2, R1     -> OP R2, val
+// ===================================================================
+// ===================================================================
+// PEEPHOLE: Forward-Scanning Store & Copy Propagation
 // ===================================================================
 int peephole_forwarding(AsmNode *head)
 {
@@ -333,6 +336,12 @@ int peephole_forwarding(AsmNode *head)
                     if (scan->has_src && scan->src_op.mode == MODE_REG &&
                         str_case_eq(scan->src_op.reg, def_reg))
                     {
+                        // 🔥 CRITICAL: Block numeric immediates into JT/JF targets
+                        if ((str_case_eq(scan->mnemonic, "JT") || str_case_eq(scan->mnemonic, "JF")) &&
+                            curr->src_op.mode == MODE_IMMEDIATE && is_numeric_immediate(&curr->src_op)) {
+                            break;
+                        }
+
                         // FIX: Block POW/ATAN2 (require register operands only)
                         if (str_case_eq(scan->mnemonic, "POW") || str_case_eq(scan->mnemonic, "ATAN2")) {
                             curr = curr->next;
@@ -812,7 +821,7 @@ int peephole_loads(AsmNode *head)
         // If both loads read from the same memory location [reg+offset],
         // the second load can use the first's destination register instead.
         if (n1->src_op.mode == MODE_INDIRECT && n2->src_op.mode == MODE_INDIRECT &&
-            str_case_eq(n1->src_op.reg, n2->src_op.reg) == 0 &&
+            str_case_eq(n1->src_op.reg, n2->src_op.reg) &&
             n1->src_op.offset == n2->src_op.offset)
         {
             // Replace n2's source (memory) with n1's destination (register)
@@ -865,6 +874,7 @@ int peephole_immediate_prop(AsmNode *head)
 
         // ----------------------------------------------------------
         // PATTERN 2: Constant Folding (MOV Reg, Imm -> next ALU Reg, Imm)
+        // FIX: Only fold the VERY NEXT instruction (no scanning)
         // ----------------------------------------------------------
         if (curr->type == OP_MOV && curr->has_dst && curr->has_src &&
             curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE)
@@ -928,6 +938,7 @@ int peephole_immediate_prop(AsmNode *head)
 
         // ----------------------------------------------------------
         // PATTERN 3: Sequential Math Combining (IADD/ISUB Reg, Imm -> next IADD/ISUB Reg, Imm)
+        // FIX: Only combine the VERY NEXT instruction
         // ----------------------------------------------------------
         else if ((curr->type == OP_IADD || curr->type == OP_ISUB) &&
                  curr->has_dst && curr->has_src &&
