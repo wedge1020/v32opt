@@ -192,7 +192,7 @@ ControlFlowGraph* build_cfg(AsmNode *head) {
         }
         else if (is_conditional_branch(term)) {
             // Conditional branch: edge to target AND fallthrough
-            BasicBlock *target = find_block_by_label(cfg, term->dst_op.raw);
+            BasicBlock *target = find_block_by_label(cfg, term->src_op.raw);
             if (target) add_edge(block, target);
             if (i + 1 < cfg->num_blocks) add_edge(block, cfg->blocks[i + 1]); // Fallthrough
         }
