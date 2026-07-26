@@ -98,8 +98,7 @@ int omit_frame_pointers(AsmNode *head)
 
                         // Check if this is a return label (__function_*_return:)
                         size_t lbl_len = strlen(lbl);
-                        bool is_return_label = (lbl_len >= 8 && 
-                                               str_case_eq(lbl + lbl_len - 8, "_return"));
+                        bool is_return_label = (lbl_len >= 7 && str_case_eq(lbl + lbl_len - 7, "_return"));
 
                         if (!is_return_label) {
                             // Non-return label = nested control flow, abort
