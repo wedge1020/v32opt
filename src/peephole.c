@@ -823,21 +823,20 @@ bool is_pure_reg_def(AsmNode *node) {
         !node->dst_op.reg || node->dst_op.reg[0] == '\0') return false;
 
     if (is_string_instruction(node)) return false;
-
     if (node->type == OP_PUSH || node->type == OP_POP || node->type == OP_LABEL) return false;
-    
     if (node->mnemonic && (str_case_eq(node->mnemonic, "IN") || str_case_eq(node->mnemonic, "OUT"))) return false;
 
-    if (is_control_flow_boundary(node)) return false;
+    // CRITICAL FIX: Check AST enum types alongside strings!
+    if (is_control_flow_boundary(node) ||
+        node->type == OP_CALL || node->type == OP_RET ||
+        node->type == OP_JMP  || node->type == OP_JT  || node->type == OP_JF || node->type == OP_HLT) {
+        return false;
+    }
 
-    // CRITICAL FIX: Ensure node->mnemonic is NOT NULL before checking control flow strings!
     if (node->mnemonic) {
-        if (str_case_eq(node->mnemonic, "CALL") ||
-            str_case_eq(node->mnemonic, "JMP")  ||
-            str_case_eq(node->mnemonic, "JT")   ||
-            str_case_eq(node->mnemonic, "JF")   ||
-            str_case_eq(node->mnemonic, "RET")  ||
-            str_case_eq(node->mnemonic, "HLT")) {
+        if (str_case_eq(node->mnemonic, "CALL") || str_case_eq(node->mnemonic, "JMP")  ||
+            str_case_eq(node->mnemonic, "JT")   || str_case_eq(node->mnemonic, "JF")   ||
+            str_case_eq(node->mnemonic, "RET")  || str_case_eq(node->mnemonic, "HLT")) {
             return false;
         }
     }
@@ -906,6 +905,7 @@ bool is_register_read(AsmNode *node, const char *reg_name) {
 int peephole_dead_stores(AsmNode *head)
 {
     int optimizations = 0;
+	int opt_count     = 0;
     AsmNode *curr = head ? head->next : NULL;
 
     while (curr)
@@ -917,62 +917,75 @@ int peephole_dead_stores(AsmNode *head)
             // Never optimize away stack frame manipulations
             if (!str_case_eq(def_reg, "SP") && !str_case_eq(def_reg, "BP"))
             {
-                AsmNode *scan = curr->next;
-                while (scan)
-                {
-                    if (is_comment_or_empty(scan) || scan->type == OP_LABEL) {
-                        scan = scan->next;
-                        continue;
-                    }
+				AsmNode *scan = curr->next;
+				while (scan) {
+					if (is_comment_or_empty(scan)) {
+						scan = scan->next;
+						continue;
+					}
 
-                    // 1. CRITICAL FIX: Stop scanning at ANY control flow boundary!
-                    // This prevents DSE from scanning across JT/JF branches and deleting
-                    // registers that are required on the branched-to path.
-                    if (is_control_flow_boundary(scan) ||
-                        str_case_eq(scan->mnemonic, "JMP") ||
-                        str_case_eq(scan->mnemonic, "JT")  ||
-                        str_case_eq(scan->mnemonic, "JF")  ||
-                        str_case_eq(scan->mnemonic, "CALL") ||
-                        str_case_eq(scan->mnemonic, "RET") ||
-                        str_case_eq(scan->mnemonic, "HLT")) {
+					// 1. Identify control-flow boundaries using BOTH enums and strings
+					bool is_ret  = (scan->type == OP_RET)  || (scan->mnemonic && str_case_eq(scan->mnemonic, "RET"));
+					bool is_call = (scan->type == OP_CALL) || (scan->mnemonic && str_case_eq(scan->mnemonic, "CALL"));
+					bool is_hlt  = (scan->type == OP_HLT)  || (scan->mnemonic && str_case_eq(scan->mnemonic, "HLT"));
+					bool is_jump = (scan->type == OP_JMP)  || (scan->type == OP_JT) || (scan->type == OP_JF) ||
+								   (scan->mnemonic && (str_case_eq(scan->mnemonic, "JMP") ||
+													   str_case_eq(scan->mnemonic, "JT")  ||
+													   str_case_eq(scan->mnemonic, "JF")));
 
-                        // Terminal Dead Store Check (at RET instruction)
-                        if (str_case_eq(scan->mnemonic, "RET"))
-                        {
-                            // CRITICAL FIX: Never delete R0 (return value register), SP, or BP at function exit!
-                            if (!str_case_eq(def_reg, "R0") && !str_case_eq(def_reg, "SP") && !str_case_eq(def_reg, "BP")) {
-                                if (!is_live_out_register(def_reg)) {
-                                    curr->type = OP_OTHER;
-                                    curr->has_dst = false;
-                                    curr->has_src = false;
-                                    curr->dst_op.reg[0] = '\0';
-                                    snprintf(curr->raw, sizeof(curr->raw), "; optimized out terminal dead store: %s %s", curr->mnemonic, def_reg);
-                                    optimizations++;
-                                }
-                            }
-                        }
-                        break; // Stop scanning at the boundary!
-                    }
+					if (is_control_flow_boundary(scan) || is_ret || is_call || is_hlt || is_jump) {
+						// TERMINAL DEAD STORE ELIMINATION:
+						// If we hit a RET instruction, check if our target register is dead upon exiting the function!
+						if (is_ret) {
+							if (!is_live_out_register(def_reg)) {
+								// Save a local copy of the register name before mutating the AST!
+								char reg_copy[16];
+								strncpy(reg_copy, curr->dst_op.reg, sizeof(reg_copy) - 1);
+								reg_copy[sizeof(reg_copy) - 1] = '\0';
 
-                    // 2. If any instruction READS our register, the store is live! Abort scan.
-                    if (is_register_read(scan, def_reg)) {
-                        break;
-                    }
+								const char *op_name = curr->mnemonic ? curr->mnemonic : "MOV";
+								snprintf(curr->raw, sizeof(curr->raw), "; optimized out dead store: %s %s", op_name, reg_copy);
 
-                    // 3. Standard DSE: Another instruction overwrites our register before it was read
-                    if (is_pure_reg_def(scan) && str_case_eq(scan->dst_op.reg, def_reg))
-                    {
-                        curr->type = OP_OTHER;
-                        curr->has_dst = false;
-                        curr->has_src = false;
-                        curr->dst_op.reg[0] = '\0';
-                        snprintf(curr->raw, sizeof(curr->raw), "; optimized out dead store: %s %s", curr->mnemonic, def_reg);
-                        optimizations++;
-                        break;
-                    }
+								curr->type = OP_OTHER;
+								curr->has_dst = false;
+								curr->has_src = false;
+								curr->dst_op.reg[0] = '\0';
+								opt_count++;
+							}
+						}
+						// STOP SCANNING! Never track liveness across branches, jumps, or function calls!
+						break;
+					}
 
-                    scan = scan->next;
-                }
+					// 2. Check if scan reads the register
+					if (is_register_read(scan, def_reg)) {
+						break; // Register is live, cannot eliminate!
+					}
+
+					// 3. Check if scan overwrites the register without reading it first
+					if (is_pure_reg_def(scan)) {
+						if (str_case_eq(scan->dst_op.reg, def_reg) ||
+							(target_idx >= 0 && get_reg_index(scan->dst_op.reg) == target_idx)) {
+
+							// Save a local copy of the register name before mutating the AST!
+							char reg_copy[16];
+							strncpy(reg_copy, curr->dst_op.reg, sizeof(reg_copy) - 1);
+							reg_copy[sizeof(reg_copy) - 1] = '\0';
+
+							const char *op_name = curr->mnemonic ? curr->mnemonic : "MOV";
+							snprintf(curr->raw, sizeof(curr->raw), "; optimized out dead store: %s %s", op_name, reg_copy);
+
+							curr->type = OP_OTHER;
+							curr->has_dst = false;
+							curr->has_src = false;
+							curr->dst_op.reg[0] = '\0';
+							opt_count++;
+							break;
+						}
+					}
+
+					scan = scan->next;
+				}
             }
         }
         curr = curr->next;
