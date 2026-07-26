@@ -244,6 +244,7 @@ bool     is_control_flow_boundary (AsmNode    *);
 bool     is_register_read         (AsmNode    *, const char *);
 bool     is_live_out_register     (const char *);
 long     parse_imm_val            (const char *);
+bool     is_numeric_immediate     (const Operand *);
 
 // parsing / writing functions
 //

@@ -235,6 +235,8 @@ int  main (int  argc, char **argv)
             config.enable_peephole_algebra = false;
         } else if (strcmp(argv[i], "-fno_opt_peephole_forwarding") == 0) {
             config.enable_peephole_forwarding = false;
+        } else if (strcmp(argv[i], "-fno_opt_peephole_immediate_prop") == 0) {
+            config.enable_peephole_immediate_prop  = false;
         } else if (strcmp(argv[i], "-fno_opt_peephole_jumps") == 0) {
             config.enable_peephole_jumps = false;
         } else if (strcmp(argv[i], "-fno_opt_peephole_movs") == 0) {
