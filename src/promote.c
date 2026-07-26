@@ -254,7 +254,12 @@ int pass_promote_loop_registers(AsmNode *head) {
             trim(start_lbl);
 
             size_t len = strlen(start_lbl);
-            if (len < 6 || !str_case_eq(start_lbl + len - 6, "_start")) {
+
+            // Match common compiler patterns
+            bool is_loop_label = (len >= 6 && str_case_eq(start_lbl + len - 6, "_start")) ||
+                                 (len >= 5 && str_case_eq(start_lbl + len - 5, "_for_")) ||
+                                 (len >= 7 && str_case_eq(start_lbl + len - 7, "_while_"));
+            if (!is_loop_label) {
                 curr = curr->next;
                 continue;
             }
@@ -266,7 +271,10 @@ int pass_promote_loop_registers(AsmNode *head) {
                 if (scan->type == OP_LABEL && strncmp(trim(scan->raw), "__function_", 11) == 0) {
                     break;
                 }
-                if (str_case_eq(scan->mnemonic, "JMP") && str_case_eq(trim(scan->dst_op.raw), start_lbl)) {
+                if ((str_case_eq(scan->mnemonic, "JMP") ||
+                    str_case_eq(scan->mnemonic, "JT") ||
+                    str_case_eq(scan->mnemonic, "JF")) &&
+                    str_case_eq(trim(scan->dst_op.raw), start_lbl)) {
                     end_jmp = scan;
                     break;
                 }
