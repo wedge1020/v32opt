@@ -6,7 +6,7 @@ ASSEMBLER        = assemble
 TEXTURE_TOOL     = png2vircon
 PACKER           = packrom
 
-OPT_FLAGS        = -fopt_peephole_dead_stores
+OPT_FLAGS        = -fopt_$(TEST)
 
 # This variable is empty by default, but is set to -g during a debug build
 DEBUG_FLAGS      =
@@ -69,9 +69,9 @@ report: $(TEST).v32 $(TEST)Opt.v32
 	@stat -c '%20n: %8s bytes' $(TEST).asm $(TEST)Opt.asm
 	@echo "------------------------------------"
 	@echo
-	@echo "---code differences-----------------"
-	@diff $(TEST).asm $(TEST)Opt.asm
-	@echo "------------------------------------"
+	#@echo "---code differences-----------------"
+	#@diff $(TEST).asm $(TEST)Opt.asm
+	#@echo "------------------------------------"
 
 # --- Clean Up ---
 clean:

@@ -1,3 +1,6 @@
+Here's a **comprehensive test program** for `peephole_dead_stores`:
+
+```asm
 ; ===================================================================
 ; TEST: peephole_dead_stores - All Scenarios
 ; Run with: ./v32opt test_dead_stores.asm -fopt_peephole_dead_stores -v
@@ -257,3 +260,36 @@ __function_test_complex:
     MOV SP, BP
     POP BP
     RET
+```
+
+---
+### **Expected Output After Optimization**
+
+| Test | Expected Result | Reason |
+|------|----------------|--------|
+| Scenario 1 | First MOV commented out | Standard DSE |
+| Scenario 2 | First two MOVs commented out | Multiple overwrites |
+| Scenario 3 | **Unchanged** | Different registers |
+| Scenario 4 | **Unchanged** | Register read before overwrite |
+| Scenario 5 | **Unchanged** | Register used in ALU |
+| Scenario 6 | **Unchanged** | Register used in branch |
+| Scenario 7 | First MOV commented out | Terminal DSE (not live-out) |
+| Scenario 8 | **Unchanged** | R0 is live-out |
+| Scenario 9 | **Unchanged** | SP is live-out |
+| Scenario 10 | **Unchanged** | BP is live-out |
+| Scenario 11 | First MOV commented out | Comments skipped |
+| Scenario 12 | First MOV commented out | Labels don't block scan |
+| Scenario 13 | **Unchanged** | JMP is control flow boundary |
+| Scenario 14 | **Unchanged** | CALL is control flow boundary |
+| Scenario 15 | First three MOVs commented out | Multiple dead stores |
+| Scenario 16 | First three MOVs commented out | Terminal DSE for R1-R3 |
+| Scenario 17 | First MOV commented out | Indirect dead store |
+| Scenario 18 | **Unchanged** | Indirect live store (read before overwrite) |
+| Scenario 19 | First, second, third, fifth MOVs commented out | Complex dead stores |
+
+---
+### **How to Test**
+1. Save as `test_dead_stores.asm`
+2. Run: `./v32opt test_dead_stores.asm -fopt_peephole_dead_stores -v`
+3. Verify each function matches expected output
+4. Confirm no live stores are incorrectly removed
