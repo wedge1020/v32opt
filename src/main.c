@@ -23,12 +23,11 @@ int  main (int  argc, char **argv)
         fprintf(stdout, "                       peephole_forwarding, peephole_jumps,\n");
         fprintf(stdout, "                       peephole_movs, peephole_immediates,\n");
         fprintf(stdout, "                       peephole_reduce, peephole_shifts,\n");
-        fprintf(stdout, "                       peephole_dead_stores, peephole_loads,\n");
+        fprintf(stdout, "                       peephole_loads,\n");
         fprintf(stdout, "                       peephole_immediate_prop, peephole_jmp_chain\n");
         fprintf(stdout, "  -O2              Enables second level (could break):\n");
         fprintf(stdout, "                       ALL included in -O1,\n");
-        fprintf(stdout, "                       dce, constant_folding,\n");
-        fprintf(stdout, "                       omit_frame_pointers\n");
+        fprintf(stdout, "                       dce, constant_folding\n");
         fprintf(stdout, "  -O3              Enables aggressive optimizations (could break):\n");
         fprintf(stdout, "                       ALL included in -O1 and -O2,\n");
         fprintf(stdout, "                       inline\n\n");
@@ -45,7 +44,8 @@ int  main (int  argc, char **argv)
         fprintf(stdout, "Diagnostic Flags:\n");
         fprintf(stdout, "  -finline-max=N   Cap the number of inlined CALL sites to N\n");
         fprintf(stdout, "  -fmax_passes=N   Cap the maximum iterative optimization passes to N\n\n");
-        fprintf(stdout, "NOTE: promote_regs, promote_leaf, and promote_loops not yet\n");
+        fprintf(stdout, "NOTE: peephole_dead_stores, omit_frame_pointers,\n");
+		fprintf(stdout, "promote_regs, promote_leaf, and promote_loops not yet\n");
         fprintf(stdout, "connected to any optimization category. Test and bugfix first\n\n");
         return (1);
     }
@@ -132,7 +132,7 @@ int  main (int  argc, char **argv)
             config.enable_peephole_immediates      = true;
             config.enable_peephole_reduce          = true;
             config.enable_peephole_shifts          = true;
-            config.enable_peephole_dead_stores     = true;
+            config.enable_peephole_dead_stores     = false;
             config.enable_peephole_loads           = true;
             config.enable_peephole_immediate_prop  = true;
             config.enable_peephole_jmp_chain       = true;
@@ -152,7 +152,7 @@ int  main (int  argc, char **argv)
             config.enable_peephole_immediates      = true;
             config.enable_peephole_reduce          = true;
             config.enable_peephole_shifts          = true;
-            config.enable_peephole_dead_stores     = true;
+            config.enable_peephole_dead_stores     = false;
             config.enable_peephole_loads           = true;
             config.enable_peephole_immediate_prop  = true;
             config.enable_peephole_jmp_chain       = true;
@@ -162,7 +162,7 @@ int  main (int  argc, char **argv)
             config.enable_promote_regs             = false;
             config.enable_promote_leaf             = false;
             config.enable_promote_loops            = false;
-            config.enable_omit_frame_pointers      = true;
+            config.enable_omit_frame_pointers      = false;
         } else if (strcmp(argv[i], "-O3") == 0) {
             config.enable_peephole_pairs           = true;
             config.enable_peephole_algebra         = true;
@@ -172,7 +172,7 @@ int  main (int  argc, char **argv)
             config.enable_peephole_immediates      = true;
             config.enable_peephole_reduce          = true;
             config.enable_peephole_shifts          = true;
-            config.enable_peephole_dead_stores     = true;
+            config.enable_peephole_dead_stores     = false;
             config.enable_peephole_loads           = true;
             config.enable_peephole_immediate_prop  = true;
             config.enable_peephole_jmp_chain       = true;
@@ -182,7 +182,7 @@ int  main (int  argc, char **argv)
             config.enable_promote_regs             = false;
             config.enable_promote_leaf             = false;
             config.enable_promote_loops            = false;
-            config.enable_omit_frame_pointers      = true;
+            config.enable_omit_frame_pointers      = false;
         } else if (strcmp(argv[i], "-fopt_peephole_pairs")      == 0) {
             config.enable_peephole_pairs           = true;
         } else if (strcmp(argv[i], "-fopt_peephole_algebra")    == 0) {
