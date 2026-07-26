@@ -408,7 +408,7 @@ int pass_peephole_window2(AsmNode *head) {
         if ((n1->type == OP_IEQ || n1->type == OP_INE) && 
              n2->type == OP_CIB && 
              n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
-             str_case_eq(n1->dst_op.reg, n2->dst_op.reg) == 0) 
+             str_case_eq(n1->dst_op.reg, n2->dst_op.reg)) 
         {
             remove_node(n2);
             optimizations++;
@@ -417,7 +417,7 @@ int pass_peephole_window2(AsmNode *head) {
 
         if (n1->type == OP_BNOT && n2->type == OP_BNOT && 
             n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
-            str_case_eq(n1->dst_op.reg, n2->dst_op.reg) == 0) 
+            str_case_eq(n1->dst_op.reg, n2->dst_op.reg)) 
         {
             AsmNode *next_iter = n2->next;
             remove_node(n1);
@@ -429,7 +429,7 @@ int pass_peephole_window2(AsmNode *head) {
 
         if (n1->type == OP_PUSH && n2->type == OP_POP && 
             n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
-            str_case_eq(n1->dst_op.reg, n2->dst_op.reg) == 0) 
+            str_case_eq(n1->dst_op.reg, n2->dst_op.reg)) 
         {
             AsmNode *next_iter = n2->next;
             remove_node(n1);
@@ -454,7 +454,7 @@ int pass_algebraic_simplifications(AsmNode *head) {
 
         if (curr->type == OP_MOV && 
             curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_REG && 
-            str_case_eq(curr->dst_op.reg, curr->src_op.reg) == 0) 
+            str_case_eq(curr->dst_op.reg, curr->src_op.reg)) 
         {
             remove_node(curr);
             optimizations++;
@@ -503,7 +503,7 @@ int pass_store_to_load_forwarding(AsmNode *head) {
             n1->dst_op.mode == MODE_INDIRECT && n1->src_op.mode == MODE_REG &&
             n2->dst_op.mode == MODE_REG      && n2->src_op.mode == MODE_INDIRECT) 
         {
-            if (str_case_eq(n1->dst_op.reg, n2->src_op.reg) == 0 && 
+            if (str_case_eq(n1->dst_op.reg, n2->src_op.reg) && 
                 n1->dst_op.offset == n2->src_op.offset) 
             {
                 n2->src_op = n1->src_op;
