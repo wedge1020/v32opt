@@ -16,19 +16,18 @@ bool is_reg_op(AsmNode *node, const char *reg_name) {
 // ===================================================================
 bool references_bp(AsmNode *node) {
     if (!node) return false;
-    
-    // Check destination operand for BP or [BP +/- offset]
+
+    // Check destination operand for DIRECT BP usage (not [BP+N])
     if (node->has_dst) {
         if (str_case_eq(node->dst_op.reg, "BP")) return true;
-        if (node->dst_op.raw[0] != '\0' && strstr(node->dst_op.raw, "BP")) return true;
     }
-    
-    // Check source operand for BP or [BP +/- offset]
+
+    // Check source operand for DIRECT BP usage (not [BP+N])
     if (node->has_src) {
         if (str_case_eq(node->src_op.reg, "BP")) return true;
-        if (node->src_op.raw[0] != '\0' && strstr(node->src_op.raw, "BP")) return true;
     }
-    
+
+    // DO NOT flag [BP+N] - that's local variable access, not BP itself
     return false;
 }
 
