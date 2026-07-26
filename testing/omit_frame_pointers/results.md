@@ -1,3 +1,6 @@
+Here's a **rigorous test program** for `omit_frame_pointers` covering all edge cases:
+
+```asm
 ; ===================================================================
 ; TEST: omit_frame_pointers - All Scenarios
 ; Run with: ./v32opt test_frame.asm -fopt_omit_frame_pointers -v
@@ -206,3 +209,33 @@ __function_complex:
     MOV SP, BP
     POP BP
     RET
+```
+
+---
+### **Expected Output After Optimization**
+
+| Test | Expected Result | Reason |
+|------|----------------|--------|
+| Scenario 1 | All frame instructions commented out | Simple case |
+| Scenario 2 | All frame instructions commented out | Return label handled |
+| Scenario 3 | All frame instructions commented out | Local vars don't use BP register |
+| Scenario 4 | All frame instructions commented out | Multiple local vars |
+| Scenario 5 | **Unchanged** | Direct BP usage |
+| Scenario 6 | **Unchanged** | BP in arithmetic |
+| Scenario 7 | **Unchanged** | BP in indirect addressing |
+| Scenario 8 | **Unchanged** | Nested control flow |
+| Scenario 9 | **Unchanged** | Missing prologue |
+| Scenario 10 | **Unchanged** | Missing epilogue |
+| Scenario 11 | **Unchanged** | Partial prologue |
+| Scenario 12 | **Unchanged** | Partial epilogue |
+| Scenario 13 | All frame instructions commented out | Empty function |
+| Scenario 14 | All frame instructions commented out | CALL doesn't use BP |
+| Scenario 15 | **Unchanged** | Modifies BP register |
+| Scenario 16 | All frame instructions commented out | Complex but no BP usage |
+
+---
+### **How to Test**
+1. Save as `test_frame.asm`
+2. Run: `./v32opt test_frame.asm -fopt_omit_frame_pointers -v`
+3. Verify each function matches expected output
+4. Confirm no functions are incorrectly modified
