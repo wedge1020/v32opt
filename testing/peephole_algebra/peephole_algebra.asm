@@ -9,8 +9,8 @@
 __function_test_mov:
     PUSH BP
     MOV BP, SP
-    MOV R1, R1
-    MOV R2, R2
+    MOV R1, R1  ; MATCH
+    MOV R2, R2  ; MATCH
     MOV SP, BP
     POP BP
     RET
@@ -21,8 +21,8 @@ __function_test_mov:
 __function_test_mov_diff:
     PUSH BP
     MOV BP, SP
-    MOV R1, R2
-    MOV R3, R4
+    MOV R1, R2  ; KEEP
+    MOV R3, R4  ; KEEP
     MOV SP, BP
     POP BP
     RET
@@ -33,8 +33,8 @@ __function_test_mov_diff:
 __function_test_add_zero:
     PUSH BP
     MOV BP, SP
-    IADD R1, 0
-    ISUB R2, 0
+    IADD R1, 0  ; MATCH
+    ISUB R2, 0  ; MATCH
     MOV SP, BP
     POP BP
     RET
@@ -45,8 +45,8 @@ __function_test_add_zero:
 __function_test_add_nonzero:
     PUSH BP
     MOV BP, SP
-    IADD R1, 5
-    ISUB R2, -10
+    IADD R1, 5   ; KEEP
+    ISUB R2, -10   ; KEEP
     MOV SP, BP
     POP BP
     RET
@@ -57,8 +57,8 @@ __function_test_add_nonzero:
 __function_test_mul2:
     PUSH BP
     MOV BP, SP
-    IMUL R1, 2
-    IMUL R2, 2
+    IMUL R1, 2  ; MATCH
+    IMUL R2, 2  ; MATCH
     MOV SP, BP
     POP BP
     RET
@@ -69,8 +69,8 @@ __function_test_mul2:
 __function_test_mul_other:
     PUSH BP
     MOV BP, SP
-    IMUL R1, 3
-    IMUL R2, -2
+    IMUL R1, 3  ; KEEP
+    IMUL R2, -2  ; KEEP
     MOV SP, BP
     POP BP
     RET
@@ -81,8 +81,8 @@ __function_test_mul_other:
 __function_test_div1:
     PUSH BP
     MOV BP, SP
-    IDIV R1, 1
-    IDIV R2, 1
+    IDIV R1, 1   ; MATCH
+    IDIV R2, 1   ; MATCH
     MOV SP, BP
     POP BP
     RET
@@ -93,7 +93,7 @@ __function_test_div1:
 __function_test_div_other:
     PUSH BP
     MOV BP, SP
-    IDIV R1, 2
+    IDIV R1, 2   ; KEEP
     MOV SP, BP
     POP BP
     RET
@@ -104,8 +104,8 @@ __function_test_div_other:
 __function_test_mul0:
     PUSH BP
     MOV BP, SP
-    IMUL R1, 0
-    IMUL R2, 0
+    IMUL R1, 0   ; MATCH
+    IMUL R2, 0   ; MATCH
     MOV SP, BP
     POP BP
     RET
@@ -116,8 +116,8 @@ __function_test_mul0:
 __function_test_mul1:
     PUSH BP
     MOV BP, SP
-    IMUL R1, 1
-    IMUL R2, 1
+    IMUL R1, 1   ; MATCH
+    IMUL R2, 1   ; MATCH
     MOV SP, BP
     POP BP
     RET
@@ -128,16 +128,16 @@ __function_test_mul1:
 __function_test_mixed:
     PUSH BP
     MOV BP, SP
-    MOV R1, R1      ; Remove (self-move)
-    IADD R2, 0      ; Remove (identity)
-    IMUL R3, 2      ; Replace with IADD R3, R3
-    IDIV R4, 1      ; Remove (identity)
-    IMUL R5, 0      ; Replace with MOV R5, 0
-    IMUL R6, 1      ; Remove (identity)
-    MOV R7, R8      ; Keep (different registers)
-    IADD R9, 5      ; Keep (non-zero)
-    IMUL R10, 3     ; Keep (non-2/0/1)
-    IDIV R11, 2     ; Keep (non-1)
+    MOV R1, R1      ; MATCH Remove (self-move)
+    IADD R2, 0      ; MATCH Remove (identity)
+    IMUL R3, 2      ; MATCH Replace with IADD R3, R3
+    IDIV R4, 1      ; MATCH Remove (identity)
+    IMUL R5, 0      ; MATCH Replace with MOV R5, 0
+    IMUL R6, 1      ; MATCH Remove (identity)
+    MOV R7, R8      ; KEEP (different registers)
+    IADD R9, 5      ; KEEP (non-zero)
+    IMUL R10, 3     ; KEEP (non-2/0/1)
+    IDIV R11, 2     ; KEEP (non-1)
     MOV SP, BP
     POP BP
     RET
