@@ -145,30 +145,15 @@ int peephole_pairs(AsmNode *head)
         // --- PUSH/POP Pair Elimination ---
         // PUSH r; POP r → no net effect on the stack or register
         // Must skip comments between PUSH and POP
-        AsmNode *next_real = n1->next;
-        while (next_real && next_real->type == OP_OTHER &&
-               (next_real->raw[0] == '\0' || next_real->raw[0] == ';')) {
-            next_real = next_real->next;
+        AsmNode *pop_node = n1->next;
+        while (pop_node && pop_node->type == OP_OTHER) {
+            pop_node = pop_node->next;
         }
-
-/*
-		---- n2 or next_real?
-		// --- PUSH/POP Pair Elimination ---
-		if (n1->type == OP_PUSH && n2->type == OP_POP &&
-			n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
-			str_case_eq(n1->dst_op.reg, n2->dst_op.reg))
-		{
-			AsmNode *nodes[] = {n1, n2};
-			remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_PAIRS);
-			optimizations += 2;
-			continue;
-		}
-		----*/
-        if (n1->type == OP_PUSH && next_real && next_real->type == OP_POP &&
-            n1->dst_op.mode == MODE_REG && next_real->dst_op.mode == MODE_REG &&
-            str_case_eq(n1->dst_op.reg, next_real->dst_op.reg))
+        if (n1->type == OP_PUSH && pop_node && pop_node->type == OP_POP &&
+            n1->dst_op.mode == MODE_REG && pop_node->dst_op.mode == MODE_REG &&
+            str_case_eq(n1->dst_op.reg, pop_node->dst_op.reg))
         {
-            AsmNode *nodes[] = {n1, next_real};
+            AsmNode *nodes[] = {n1, pop_node};
             remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_PAIRS);
             optimizations += 2;
             continue;

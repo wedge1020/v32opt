@@ -3,7 +3,7 @@
 CC = gcc
 
 # --- Flags ---
-CFLAGS = -Wall -Wextra -g
+CFLAGS = -Wall -Wextra -Wno-format-truncation -g
 CLIBS = -lm
 
 # --- Output Executable ---

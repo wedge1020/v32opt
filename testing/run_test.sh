@@ -12,14 +12,13 @@ ASMRESULT1=$(cat ${UNIT}.asm | grep 'MATCH' | wc -l)
 echo "ASM: ${ASMRESULT1}"
 OPTRESULT1=$(cat ${UNIT}Opt.asm | grep 'MATCH' | wc -l)
 echo "OPT: ${OPTRESULT1} (should be 0)"
-if [ ! "${ASMRESULT1}" = "${OPTRESULT1}" ]; then
+if [ ! "${OPTRESULT1}" = "0" ]; then
 	echo "------------------------------------------------------------"
 	echo "!!! FALSE NEGATIVES: ${UNIT} missed expected targets"
 fi
 echo "------------------------------------------------------------"
-echo
 
-if [ ! "${ASMRESULT1}" = "${OPTRESULT1}" ]; then
+if [ ! "${OPTRESULT1}" = "0" ]; then
 	echo "---OPT MISSED MATCH-----------------------------------------"
 	cat ${UNIT}Opt.asm | grep 'MATCH'
 	echo "------------------------------------------------------------"
@@ -50,7 +49,7 @@ fi
 #diff ${UNIT}.asm ${UNIT}Opt.asm
 #echo "------------------------------------------------------------"
 
-if [ "${ASMRESULT1}" = "${OPTRESULT1}" ] && [ "${ASMRESULT2}" = "${OPTRESULT2}" ]; then
+if [ "${OPTRESULT1}" = "0" ] && [ "${ASMRESULT2}" = "${OPTRESULT2}" ]; then
 	echo "${UNIT}: SUCCESSFULLY PASSED UNIT TESTS"
 	status=0
 else
