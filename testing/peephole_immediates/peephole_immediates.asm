@@ -185,7 +185,8 @@ __function_test_reg_src:
 __function_test_indirect_src:
     PUSH BP
     MOV BP, SP
-    IADD R1, [R2]       ; KEEP
+	MOV  R2, [R3]
+    IADD R1, R2         ; KEEP
     IADD R1, 5          ; KEEP First has indirect source - unchanged
     MOV SP, BP
     POP BP
