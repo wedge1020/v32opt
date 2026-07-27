@@ -76,11 +76,11 @@ int peephole_pairs(AsmNode *head)
         // PATTERN: Self-Inverting Pairs (Involutions)
         // Identical consecutive operations that cancel each other out:
         //   - BNOT R4 ; BNOT R4 -> (Bitwise NOT twice = Identity)
-        //   - INEG R4 ; INEG R4 -> (Two's complement negate twice = Identity)
+        //   - ISGN R4 ; ISGN R4 -> (Two's complement negate twice = Identity)
         //   - NOT R4  ; NOT R4  -> (Logical NOT twice = Identity)
         // ----------------------------------------------------------------
         if (str_case_eq(n1->mnemonic, "BNOT") ||
-            str_case_eq(n1->mnemonic, "INEG") ||
+            str_case_eq(n1->mnemonic, "ISGN") ||
             str_case_eq(n1->mnemonic, "NEG")  ||
             str_case_eq(n1->mnemonic, "NOT"))
         {
