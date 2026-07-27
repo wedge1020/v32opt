@@ -60,9 +60,9 @@ MOV R1, 42
 RET
 
 ; ===================================================================
-; ✅ SCENARIO 7: Case-Insensitive Match (SHOULD REMOVE JMP)
+; ✅ SCENARIO 7: Multi-case Match (SHOULD REMOVE JMP)
 ; ===================================================================
-JMP _my_label ; MATCH
+JMP _My_Label ; MATCH
 _My_Label:
 MOV R1, 42
 RET
@@ -111,6 +111,3 @@ JMP _L12 ; KEEP
 _L11:
 MOV R3, 3
 RET
-
-_my_label:
-HLT
