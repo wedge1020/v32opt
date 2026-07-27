@@ -299,23 +299,20 @@ int peephole_forwarding(AsmNode *head)
 
                     if (is_control_flow_boundary(scan)) break;
 
-                    // 🔥 STOP on ANY store to memory (even different offset)
-                    if (scan->type == OP_MOV && scan->dst_op.mode == MODE_INDIRECT) {
+                    // 🔥 STOP on ANY store to memory with same base register
+                    if (scan->type == OP_MOV && scan->dst_op.mode == MODE_INDIRECT &&
+                        str_case_eq(scan->dst_op.reg, mem_reg)) {
                         break;
                     }
 
-                    // Stop if memory base register is modified
-                    if (modifies_register(scan, mem_reg) || modifies_register(scan, src_reg)) {
-                        break;
-                    }
+                    // Stop if memory base register or source register is modified
+                    if (modifies_register(scan, mem_reg) || modifies_register(scan, src_reg)) break;
 
                     if (scan->type == OP_MOV && scan->dst_op.mode == MODE_REG &&
                         scan->src_op.mode == MODE_INDIRECT &&
                         str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset == mem_off)
                     {
-                        if (config.debug) {
-                            insert_debug_comment(scan->prev, OPT_PEEPHOLE_FORWARDING, scan->raw);
-                        }
+                        insert_debug_comment(scan->prev, OPT_PEEPHOLE_FORWARDING, scan->raw);
                         scan->src_op = curr->src_op;
                         snprintf(scan->raw, sizeof(scan->raw), "    MOV %s, %s",
                                  scan->dst_op.raw, scan->src_op.raw);
@@ -349,29 +346,19 @@ int peephole_forwarding(AsmNode *head)
 
                     if (is_control_flow_boundary(scan)) break;
 
-                    // Stop if def_reg is modified
                     if (modifies_register(scan, def_reg)) break;
-
-                    // Stop if source register is modified
                     if (curr->src_op.mode == MODE_REG && modifies_register(scan, curr->src_op.reg)) {
                         break;
                     }
 
-                    // Check all possible operand positions for def_reg
                     bool uses_def_reg = false;
                     Operand *target_op = NULL;
 
-                    // Check src_op (two-operand instructions)
+                    // Two-operand instructions: check src_op
                     if (scan->has_src && scan->src_op.mode == MODE_REG &&
                         str_case_eq(scan->src_op.reg, def_reg)) {
                         uses_def_reg = true;
                         target_op = &scan->src_op;
-                    }
-                    // Check dst_op (single-operand instructions like JMP)
-                    else if (scan->has_dst && scan->dst_op.mode == MODE_REG &&
-                             str_case_eq(scan->dst_op.reg, def_reg)) {
-                        uses_def_reg = true;
-                        target_op = &scan->dst_op;
                     }
                     // 🔥 FIX: JMP uses src_op for its target in Vircon32
                     else if (str_case_eq(scan->mnemonic, "JMP") && scan->has_src &&
@@ -401,13 +388,9 @@ int peephole_forwarding(AsmNode *head)
                                                      scan->has_dst && scan->dst_op.mode != MODE_REG);
                         if (is_illegal_imm_store) break;
 
-                        if (config.debug) {
-                            insert_debug_comment(scan->prev, OPT_PEEPHOLE_FORWARDING, scan->raw);
-                        }
-
+                        insert_debug_comment(scan->prev, OPT_PEEPHOLE_FORWARDING, scan->raw);
                         *target_op = curr->src_op;
 
-                        // Generate raw string
                         if (str_case_eq(scan->mnemonic, "JMP")) {
                             snprintf(scan->raw, sizeof(scan->raw), "    JMP %s", target_op->raw);
                         } else if (scan->has_dst && scan->has_src) {

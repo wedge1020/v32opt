@@ -8,12 +8,12 @@
 ; No BP usage, standard prologue/epilogue
 ; ===================================================================
 __function_simple:
-    PUSH BP
-    MOV BP, SP
+    PUSH BP ; MATCH
+    MOV BP, SP ; MATCH
     MOV R1, 42
     MOV R2, 100
-    MOV SP, BP
-    POP BP
+    MOV SP, BP ; MATCH
+    POP BP ; MATCH
     RET
 
 ; ===================================================================
@@ -21,13 +21,13 @@ __function_simple:
 ; Return label between body and epilogue
 ; ===================================================================
 __function_with_return_label:
-    PUSH BP
-    MOV BP, SP
+    PUSH BP ; MATCH
+    MOV BP, SP ; MATCH
     MOV R1, 42
     MOV R2, 100
 __function_with_return_label_return:
-    MOV SP, BP
-    POP BP
+    MOV SP, BP ; MATCH
+    POP BP ; MATCH
     RET
 
 ; ===================================================================
@@ -35,30 +35,30 @@ __function_with_return_label_return:
 ; Uses [BP-N] but not BP register directly
 ; ===================================================================
 __function_local_vars:
-    PUSH BP
-    MOV BP, SP
+    PUSH BP ; MATCH
+    MOV BP, SP ; MATCH
     MOV [BP-4], R1
     MOV R2, [BP-4]
     MOV [BP-8], R3
     MOV R4, [BP-8]
-    MOV SP, BP
-    POP BP
+    MOV SP, BP ; MATCH
+    POP BP ; MATCH
     RET
 
 ; ===================================================================
 ; ✅ SCENARIO 4: Multiple Local Variables (SHOULD ELIMINATE)
 ; ===================================================================
 __function_many_locals:
-    PUSH BP
-    MOV BP, SP
+    PUSH BP ; MATCH
+    MOV BP, SP ; MATCH
     MOV [BP-4], R1
     MOV [BP-8], R2
     MOV [BP-12], R3
     MOV R4, [BP-4]
     MOV R5, [BP-8]
     MOV R6, [BP-12]
-    MOV SP, BP
-    POP BP
+    MOV SP, BP ; MATCH
+    POP BP ; MATCH
     RET
 
 ; ===================================================================
@@ -66,36 +66,36 @@ __function_many_locals:
 ; Uses BP register directly
 ; ===================================================================
 __function_direct_bp:
-    PUSH BP
-    MOV BP, SP
+    PUSH BP ; KEEP
+    MOV BP, SP ; KEEP
     MOV R1, BP          ; Direct BP usage
     MOV R2, 42
-    MOV SP, BP
-    POP BP
+    MOV SP, BP ; KEEP
+    POP BP ; KEEP
     RET
 
 ; ===================================================================
 ; ❌ SCENARIO 6: BP in Arithmetic (MUST NOT ELIMINATE)
 ; ===================================================================
 __function_bp_arith:
-    PUSH BP
-    MOV BP, SP
+    PUSH BP ; KEEP
+    MOV BP, SP ; KEEP
     IADD R1, BP        ; BP in arithmetic
     ISUB R2, BP
-    MOV SP, BP
-    POP BP
+    MOV SP, BP ; KEEP
+    POP BP ; KEEP
     RET
 
 ; ===================================================================
 ; ❌ SCENARIO 7: BP in Indirect (MUST NOT ELIMINATE)
 ; ===================================================================
 __function_bp_indirect:
-    PUSH BP
-    MOV BP, SP
+    PUSH BP ; KEEP
+    MOV BP, SP ; KEEP
     MOV R1, [BP]       ; BP in indirect
     MOV [BP+4], R2
-    MOV SP, BP
-    POP BP
+    MOV SP, BP ; KEEP
+    POP BP ; KEEP
     RET
 
 ; ===================================================================
@@ -103,17 +103,17 @@ __function_bp_indirect:
 ; Has internal labels
 ; ===================================================================
 __function_nested:
-    PUSH BP
-    MOV BP, SP
+    PUSH BP ; KEEP
+    MOV BP, SP ; KEEP
     MOV R1, 1
-    JT R1, loop_start
-    JMP loop_end
-loop_start:
+    JT R1, _loop_start
+    JMP _loop_end
+_loop_start:
     IADD R1, 1
-    JT R1, loop_start
-loop_end:
-    MOV SP, BP
-    POP BP
+    JT R1, _loop_start
+_loop_end:
+    MOV SP, BP ; KEEP
+    POP BP ; KEEP
     RET
 
 ; ===================================================================
@@ -121,16 +121,16 @@ loop_end:
 ; ===================================================================
 __function_no_prologue:
     MOV R1, 42
-    MOV SP, BP
-    POP BP
+    MOV SP, BP ; KEEP
+    POP BP ; KEEP
     RET
 
 ; ===================================================================
 ; ❌ SCENARIO 10: Missing Epilogue (MUST NOT ELIMINATE)
 ; ===================================================================
 __function_no_epilogue:
-    PUSH BP
-    MOV BP, SP
+    PUSH BP ; KEEP
+    MOV BP, SP ; KEEP
     MOV R1, 42
     RET
 
@@ -139,10 +139,10 @@ __function_no_epilogue:
 ; Only PUSH BP, missing MOV BP, SP
 ; ===================================================================
 __function_partial_prologue:
-    PUSH BP
+    PUSH BP ; KEEP
     MOV R1, 42
-    MOV SP, BP
-    POP BP
+    MOV SP, BP ; KEEP
+    POP BP ; KEEP
     RET
 
 ; ===================================================================
@@ -150,20 +150,20 @@ __function_partial_prologue:
 ; Only POP BP, missing MOV SP, BP
 ; ===================================================================
 __function_partial_epilogue:
-    PUSH BP
-    MOV BP, SP
+    PUSH BP ; KEEP
+    MOV BP, SP ; KEEP
     MOV R1, 42
-    POP BP
+    POP BP ; KEEP
     RET
 
 ; ===================================================================
 ; ✅ SCENARIO 13: Empty Function (SHOULD ELIMINATE)
 ; ===================================================================
 __function_empty:
-    PUSH BP
-    MOV BP, SP
-    MOV SP, BP
-    POP BP
+    PUSH BP ; MATCH
+    MOV BP, SP ; MATCH
+    MOV SP, BP ; MATCH
+    POP BP ; MATCH
     RET
 
 ; ===================================================================
@@ -171,24 +171,25 @@ __function_empty:
 ; CALL doesn't use BP directly
 ; ===================================================================
 __function_with_call:
-    PUSH BP
-    MOV BP, SP
-    CALL some_func
+    PUSH BP ; MATCH
+    MOV BP, SP ; MATCH
+    CALL _some_func
     MOV R1, 42
-    MOV SP, BP
-    POP BP
+    MOV SP, BP ; MATCH
+    POP BP ; MATCH
     RET
+_some_func:	
 
 ; ===================================================================
 ; ❌ SCENARIO 15: Function Modifying BP (MUST NOT ELIMINATE)
 ; ===================================================================
 __function_modify_bp:
-    PUSH BP
-    MOV BP, SP
+    PUSH BP ; KEEP
+    MOV BP, SP ; KEEP
     MOV BP, R1          ; Modifies BP
     MOV R2, 42
-    MOV SP, BP
-    POP BP
+    MOV SP, BP ; KEEP
+    POP BP ; KEEP
     RET
 
 ; ===================================================================
@@ -196,13 +197,13 @@ __function_modify_bp:
 ; Multiple operations, no BP usage
 ; ===================================================================
 __function_complex:
-    PUSH BP
-    MOV BP, SP
+    PUSH BP ; MATCH
+    MOV BP, SP ; MATCH
     MOV R1, 10
     IADD R2, R1
     ISUB R3, 5
     IMUL R4, 2
     IDIV R5, 2
-    MOV SP, BP
-    POP BP
+    MOV SP, BP ; MATCH
+    POP BP ; MATCH
     RET
