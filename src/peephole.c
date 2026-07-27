@@ -545,11 +545,9 @@ int peephole_immediates(AsmNode *head)
         if ((curr->type == OP_IADD || curr->type == OP_ISUB) &&
             curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float)
         {
-            // Skip over comments/blank lines to find the next real instruction
+            // 🔥 FIX: Skip ALL OP_OTHER nodes (comments/blanks), not just those starting with ;
             AsmNode *n2 = curr->next;
-            while (n2 && n2->type == OP_OTHER &&
-                  (n2->raw[0] == '\0' || n2->raw[0] == ';'))
-            {
+            while (n2 && n2->type == OP_OTHER) {
                 n2 = n2->next;
             }
 
@@ -564,37 +562,37 @@ int peephole_immediates(AsmNode *head)
                 int combined = val1 + val2;
 
                 // --- Cancellation Case ---
-                // If the combined value is 0, both operations cancel out
                 if (combined == 0)
                 {
-                    AsmNode *next_iter = n2->next;
-                    remove_node(curr);
-                    remove_node(n2);
-                    curr = next_iter;
+                    if (config.debug) {
+                        insert_debug_comment(curr->prev, OPT_PEEPHOLE_IMMEDIATES, curr->raw);
+                        insert_debug_comment(n2->prev, OPT_PEEPHOLE_IMMEDIATES, n2->raw);
+                    }
+                    AsmNode *nodes[] = {curr, n2};
+                    remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_IMMEDIATES);
                     optimizations += 2;
                     continue;
                 }
                 // --- Non-Zero Combination ---
-                // Replace the first instruction with the combined operation
-                else if (combined > 0)
+                else
                 {
-                    curr->type = OP_IADD;
-                    safe_str_copy(curr->mnemonic, "IADD", sizeof(curr->mnemonic));
-                    curr->src_op.immediate = combined;
-                    snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%d", combined);
-                    snprintf(curr->raw, sizeof(curr->raw), "    IADD %s, %d", curr->dst_op.raw, combined);
+                    if (config.debug) {
+                        insert_debug_comment(curr->prev, OPT_PEEPHOLE_IMMEDIATES, curr->raw);
+                    }
+                    curr->type = (combined > 0) ? OP_IADD : OP_ISUB;
+                    strcpy(curr->mnemonic, (combined > 0) ? "IADD" : "ISUB");
+                    curr->src_op.immediate = abs(combined);
+                    snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%d", abs(combined));
+                    snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %d",
+                             curr->mnemonic, curr->dst_op.raw, abs(combined));
+                    if (config.debug) {
+                        insert_debug_comment(n2->prev, OPT_PEEPHOLE_IMMEDIATES, n2->raw);
+                    }
+                    AsmNode *nodes[] = {n2};
+                    remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_IMMEDIATES);
+                    optimizations++;
+                    continue;
                 }
-                else // combined < 0
-                {
-                    curr->type = OP_ISUB;
-                    safe_str_copy(curr->mnemonic, "ISUB", sizeof(curr->mnemonic));
-                    curr->src_op.immediate = -combined; // Make positive for ISUB
-                    snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%d", -combined);
-                    snprintf(curr->raw, sizeof(curr->raw), "    ISUB %s, %d", curr->dst_op.raw, -combined);
-                }
-                remove_node(n2);
-                optimizations++;
-                continue;
             }
         }
         curr = curr->next;
