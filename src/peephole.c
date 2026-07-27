@@ -35,7 +35,7 @@
 //   - BNOT x; BNOT x → remove both (double negation cancels)
 //   - PUSH r; POP r → remove both (no net effect)
 // ===================================================================
-int  peephole_pairs (AsmNode *head)
+int peephole_pairs(AsmNode *head)
 {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;
