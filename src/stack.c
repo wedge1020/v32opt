@@ -75,7 +75,7 @@ int omit_frame_pointers(AsmNode *head)
                 mov_bp_sp->has_dst && str_case_eq(mov_bp_sp->dst_op.reg, "BP") &&
                 mov_bp_sp->has_src && str_case_eq(mov_bp_sp->src_op.reg, "SP"))
             {
-                bool bp_used_in_body = false;
+                bool frame_used_in_body = false;
                 AsmNode *epilogue_mov = NULL;
                 AsmNode *epilogue_pop = NULL;
 
@@ -99,7 +99,7 @@ int omit_frame_pointers(AsmNode *head)
                         bool is_return_label = (lbl_len >= 7 && str_case_eq(lbl + lbl_len - 7, "_return"));
 
                         if (!is_return_label) {
-                            bp_used_in_body = true;
+                            frame_used_in_body = true;
                             break;
                         }
                         scan = scan->next;
@@ -127,7 +127,7 @@ int omit_frame_pointers(AsmNode *head)
                     scan = scan->next;
                 }
 
-                // Second pass: Check for BP usage in BODY ONLY (between prologue and epilogue)
+                // Second pass: Check for BP/SP usage in BODY ONLY (between prologue and epilogue)
                 if (epilogue_mov && epilogue_pop) {
                     scan = mov_bp_sp->next;
                     while (scan && scan != epilogue_mov)
@@ -148,21 +148,29 @@ int omit_frame_pointers(AsmNode *head)
                             bool is_return_label = (lbl_len >= 7 && str_case_eq(lbl + lbl_len - 7, "_return"));
 
                             if (!is_return_label) {
-                                bp_used_in_body = true;
+                                frame_used_in_body = true;
                                 break;
                             }
                             scan = scan->next;
                             continue;
                         }
 
-                        // 🔥 FIX: Check for BP in indirect mode with non-negative offset ([BP] or [BP+N])
+                        // 🔥 Check for BP usage (direct or indirect with non-negative offset)
                         bool bp_used = references_bp_direct(scan) ||
                                       (scan->has_dst && scan->dst_op.mode == MODE_INDIRECT &&
                                        str_case_eq(scan->dst_op.reg, "BP") && scan->dst_op.offset >= 0) ||
                                       (scan->has_src && scan->src_op.mode == MODE_INDIRECT &&
                                        str_case_eq(scan->src_op.reg, "BP") && scan->src_op.offset >= 0);
-                        if (bp_used) {
-                            bp_used_in_body = true;
+
+                        // 🔥 Check for SP usage (direct modification or indirect)
+                        bool sp_used = modifies_register(scan, "SP") ||
+                                      (scan->has_dst && scan->dst_op.mode == MODE_INDIRECT &&
+                                       str_case_eq(scan->dst_op.reg, "SP")) ||
+                                      (scan->has_src && scan->src_op.mode == MODE_INDIRECT &&
+                                       str_case_eq(scan->src_op.reg, "SP"));
+
+                        if (bp_used || sp_used) {
+                            frame_used_in_body = true;
                             break;
                         }
 
@@ -174,13 +182,12 @@ int omit_frame_pointers(AsmNode *head)
                     }
                 } else {
                     // No epilogue found, can't eliminate
-                    bp_used_in_body = true;
+                    frame_used_in_body = true;
                 }
 
                 // 4. The Verdict
-                if (!bp_used_in_body && epilogue_mov && epilogue_pop)
+                if (!frame_used_in_body && epilogue_mov && epilogue_pop)
                 {
-                    // 🔥 FIX: Removed explicit debug calls - handled by remove_with_debug
                     AsmNode *nodes[] = {push_bp, mov_bp_sp, epilogue_mov, epilogue_pop};
                     remove_with_debug(&curr, nodes, 4, OPT_OMIT_FRAME_POINTERS);
                     optimizations += 4;
