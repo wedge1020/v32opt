@@ -1,5 +1,5 @@
 ; ===================================================================
-; TEST: omit_frame_pointers - All Scenarios
+; TEST: omit_frame_pointers - All Scenarios (Enhanced)
 ; Run with: ./v32opt test_frame.asm -fopt_omit_frame_pointers -v
 ; ===================================================================
 
@@ -178,7 +178,7 @@ __function_with_call:
     MOV SP, BP ; MATCH
     POP BP ; MATCH
     RET
-_some_func:	
+_some_func:
 
 ; ===================================================================
 ; ❌ SCENARIO 15: Function Modifying BP (MUST NOT ELIMINATE)
@@ -206,4 +206,69 @@ __function_complex:
     IDIV R5, 2
     MOV SP, BP ; MATCH
     POP BP ; MATCH
+    RET
+
+; ===================================================================
+; ❌ SCENARIO 17: SP Modified (MUST NOT ELIMINATE)
+; Direct SP modification invalidates frame elimination
+; ===================================================================
+__function_sp_modified:
+    PUSH BP ; KEEP
+    MOV BP, SP ; KEEP
+    ISUB SP, 16        ; Allocate stack space - uses SP directly
+    MOV R1, 42
+    MOV R2, 100
+    MOV SP, BP ; KEEP
+    POP BP ; KEEP
+    RET
+
+; ===================================================================
+; ❌ SCENARIO 18: SP in Indirect Mode (MUST NOT ELIMINATE)
+; Uses [SP] for stack operations - depends on frame
+; ===================================================================
+__function_sp_indirect:
+    PUSH BP ; KEEP
+    MOV BP, SP ; KEEP
+    MOV R1, 42
+    MOV [SP], R1       ; Store on stack using SP directly
+    MOV R2, [SP]       ; Load from stack
+    MOV SP, BP ; KEEP
+    POP BP ; KEEP
+    RET
+
+; ===================================================================
+; ❌ SCENARIO 19: Mixed SP and BP Usage (MUST NOT ELIMINATE)
+; Uses both SP and BP in ways that depend on frame pointer
+; ===================================================================
+__function_mixed_sp_bp:
+    PUSH BP ; KEEP
+    MOV BP, SP ; KEEP
+    ISUB SP, 8         ; Allocate stack space
+    MOV [BP-4], R1     ; Local variable
+    MOV [SP], R2       ; Stack access
+    MOV R3, [BP-4]     ; Local variable
+    MOV R4, [SP]       ; Stack access
+    MOV SP, BP ; KEEP
+    POP BP ; KEEP
+    RET
+
+; ===================================================================
+; ❌ SCENARIO 20: SP Allocation with Offsets (MUST NOT ELIMINATE)
+; Multiple SP-based stack operations
+; ===================================================================
+__function_sp_alloc:
+    PUSH BP ; KEEP
+    MOV BP, SP ; KEEP
+    ISUB SP, 24        ; Allocate space for 6 words
+    MOV [SP], R1
+    MOV [SP+4], R2
+    MOV [SP+8], R3
+    MOV [SP+12], R4
+    MOV [SP+16], R5
+    MOV [SP+20], R6
+    CALL _helper
+    MOV SP, BP ; KEEP
+    POP BP ; KEEP
+    RET
+_helper:
     RET
