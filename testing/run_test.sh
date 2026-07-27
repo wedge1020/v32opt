@@ -37,6 +37,15 @@ if [ ! "${ASMRESULT2}" = "${OPTRESULT2}" ]; then
 fi
 echo "------------------------------------------------------------"
 echo
+
+if [ ! "${ASMRESULT2}" = "${OPTRESULT2}" ]; then
+	echo "---OPT TRIGGERED ON KEEP------------------------------------"
+	cat ${UNIT}.asm    | grep 'KEEP' >  asmkeep.tmp
+	cat ${UNIT}Opt.asm | grep 'KEEP' >  optkeep.tmp
+	diff asmkeep.tmp optkeep.tmp | grep '<'
+	rm -f asmkeep.tmp optkeep.tmp
+	echo "------------------------------------------------------------"
+fi
 #echo "---code differences-----------------------------------------"
 #diff ${UNIT}.asm ${UNIT}Opt.asm
 #echo "------------------------------------------------------------"

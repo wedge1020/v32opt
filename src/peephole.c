@@ -142,14 +142,6 @@ int peephole_pairs(AsmNode *head)
             }
         }
 
-		// DEBUG: Dump PUSH/POP candidates
-		if (n1->type == OP_PUSH || n2->type == OP_POP) {
-			fprintf(stderr, "DEBUG PUSH/POP: n1=%s (type=%d), n2=%s (type=%d)\n",
-					n1->mnemonic, n1->type, n2->mnemonic, n2->type);
-			fprintf(stderr, "  n1 dst_op: mode=%d reg=%s\n", n1->dst_op.mode, n1->dst_op.reg);
-			fprintf(stderr, "  n2 dst_op: mode=%d reg=%s\n", n2->dst_op.mode, n2->dst_op.reg);
-		}
-
         // --- PUSH/POP Pair Elimination ---
         // PUSH r; POP r → no net effect on the stack or register
         // Must skip comments between PUSH and POP
@@ -163,6 +155,7 @@ int peephole_pairs(AsmNode *head)
             n1->dst_op.mode == MODE_REG && next_real->dst_op.mode == MODE_REG &&
             str_case_eq(n1->dst_op.reg, next_real->dst_op.reg))
         {
+			fprintf(stderr, "!!! MATCHED PUSH/POP: %s and %s\n", n1->raw, n2->raw);
             AsmNode *nodes[] = {n1, next_real};
             remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_PAIRS);
             optimizations += 2;
