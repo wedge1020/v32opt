@@ -128,7 +128,7 @@ __function_test_copy_prop_label:
     PUSH BP
     MOV BP, SP
     MOV R1, _my_label
-    JMP R1             ; MATCH Should become: JMP my_label
+    JMP R1             ; MATCH Should become: JMP _my_label
     MOV SP, BP
     POP BP
     RET

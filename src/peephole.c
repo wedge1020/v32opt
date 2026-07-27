@@ -220,6 +220,45 @@ int peephole_algebra(AsmNode *head)
             optimizations++;
         }
 
+        // --- IMUL by 0 → MOV r, 0 ---
+        if (curr->type == OP_IMUL &&
+            curr->dst_op.mode == MODE_REG &&
+            curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float &&
+            curr->src_op.immediate == 0)
+        {
+            insert_debug_comment(curr->prev, OPT_PEEPHOLE_ALGEBRA, curr->raw);
+            curr->type = OP_MOV;
+            strcpy(curr->mnemonic, "MOV");
+            snprintf(curr->raw, sizeof(curr->raw), "    MOV %s, 0", curr->dst_op.raw);
+            optimizations++;
+            curr = next;
+            continue;
+        }
+
+        // --- IMUL by 1 → Remove (identity) ---
+        if (curr->type == OP_IMUL &&
+            curr->dst_op.mode == MODE_REG &&
+            curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float &&
+            curr->src_op.immediate == 1)
+        {
+            AsmNode *nodes[] = {curr};
+            remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_ALGEBRA);
+            optimizations++;
+            continue;
+        }
+
+        // --- IDIV by 1 → Remove (identity) ---
+        if (curr->type == OP_IDIV &&
+            curr->dst_op.mode == MODE_REG &&
+            curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float &&
+            curr->src_op.immediate == 1)
+        {
+            AsmNode *nodes[] = {curr};
+            remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_ALGEBRA);
+            optimizations++;
+            continue;
+        }
+
         curr = next;
     }
 
@@ -241,123 +280,155 @@ int peephole_forwarding(AsmNode *head)
     {
         if (curr->type == OP_MOV)
         {
-            // ----------------------------------------------------------
+            // =========================================================
             // RULE 1: Store-to-Load Forwarding
-            // ----------------------------------------------------------
+            // =========================================================
             if (curr->dst_op.mode == MODE_INDIRECT && curr->src_op.mode == MODE_REG)
             {
                 char *mem_reg = curr->dst_op.reg;
-                int mem_off   = curr->dst_op.offset;
+                int mem_off = curr->dst_op.offset;
                 char *src_reg = curr->src_op.reg;
 
                 AsmNode *scan = curr->next;
-                while (scan && (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';'))) {
+                while (scan)
+                {
+                    if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
+                        scan = scan->next;
+                        continue;
+                    }
+
+                    if (is_control_flow_boundary(scan)) break;
+
+                    // 🔥 STOP on ANY store to memory (even different offset)
+                    if (scan->type == OP_MOV && scan->dst_op.mode == MODE_INDIRECT) {
+                        break;
+                    }
+
+                    // Stop if memory base register is modified
+                    if (modifies_register(scan, mem_reg) || modifies_register(scan, src_reg)) {
+                        break;
+                    }
+
+                    if (scan->type == OP_MOV && scan->dst_op.mode == MODE_REG &&
+                        scan->src_op.mode == MODE_INDIRECT &&
+                        str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset == mem_off)
+                    {
+                        if (config.debug) {
+                            insert_debug_comment(scan->prev, OPT_PEEPHOLE_FORWARDING, scan->raw);
+                        }
+                        scan->src_op = curr->src_op;
+                        snprintf(scan->raw, sizeof(scan->raw), "    MOV %s, %s",
+                                 scan->dst_op.raw, scan->src_op.raw);
+                        optimizations++;
+                        break;
+                    }
+
                     scan = scan->next;
-                }
-
-                if (!scan || scan->type == OP_OTHER) {
-                    curr = curr->next;
-                    continue;
-                }
-
-                if (is_control_flow_boundary(scan)) {
-                    curr = curr->next;
-                    continue;
-                }
-                if (modifies_register(scan, mem_reg) || modifies_register(scan, src_reg)) {
-                    curr = curr->next;
-                    continue;
-                }
-
-                if (scan->type == OP_MOV && scan->dst_op.mode == MODE_INDIRECT &&
-                    str_case_eq(scan->dst_op.reg, mem_reg) && scan->dst_op.offset == mem_off) {
-                    curr = curr->next;
-                    continue;
-                }
-
-                if (scan->type == OP_MOV && scan->dst_op.mode == MODE_REG &&
-                    scan->src_op.mode == MODE_INDIRECT &&
-                    str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset == mem_off) {
-                    scan->src_op = curr->src_op;
-                    snprintf(scan->raw, sizeof(scan->raw), "    MOV %s, %s",
-                             scan->dst_op.raw, scan->src_op.raw);
-                    optimizations++;
                 }
             }
 
-            // ----------------------------------------------------------
-            // RULE 2: Register & Immediate Copy Propagation
-            // ----------------------------------------------------------
-            else if (curr->dst_op.mode == MODE_REG &&
-                    (curr->src_op.mode == MODE_REG || curr->src_op.mode == MODE_IMMEDIATE))
+            // =========================================================
+            // RULE 2: Copy Propagation
+            // =========================================================
+            if (curr->dst_op.mode == MODE_REG)
             {
                 char *def_reg = curr->dst_op.reg;
 
-                if (!str_case_eq(def_reg, "SP") && !str_case_eq(def_reg, "BP"))
+                if (str_case_eq(def_reg, "SP") || str_case_eq(def_reg, "BP")) {
+                    curr = curr->next;
+                    continue;
+                }
+
+                AsmNode *scan = curr->next;
+                while (scan)
                 {
-                    AsmNode *scan = curr->next;
-                    while (scan && (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';'))) {
+                    if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
                         scan = scan->next;
-                    }
-
-                    if (!scan || scan->type == OP_OTHER) {
-                        curr = curr->next;
                         continue;
                     }
 
-                    if (is_control_flow_boundary(scan)) {
-                        curr = curr->next;
-                        continue;
-                    }
+                    if (is_control_flow_boundary(scan)) break;
 
+                    // Stop if def_reg is modified
+                    if (modifies_register(scan, def_reg)) break;
+
+                    // Stop if source register is modified
                     if (curr->src_op.mode == MODE_REG && modifies_register(scan, curr->src_op.reg)) {
-                        curr = curr->next;
-                        continue;
+                        break;
                     }
 
+                    // Check all possible operand positions for def_reg
+                    bool uses_def_reg = false;
+                    Operand *target_op = NULL;
+
+                    // Check src_op (two-operand instructions)
                     if (scan->has_src && scan->src_op.mode == MODE_REG &&
-                        str_case_eq(scan->src_op.reg, def_reg))
+                        str_case_eq(scan->src_op.reg, def_reg)) {
+                        uses_def_reg = true;
+                        target_op = &scan->src_op;
+                    }
+                    // Check dst_op (single-operand instructions like JMP)
+                    else if (scan->has_dst && scan->dst_op.mode == MODE_REG &&
+                             str_case_eq(scan->dst_op.reg, def_reg)) {
+                        uses_def_reg = true;
+                        target_op = &scan->dst_op;
+                    }
+                    // 🔥 FIX: JMP uses src_op for its target in Vircon32
+                    else if (str_case_eq(scan->mnemonic, "JMP") && scan->has_src &&
+                             scan->src_op.mode == MODE_REG &&
+                             str_case_eq(scan->src_op.reg, def_reg)) {
+                        uses_def_reg = true;
+                        target_op = &scan->src_op;
+                    }
+
+                    if (uses_def_reg)
                     {
-                        // 🔥 CRITICAL: Block numeric immediates into JT/JF targets
+                        // Guard: Block numeric immediates into JT/JF
                         if ((str_case_eq(scan->mnemonic, "JT") || str_case_eq(scan->mnemonic, "JF")) &&
-                            curr->src_op.mode == MODE_IMMEDIATE && is_numeric_immediate(&curr->src_op)) {
+                            curr->src_op.mode == MODE_IMMEDIATE &&
+                            (isdigit((unsigned char)curr->src_op.raw[0]) ||
+                             (curr->src_op.raw[0] == '-' && isdigit((unsigned char)curr->src_op.raw[1])))) {
                             break;
                         }
 
-                        // FIX: Block POW/ATAN2 (require register operands only)
+                        // Guard: Block POW/ATAN2
                         if (str_case_eq(scan->mnemonic, "POW") || str_case_eq(scan->mnemonic, "ATAN2")) {
-                            curr = curr->next;
-                            continue;
+                            break;
                         }
 
+                        // Guard: Block illegal immediate stores
                         bool is_illegal_imm_store = (curr->src_op.mode == MODE_IMMEDIATE &&
-                                                     scan->has_dst &&
-                                                     scan->dst_op.mode != MODE_REG);
+                                                     scan->has_dst && scan->dst_op.mode != MODE_REG);
+                        if (is_illegal_imm_store) break;
 
-                        if (!is_illegal_imm_store)
-                        {
-                            scan->src_op = curr->src_op;
-                            if (scan->has_dst) {
-                                snprintf(scan->raw, sizeof(scan->raw), "    %s %s, %s",
-                                         scan->mnemonic, scan->dst_op.raw, scan->src_op.raw);
-                            } else {
-                                snprintf(scan->raw, sizeof(scan->raw), "    %s %s",
-                                         scan->mnemonic, scan->src_op.raw);
-                            }
-                            optimizations++;
+                        if (config.debug) {
+                            insert_debug_comment(scan->prev, OPT_PEEPHOLE_FORWARDING, scan->raw);
                         }
+
+                        *target_op = curr->src_op;
+
+                        // Generate raw string
+                        if (str_case_eq(scan->mnemonic, "JMP")) {
+                            snprintf(scan->raw, sizeof(scan->raw), "    JMP %s", target_op->raw);
+                        } else if (scan->has_dst && scan->has_src) {
+                            snprintf(scan->raw, sizeof(scan->raw), "    %s %s, %s",
+                                     scan->mnemonic, scan->dst_op.raw, scan->src_op.raw);
+                        } else if (scan->has_dst) {
+                            snprintf(scan->raw, sizeof(scan->raw), "    %s %s",
+                                     scan->mnemonic, scan->dst_op.raw);
+                        } else {
+                            snprintf(scan->raw, sizeof(scan->raw), "    %s %s",
+                                     scan->mnemonic, scan->src_op.raw);
+                        }
+                        optimizations++;
                     }
 
-                    if (modifies_register(scan, def_reg)) {
-                        curr = curr->next;
-                        continue;
-                    }
+                    scan = scan->next;
                 }
             }
         }
         curr = curr->next;
     }
-
     return optimizations;
 }
 
