@@ -5,6 +5,34 @@ int   g_inline_calls_so_far        = 0;
 char  g_inline_exclude_name[1024]  = {0};
 
 // -------------------------------------------------------------------
+// Optimization Configuration
+// -------------------------------------------------------------------
+OptConfig config = {
+	.verbose                      = false,
+	.testing                      = false,
+	.debug                        = false,
+	.opt_peephole_pairs           = false,
+	.opt_peephole_algebra         = false,
+	.opt_peephole_forwarding      = false,
+	.opt_peephole_jumps           = false,
+	.opt_peephole_movs            = false,
+	.opt_peephole_immediates      = false,
+	.opt_peephole_reduce          = false,
+	.opt_peephole_shifts          = false,
+	.opt_peephole_dead_stores     = false,
+	.opt_peephole_loads           = false,
+	.opt_peephole_immediate_prop  = false,
+	.opt_peephole_jmp_chain       = false,
+	.opt_dce                      = false,
+	.opt_constant_folding         = false,
+	.opt_inline                   = false,
+	.opt_promote_regs             = false,
+	.opt_promote_leaf             = false,
+	.opt_promote_loops            = false,
+	.opt_omit_frame_pointers      = false
+};
+
+// -------------------------------------------------------------------
 // Main Entry Point
 // -------------------------------------------------------------------
 int  main (int  argc, char **argv)
@@ -62,33 +90,6 @@ int  main (int  argc, char **argv)
 //    {
 //        tally[index
 
-    // -------------------------------------------------------------------
-    // Optimization Configuration
-    // -------------------------------------------------------------------
-    OptConfig config = {
-        .verbose                         = false,
-        .testing                         = false,
-        .debug                           = false,
-        .enable_peephole_pairs           = false,
-        .enable_peephole_algebra         = false,
-        .enable_peephole_forwarding      = false,
-        .enable_peephole_jumps           = false,
-        .enable_peephole_movs            = false,
-        .enable_peephole_immediates      = false,
-        .enable_peephole_reduce          = false,
-        .enable_peephole_shifts          = false,
-        .enable_peephole_dead_stores     = false,
-        .enable_peephole_loads           = false,
-        .enable_peephole_immediate_prop  = false,
-        .enable_peephole_jmp_chain       = false,
-        .enable_dce                      = false,
-        .enable_constant_folding         = false,
-        .enable_inline                   = false,
-        .enable_promote_regs             = false,
-        .enable_promote_leaf             = false,
-        .enable_promote_loops            = false,
-        .enable_omit_frame_pointers      = false
-    };
 
     // -------------------------------------------------------------------
     // Parse Command Line Arguments
@@ -109,159 +110,159 @@ int  main (int  argc, char **argv)
         } else if (strcmp(argv[i], "-d") == 0) {
             config.debug   = true;
         } else if (strcmp(argv[i], "-O0") == 0) {
-            config.enable_peephole_pairs           = false;
-            config.enable_peephole_algebra         = false;
-            config.enable_peephole_forwarding      = false;
-            config.enable_peephole_jumps           = false;
-            config.enable_peephole_movs            = false;
-            config.enable_peephole_immediates      = false;
-            config.enable_peephole_reduce          = false;
-            config.enable_peephole_shifts          = false;
-            config.enable_peephole_dead_stores     = false;
-            config.enable_peephole_loads           = false;
-            config.enable_peephole_immediate_prop  = false;
-            config.enable_peephole_jmp_chain       = false;
-            config.enable_dce                      = false;
-            config.enable_constant_folding         = false;
-            config.enable_inline                   = false;
-            config.enable_promote_regs             = false;
-            config.enable_promote_leaf             = false;
-            config.enable_promote_loops            = false;
-            config.enable_omit_frame_pointers      = false;
+            config.opt_peephole_pairs           = false;
+            config.opt_peephole_algebra         = false;
+            config.opt_peephole_forwarding      = false;
+            config.opt_peephole_jumps           = false;
+            config.opt_peephole_movs            = false;
+            config.opt_peephole_immediates      = false;
+            config.opt_peephole_reduce          = false;
+            config.opt_peephole_shifts          = false;
+            config.opt_peephole_dead_stores     = false;
+            config.opt_peephole_loads           = false;
+            config.opt_peephole_immediate_prop  = false;
+            config.opt_peephole_jmp_chain       = false;
+            config.opt_dce                      = false;
+            config.opt_constant_folding         = false;
+            config.opt_inline                   = false;
+            config.opt_promote_regs             = false;
+            config.opt_promote_leaf             = false;
+            config.opt_promote_loops            = false;
+            config.opt_omit_frame_pointers      = false;
         } else if (strcmp(argv[i], "-O1") == 0) {
-            config.enable_peephole_pairs           = true;
-            config.enable_peephole_algebra         = true;
-            config.enable_peephole_forwarding      = true;
-            config.enable_peephole_jumps           = true;
-            config.enable_peephole_movs            = true;
-            config.enable_peephole_immediates      = true;
-            config.enable_peephole_reduce          = true;
-            config.enable_peephole_shifts          = true;
-            config.enable_peephole_dead_stores     = false;
-            config.enable_peephole_loads           = true;
-            config.enable_peephole_immediate_prop  = true;
-            config.enable_peephole_jmp_chain       = true;
-            config.enable_dce                      = false;
-            config.enable_constant_folding         = false;
-            config.enable_inline                   = false;
-            config.enable_promote_regs             = false;
-            config.enable_promote_leaf             = false;
-            config.enable_promote_loops            = false;
-            config.enable_omit_frame_pointers      = false;
+            config.opt_peephole_pairs           = true;
+            config.opt_peephole_algebra         = true;
+            config.opt_peephole_forwarding      = true;
+            config.opt_peephole_jumps           = true;
+            config.opt_peephole_movs            = true;
+            config.opt_peephole_immediates      = true;
+            config.opt_peephole_reduce          = true;
+            config.opt_peephole_shifts          = true;
+            config.opt_peephole_dead_stores     = false;
+            config.opt_peephole_loads           = true;
+            config.opt_peephole_immediate_prop  = true;
+            config.opt_peephole_jmp_chain       = true;
+            config.opt_dce                      = false;
+            config.opt_constant_folding         = false;
+            config.opt_inline                   = false;
+            config.opt_promote_regs             = false;
+            config.opt_promote_leaf             = false;
+            config.opt_promote_loops            = false;
+            config.opt_omit_frame_pointers      = false;
         } else if (strcmp(argv[i], "-O2") == 0) {
-            config.enable_peephole_pairs           = true;
-            config.enable_peephole_algebra         = true;
-            config.enable_peephole_forwarding      = true;
-            config.enable_peephole_jumps           = true;
-            config.enable_peephole_movs            = true;
-            config.enable_peephole_immediates      = true;
-            config.enable_peephole_reduce          = true;
-            config.enable_peephole_shifts          = true;
-            config.enable_peephole_dead_stores     = false;
-            config.enable_peephole_loads           = true;
-            config.enable_peephole_immediate_prop  = true;
-            config.enable_peephole_jmp_chain       = true;
-            config.enable_dce                      = true;
-            config.enable_constant_folding         = true;
-            config.enable_inline                   = false;
-            config.enable_promote_regs             = false;
-            config.enable_promote_leaf             = false;
-            config.enable_promote_loops            = false;
-            config.enable_omit_frame_pointers      = false;
+            config.opt_peephole_pairs           = true;
+            config.opt_peephole_algebra         = true;
+            config.opt_peephole_forwarding      = true;
+            config.opt_peephole_jumps           = true;
+            config.opt_peephole_movs            = true;
+            config.opt_peephole_immediates      = true;
+            config.opt_peephole_reduce          = true;
+            config.opt_peephole_shifts          = true;
+            config.opt_peephole_dead_stores     = false;
+            config.opt_peephole_loads           = true;
+            config.opt_peephole_immediate_prop  = true;
+            config.opt_peephole_jmp_chain       = true;
+            config.opt_dce                      = true;
+            config.opt_constant_folding         = true;
+            config.opt_inline                   = false;
+            config.opt_promote_regs             = false;
+            config.opt_promote_leaf             = false;
+            config.opt_promote_loops            = false;
+            config.opt_omit_frame_pointers      = false;
         } else if (strcmp(argv[i], "-O3") == 0) {
-            config.enable_peephole_pairs           = true;
-            config.enable_peephole_algebra         = true;
-            config.enable_peephole_forwarding      = true;
-            config.enable_peephole_jumps           = true;
-            config.enable_peephole_movs            = true;
-            config.enable_peephole_immediates      = true;
-            config.enable_peephole_reduce          = true;
-            config.enable_peephole_shifts          = true;
-            config.enable_peephole_dead_stores     = false;
-            config.enable_peephole_loads           = true;
-            config.enable_peephole_immediate_prop  = true;
-            config.enable_peephole_jmp_chain       = true;
-            config.enable_dce                      = true;
-            config.enable_constant_folding         = true;
-            config.enable_inline                   = true;
-            config.enable_promote_regs             = false;
-            config.enable_promote_leaf             = false;
-            config.enable_promote_loops            = false;
-            config.enable_omit_frame_pointers      = false;
+            config.opt_peephole_pairs           = true;
+            config.opt_peephole_algebra         = true;
+            config.opt_peephole_forwarding      = true;
+            config.opt_peephole_jumps           = true;
+            config.opt_peephole_movs            = true;
+            config.opt_peephole_immediates      = true;
+            config.opt_peephole_reduce          = true;
+            config.opt_peephole_shifts          = true;
+            config.opt_peephole_dead_stores     = false;
+            config.opt_peephole_loads           = true;
+            config.opt_peephole_immediate_prop  = true;
+            config.opt_peephole_jmp_chain       = true;
+            config.opt_dce                      = true;
+            config.opt_constant_folding         = true;
+            config.opt_inline                   = true;
+            config.opt_promote_regs             = false;
+            config.opt_promote_leaf             = false;
+            config.opt_promote_loops            = false;
+            config.opt_omit_frame_pointers      = false;
         } else if (strcmp(argv[i], "-fopt_peephole_pairs")      == 0) {
-            config.enable_peephole_pairs           = true;
+            config.opt_peephole_pairs           = true;
         } else if (strcmp(argv[i], "-fopt_peephole_algebra")    == 0) {
-            config.enable_peephole_algebra         = true;
+            config.opt_peephole_algebra         = true;
         } else if (strcmp(argv[i], "-fopt_peephole_forwarding") == 0) {
-            config.enable_peephole_forwarding      = true;
+            config.opt_peephole_forwarding      = true;
         } else if (strcmp(argv[i], "-fopt_peephole_jumps") == 0) {
-            config.enable_peephole_jumps           = true;
+            config.opt_peephole_jumps           = true;
         } else if (strcmp(argv[i], "-fopt_peephole_movs") == 0) {
-            config.enable_peephole_movs            = true;
+            config.opt_peephole_movs            = true;
         } else if (strcmp(argv[i], "-fopt_peephole_immediates") == 0) {
-            config.enable_peephole_immediates      = true;
+            config.opt_peephole_immediates      = true;
         } else if (strcmp(argv[i], "-fopt_peephole_reduce") == 0) {
-            config.enable_peephole_reduce          = true;
+            config.opt_peephole_reduce          = true;
         } else if (strcmp(argv[i], "-fopt_peephole_shifts") == 0) {
-            config.enable_peephole_shifts          = true;
+            config.opt_peephole_shifts          = true;
         } else if (strcmp(argv[i], "-fopt_peephole_dead_stores") == 0) {
-            config.enable_peephole_dead_stores     = true;
+            config.opt_peephole_dead_stores     = true;
         } else if (strcmp(argv[i], "-fopt_peephole_loads") == 0) {
-            config.enable_peephole_loads           = true;
+            config.opt_peephole_loads           = true;
         } else if (strcmp(argv[i], "-fopt_peephole_immediate_prop") == 0) {
-            config.enable_peephole_immediate_prop  = true;
+            config.opt_peephole_immediate_prop  = true;
         } else if (strcmp(argv[i], "-fopt_peephole_jmp_chain") == 0) {
-            config.enable_peephole_jmp_chain      = true;
+            config.opt_peephole_jmp_chain      = true;
         } else if (strcmp(argv[i], "-fopt_dce") == 0) {
-            config.enable_dce = true;
+            config.opt_dce = true;
         } else if (strcmp(argv[i], "-fopt_constant_folding") == 0) {
-            config.enable_constant_folding = true;
+            config.opt_constant_folding = true;
         } else if (strcmp(argv[i], "-fopt_omit_frame_pointers") == 0) {
-            config.enable_omit_frame_pointers      = true;
+            config.opt_omit_frame_pointers      = true;
         } else if (strcmp(argv[i], "-fopt_inline") == 0) {
-            config.enable_inline = true;
+            config.opt_inline = true;
         } else if (strcmp(argv[i], "-fopt_promote_regs") == 0) {
-            config.enable_promote_regs             = true;
+            config.opt_promote_regs             = true;
         } else if (strcmp(argv[i], "-fopt_promote_leaf") == 0) {
-            config.enable_promote_leaf             = true;
+            config.opt_promote_leaf             = true;
         } else if (strcmp(argv[i], "-fopt_promote_loops") == 0) {
-            config.enable_promote_loops            = true;
+            config.opt_promote_loops            = true;
         } else if (strcmp(argv[i], "-fno_opt_peephole_jumps") == 0) {
-            config.enable_peephole_jumps = false;
+            config.opt_peephole_jumps = false;
         } else if (strcmp(argv[i], "-fno_opt_peephole_movs") == 0) {
-            config.enable_peephole_movs = false;
+            config.opt_peephole_movs = false;
         } else if (strcmp(argv[i], "-fno_opt_peephole_immediates") == 0) {
-            config.enable_peephole_immediates = false;
+            config.opt_peephole_immediates = false;
         } else if (strcmp(argv[i], "-fno_opt_peephole_reduce") == 0) {
-            config.enable_peephole_reduce = false;
+            config.opt_peephole_reduce = false;
         } else if (strcmp(argv[i], "-fno_opt_peephole_pairs") == 0) {
-            config.enable_peephole_pairs = false;
+            config.opt_peephole_pairs = false;
         } else if (strcmp(argv[i], "-fno_opt_peephole_algebra") == 0) {
-            config.enable_peephole_algebra = false;
+            config.opt_peephole_algebra = false;
         } else if (strcmp(argv[i], "-fno_opt_peephole_forwarding") == 0) {
-            config.enable_peephole_forwarding = false;
+            config.opt_peephole_forwarding = false;
         } else if (strcmp(argv[i], "-fno_opt_peephole_immediate_prop") == 0) {
-            config.enable_peephole_immediate_prop  = false;
+            config.opt_peephole_immediate_prop  = false;
         } else if (strcmp(argv[i], "-fno_opt_peephole_jumps") == 0) {
-            config.enable_peephole_jumps = false;
+            config.opt_peephole_jumps = false;
         } else if (strcmp(argv[i], "-fno_opt_peephole_jmp_chain") == 0) {
-            config.enable_peephole_jmp_chain      = false;
+            config.opt_peephole_jmp_chain      = false;
         } else if (strcmp(argv[i], "-fno_opt_peephole_movs") == 0) {
-            config.enable_peephole_movs = false;
+            config.opt_peephole_movs = false;
         } else if (strcmp(argv[i], "-fno_opt_dce") == 0) {
-            config.enable_dce = false;
+            config.opt_dce = false;
         } else if (strcmp(argv[i], "-fno_opt_constant_folding") == 0) {
-            config.enable_constant_folding = false;
+            config.opt_constant_folding = false;
         } else if (strcmp(argv[i], "-fno_opt_omit_frame_pointers") == 0) {
-            config.enable_omit_frame_pointers      = false;
+            config.opt_omit_frame_pointers      = false;
         } else if (strcmp(argv[i], "-fno_opt_inline") == 0) {
-            config.enable_inline = false;
+            config.opt_inline = false;
         } else if (strcmp(argv[i], "-fno_opt_promote_regs") == 0) {
-            config.enable_promote_regs = false;
+            config.opt_promote_regs = false;
         } else if (strcmp(argv[i], "-fno_opt_promote_leaf") == 0) {
-            config.enable_promote_leaf = false;
+            config.opt_promote_leaf = false;
         } else if (strcmp(argv[i], "-fno_opt_promote_loops") == 0) {
-            config.enable_promote_loops = false;
+            config.opt_promote_loops = false;
         } else if (strncmp(argv[i], "-finline-max=", 13) == 0) {
             g_inline_call_limit = atoi(argv[i] + 13);
         } else if (strncmp(argv[i], "-finline-exclude=", 17) == 0) {
@@ -287,115 +288,115 @@ int  main (int  argc, char **argv)
     }
 
     int opt_count = 0;
-    if (config.enable_peephole_pairs)
+    if (config.opt_peephole_pairs)
     {
         if (config.verbose)
             fprintf(stdout, "  - peephole_pairs\n");
         opt_count++;
     }
-    if (config.enable_peephole_algebra)
+    if (config.opt_peephole_algebra)
     {
         if (config.verbose)
             fprintf(stdout, "  - peephole_algebra\n");
         opt_count++;
     }
-    if (config.enable_peephole_forwarding)
+    if (config.opt_peephole_forwarding)
     {
         if (config.verbose)
             fprintf(stdout, "  - peephole_forwarding\n");
         opt_count++;
     }
-    if (config.enable_peephole_jumps)
+    if (config.opt_peephole_jumps)
     {
         if (config.verbose)
             fprintf(stdout, "  - peephole_jumps\n");
         opt_count++;
     }
-    if (config.enable_peephole_movs)
+    if (config.opt_peephole_movs)
     {
         if (config.verbose)
             fprintf(stdout, "  - peephole_movs\n");
         opt_count++;
     }
-    if (config.enable_peephole_immediates)
+    if (config.opt_peephole_immediates)
     {
         if (config.verbose)
             fprintf(stdout, "  - peephole_immediates\n");
         opt_count++;
     }
-    if (config.enable_peephole_reduce)
+    if (config.opt_peephole_reduce)
     {
         if (config.verbose)
             fprintf(stdout, "  - peephole_reduce\n");
         opt_count++;
     }
-    if (config.enable_peephole_shifts)
+    if (config.opt_peephole_shifts)
     {
         if (config.verbose)
             fprintf(stdout, "  - peephole_shifts\n");
         opt_count++;
     }
-    if (config.enable_peephole_dead_stores)
+    if (config.opt_peephole_dead_stores)
     {
         if (config.verbose)
             fprintf(stdout, "  - peephole_dead_stores\n");
         opt_count++;
     }
-    if (config.enable_peephole_loads)
+    if (config.opt_peephole_loads)
     {
         if (config.verbose)
             fprintf(stdout, "  - peephole_loads\n");
         opt_count++;
     }
-    if (config.enable_peephole_immediate_prop)
+    if (config.opt_peephole_immediate_prop)
     {
         if (config.verbose)
             fprintf(stdout, "  - peephole_immediate_prop\n");
         opt_count++;
     }
-    if (config.enable_peephole_jmp_chain)
+    if (config.opt_peephole_jmp_chain)
     {
         if (config.verbose)
             fprintf(stdout, "  - peephole_jmp_chain\n");
         opt_count++;
     }
-    if (config.enable_dce)
+    if (config.opt_dce)
     {
         if (config.verbose)
             fprintf(stdout, "  - dce\n");
         opt_count++;
     }
-    if (config.enable_constant_folding)
+    if (config.opt_constant_folding)
     {
         if (config.verbose)
             fprintf(stdout, "  - constant_folding\n");
         opt_count++;
     }
-    if (config.enable_omit_frame_pointers)
+    if (config.opt_omit_frame_pointers)
     {
         if (config.verbose)
             fprintf(stdout, "  - omit_frame_pointers\n");
         opt_count++;
     }
-    if (config.enable_inline)
+    if (config.opt_inline)
     {
         if (config.verbose)
             fprintf(stdout, "  - inline\n");
         opt_count++;
     }
-    if (config.enable_promote_regs)
+    if (config.opt_promote_regs)
     {
         if (config.verbose)
             fprintf(stdout, "  - promote_regs\n");
         opt_count++;
     }
-    if (config.enable_promote_leaf)
+    if (config.opt_promote_leaf)
     {
         if (config.verbose)
             fprintf(stdout, "  - promote_leaf\n");
         opt_count++;
     }
-    if (config.enable_promote_loops)
+    if (config.opt_promote_loops)
     {
         if (config.verbose)
             fprintf(stdout, "  - promote_loops\n");
@@ -451,7 +452,7 @@ int  main (int  argc, char **argv)
         // ----------------------------------------------------------------
         // Inlining functions can expose new optimization opportunities
         // by replacing function calls with their bodies
-        if (config.enable_inline)
+        if (config.opt_inline)
         {
             opts[OPT_INLINE]         = inline_trivial_functions (program_ast);
         }
@@ -461,17 +462,17 @@ int  main (int  argc, char **argv)
         // ----------------------------------------------------------------
         // These passes convert stack/memory accesses to register operations
         // for better performance and to enable further optimizations.
-        if (config.enable_promote_regs)
+        if (config.opt_promote_regs)
         {
             opts[OPT_PROMOTE_REGS]   = pass_promote_stack_slots (program_ast);
         }
 
-        if (config.enable_promote_leaf)
+        if (config.opt_promote_leaf)
         {
             opts[OPT_PROMOTE_LEAF]   = pass_promote_stack_slots (program_ast);
         }
 
-        if (config.enable_promote_loops)
+        if (config.opt_promote_loops)
         {
             opts[OPT_PROMOTE_LOOPS]  = pass_promote_loop_registers (program_ast);
         }
@@ -481,17 +482,17 @@ int  main (int  argc, char **argv)
         // ----------------------------------------------------------------
         // Store-to-load forwarding eliminates redundant memory loads
         // by forwarding values directly from stores to loads
-        if (config.enable_peephole_forwarding)
+        if (config.opt_peephole_forwarding)
         {
             opts[OPT_PEEPHOLE_FORWARDING]  = peephole_forwarding (program_ast);
         }
         // Combine consecutive arithmetic operations with immediate operands
-        if (config.enable_peephole_immediates)
+        if (config.opt_peephole_immediates)
         {
             opts[OPT_PEEPHOLE_IMMEDIATES]  = peephole_immediates(program_ast);
         }
         // Replace expensive operations with cheaper equivalents
-        if (config.enable_peephole_reduce)
+        if (config.opt_peephole_reduce)
         {
             opts[OPT_PEEPHOLE_REDUCE]      = peephole_reduce (program_ast);
         }
@@ -501,17 +502,17 @@ int  main (int  argc, char **argv)
         // ----------------------------------------------------------------
         // Algebraic simplifications remove or replace instructions that
         // are algebraically redundant (e.g., MOV r, r)
-        if (config.enable_peephole_algebra)
+        if (config.opt_peephole_algebra)
         {
             opts[OPT_PEEPHOLE_ALGEBRA]     = peephole_algebra (program_ast);
         }
         // Peephole optimizations on 2-instruction windows
-        if (config.enable_peephole_pairs)
+        if (config.opt_peephole_pairs)
         {
             opts[OPT_PEEPHOLE_PAIRS]       = peephole_pairs (program_ast);
         }
         // Remove redundant MOV instructions
-        if (config.enable_peephole_movs)
+        if (config.opt_peephole_movs)
         {
             opts[OPT_PEEPHOLE_MOVS]        = peephole_movs (program_ast);
         }
@@ -520,27 +521,27 @@ int  main (int  argc, char **argv)
         // 5. Additional Peephole Optimizations
         // ----------------------------------------------------------------
         // Dead store elimination: remove stores that are immediately overwritten
-        if (config.enable_peephole_dead_stores)
+        if (config.opt_peephole_dead_stores)
         {
             opts[OPT_PEEPHOLE_DEAD_STORES]  = peephole_dead_stores (program_ast);
         }
         // Redundant load elimination: replace loads with register values
-        if (config.enable_peephole_loads)
+        if (config.opt_peephole_loads)
         {
             opts[OPT_PEEPHOLE_LOADS]        = peephole_loads (program_ast);
         }
         // Immediate propagation: propagate immediate values through MOVs
-        if (config.enable_peephole_immediate_prop)
+        if (config.opt_peephole_immediate_prop)
         {
             opts[OPT_PEEPHOLE_IMMEDIATE_PROP]  = peephole_immediate_prop (program_ast);
         }
         // Jump chain elimination: chain consecutive jumps
-        if (config.enable_peephole_jmp_chain)
+        if (config.opt_peephole_jmp_chain)
         {
             opts[OPT_PEEPHOLE_JMP_CHAIN]       = peephole_jmp_chain (program_ast);
         }
         // Shift optimizations: optimize shift operations
-        if (config.enable_peephole_shifts)
+        if (config.opt_peephole_shifts)
         {
             opts[OPT_PEEPHOLE_SHIFTS]              = peephole_shifts (program_ast);
         }
@@ -549,18 +550,18 @@ int  main (int  argc, char **argv)
         // 6. Control Flow & Dead Code Cleanup
         // ----------------------------------------------------------------
         // Remove redundant jumps and dead code to clean up control flow
-        if (config.enable_peephole_jumps)
+        if (config.opt_peephole_jumps)
         {
             opts[OPT_PEEPHOLE_JUMPS]               = peephole_jumps (program_ast);
         }
 
-        if (config.enable_dce)
+        if (config.opt_dce)
         {
             opts[OPT_DCE]  = pass_dead_function_elimination (program_ast);
         }
 
         // omit frame pointers
-        if (config.enable_omit_frame_pointers)
+        if (config.opt_omit_frame_pointers)
         {
             opts[OPT_OMIT_FRAME_POINTERS]  = omit_frame_pointers (program_ast);
         }
@@ -677,7 +678,7 @@ int  main (int  argc, char **argv)
     int global_folds = 0;
     ControlFlowGraph *cfg = NULL;
 
-    if (config.enable_constant_folding) {
+    if (config.opt_constant_folding) {
         if (config.verbose)
             printf("--- Starting Optimization Phase 2: Global Data-Flow ---\n");
         cfg = build_cfg(program_ast);
@@ -703,51 +704,51 @@ int  main (int  argc, char **argv)
         cleanup_opts = 0;
         OptType opts[MAX_OPTIMIZATION_ALGORITHMS] = { 0 };
 
-        if (config.enable_peephole_immediates)
+        if (config.opt_peephole_immediates)
         {
             opts[OPT_PEEPHOLE_IMMEDIATES]  = peephole_immediates(program_ast);
         }
-        if (config.enable_peephole_reduce)
+        if (config.opt_peephole_reduce)
         {
             opts[OPT_PEEPHOLE_REDUCE]      = peephole_reduce (program_ast);
         }
-        if (config.enable_peephole_algebra)
+        if (config.opt_peephole_algebra)
         {
             opts[OPT_PEEPHOLE_ALGEBRA]     = peephole_algebra (program_ast);
         }
-        if (config.enable_peephole_pairs)
+        if (config.opt_peephole_pairs)
         {
             opts[OPT_PEEPHOLE_PAIRS]       = peephole_pairs (program_ast);
         }
-        if (config.enable_peephole_movs)
+        if (config.opt_peephole_movs)
         {
             opts[OPT_PEEPHOLE_MOVS]        = peephole_movs (program_ast);
         }
-        if (config.enable_peephole_jumps)
+        if (config.opt_peephole_jumps)
         {
             opts[OPT_PEEPHOLE_JUMPS]               = peephole_jumps (program_ast);
         }
-        if (config.enable_peephole_dead_stores)
+        if (config.opt_peephole_dead_stores)
         {
             opts[OPT_PEEPHOLE_DEAD_STORES]  = peephole_dead_stores (program_ast);
         }
-        if (config.enable_peephole_loads)
+        if (config.opt_peephole_loads)
         {
             opts[OPT_PEEPHOLE_LOADS]        = peephole_loads (program_ast);
         }
-        if (config.enable_peephole_immediate_prop)
+        if (config.opt_peephole_immediate_prop)
         {
             opts[OPT_PEEPHOLE_IMMEDIATE_PROP]  = peephole_immediate_prop (program_ast);
         }
-        if (config.enable_peephole_jmp_chain)
+        if (config.opt_peephole_jmp_chain)
         {
             opts[OPT_PEEPHOLE_JMP_CHAIN]       = peephole_jmp_chain (program_ast);
         }
-        if (config.enable_peephole_shifts)
+        if (config.opt_peephole_shifts)
         {
             opts[OPT_PEEPHOLE_SHIFTS]              = peephole_shifts (program_ast);
         }
-        if (config.enable_omit_frame_pointers)
+        if (config.opt_omit_frame_pointers)
         {
             opts[OPT_OMIT_FRAME_POINTERS]  = omit_frame_pointers (program_ast);
         }

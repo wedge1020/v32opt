@@ -196,41 +196,51 @@ typedef struct {
     bool verbose;
     bool testing;
 	bool debug;
-    bool enable_peephole_pairs;
-    bool enable_peephole_algebra;
-    bool enable_peephole_forwarding;
-    bool enable_peephole_jumps;
-    bool enable_peephole_movs;
-    bool enable_peephole_immediates;
-    bool enable_peephole_reduce;
-    bool enable_peephole_shifts;
-    bool enable_peephole_dead_stores;
-    bool enable_peephole_loads;
-    bool enable_peephole_immediate_prop;
-    bool enable_peephole_jmp_chain;
-    bool enable_dce;
-    bool enable_constant_folding;
-    bool enable_inline;
-    bool enable_promote_regs;
-    bool enable_promote_leaf;
-    bool enable_promote_loops;
-    bool enable_omit_frame_pointers;
+    bool opt_peephole_pairs;
+    bool opt_peephole_algebra;
+    bool opt_peephole_forwarding;
+    bool opt_peephole_jumps;
+    bool opt_peephole_movs;
+    bool opt_peephole_immediates;
+    bool opt_peephole_reduce;
+    bool opt_peephole_shifts;
+    bool opt_peephole_dead_stores;
+    bool opt_peephole_loads;
+    bool opt_peephole_immediate_prop;
+    bool opt_peephole_jmp_chain;
+    bool opt_dce;
+    bool opt_constant_folding;
+    bool opt_inline;
+    bool opt_promote_regs;
+    bool opt_promote_leaf;
+    bool opt_promote_loops;
+    bool opt_omit_frame_pointers;
 } OptConfig;
 
-extern int g_inline_call_limit;
-extern int g_inline_calls_so_far;
-extern char g_inline_exclude_name[1024];
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// global variables
+//
+extern       int        g_inline_call_limit;
+extern       int        g_inline_calls_so_far;
+extern       char       g_inline_exclude_name[1024];
+extern const char      *opt_type_names[];
+extern       OptConfig  config;
 
 ////////////////////////////////////////////////////////////////////////////////////////
 //
 // general utility function prototypes
 //
-void     safe_str_copy   (char       *, const char *, size_t);
-char    *trim            (char       *);
-bool     str_case_eq     (const char *, const char *);
-int      get_reg_index   (const char *);
-bool     is_power_of_two (int);
-int      get_log2        (int);
+void     remove_with_debug       (AsmNode **, AsmNode *nodes[], int, OptType);
+void     strip_comment_from_line (char *, const char *, size_t);
+void     normalize_whitespace    (char *, const char *, size_t);
+void     insert_debug_comment    (AsmNode *, OptType, const char *);
+void     safe_str_copy           (char       *, const char *, size_t);
+char    *trim                    (char       *);
+bool     str_case_eq             (const char *, const char *);
+int      get_reg_index           (const char *);
+bool     is_power_of_two         (int);
+int      get_log2                (int);
 
 Operand  parse_operand (const char *);
 AsmNode *create_node   (const char *, OpType, const char *, const char *, const char *);

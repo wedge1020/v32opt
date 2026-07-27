@@ -35,7 +35,7 @@
 //   - BNOT x; BNOT x → remove both (double negation cancels)
 //   - PUSH r; POP r → remove both (no net effect)
 // ===================================================================
-int peephole_pairs(AsmNode *head)
+int  peephole_pairs (AsmNode *head)
 {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;
@@ -54,7 +54,7 @@ int peephole_pairs(AsmNode *head)
              n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
              str_case_eq(n1->dst_op.reg, n2->dst_op.reg))
         {
-            // 🔥 NEW: Don't remove CIB if next non-comment is JT/JF
+            // Don't remove CIB if next non-comment is JT/JF
             AsmNode *after_cib = n2->next;
             while (after_cib && after_cib->type == OP_OTHER &&
                    (after_cib->raw[0] == '\0' || after_cib->raw[0] == ';')) {
@@ -66,7 +66,8 @@ int peephole_pairs(AsmNode *head)
                 continue;
             }
 
-            remove_node(n2);
+            AsmNode *nodes[] = {n2};
+            remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_PAIRS);
             optimizations++;
             continue;
         }
@@ -78,33 +79,25 @@ int peephole_pairs(AsmNode *head)
         //   - INEG R4 ; INEG R4 -> (Two's complement negate twice = Identity)
         //   - NOT R4  ; NOT R4  -> (Logical NOT twice = Identity)
         // ----------------------------------------------------------------
-        if (str_case_eq(curr->mnemonic, "BNOT") ||
-            str_case_eq(curr->mnemonic, "INEG") ||
-            str_case_eq(curr->mnemonic, "NEG")  ||
-            str_case_eq(curr->mnemonic, "NOT"))
+        if (str_case_eq(n1->mnemonic, "BNOT") ||
+            str_case_eq(n1->mnemonic, "INEG") ||
+            str_case_eq(n1->mnemonic, "NEG")  ||
+            str_case_eq(n1->mnemonic, "NOT"))
         {
-            AsmNode *next = curr->next;
+            AsmNode *next = n1->next;
             // Safely skip any inline comments or blank lines between the pair
             while (next && next->type == OP_OTHER) next = next->next;
 
-            if (next && str_case_eq(next->mnemonic, curr->mnemonic))
+            if (next && str_case_eq(next->mnemonic, n1->mnemonic))
             {
-                // Safely extract the target register regardless of whether your AST
-                // stores 1-operand targets in dst_op or src_op!
-                char *reg1 = curr->has_dst ? curr->dst_op.reg : (curr->has_src ? curr->src_op.reg : NULL);
+                char *reg1 = n1->has_dst ? n1->dst_op.reg : (n1->has_src ? n1->src_op.reg : NULL);
                 char *reg2 = next->has_dst ? next->dst_op.reg : (next->has_src ? next->src_op.reg : NULL);
 
                 if (reg1 && reg2 && str_case_eq(reg1, reg2))
                 {
-                    // Both instructions cancel out! Convert both to comments.
-                    curr->type = OP_OTHER;
-                    snprintf(curr->raw, sizeof(curr->raw), "; optimized out pair: %s %s", curr->mnemonic, reg1);
-
-                    next->type = OP_OTHER;
-                    snprintf(next->raw, sizeof(next->raw), "; optimized out pair: %s %s", next->mnemonic, reg2);
-
+                    AsmNode *nodes[] = {n1, next};
+                    remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_PAIRS);
                     optimizations += 2;
-                    curr = next; // Fast-forward loop past the second instruction
                     continue;
                 }
             }
@@ -116,36 +109,33 @@ int peephole_pairs(AsmNode *head)
         //   - XOR R1, R2 ; XOR R1, R2 -> cancels out!
         //   - XOR R1, 42 ; XOR R1, 42 -> cancels out!
         // ----------------------------------------------------------------
-        if (str_case_eq(curr->mnemonic, "XOR"))
+        if (str_case_eq(n1->mnemonic, "XOR"))
         {
-            AsmNode *next = curr->next;
+            AsmNode *next = n1->next;
             while (next && next->type == OP_OTHER) next = next->next;
 
             if (next && str_case_eq(next->mnemonic, "XOR"))
             {
                 // Verify destination registers match
-                if (curr->has_dst && next->has_dst && str_case_eq(curr->dst_op.reg, next->dst_op.reg))
+                if (n1->has_dst && next->has_dst && str_case_eq(n1->dst_op.reg, next->dst_op.reg))
                 {
                     bool src_match = false;
 
                     // Check if both XOR with the same register
-                    if (curr->src_op.mode == MODE_REG && next->src_op.mode == MODE_REG) {
-                        if (str_case_eq(curr->src_op.reg, next->src_op.reg)) src_match = true;
+                    if (n1->src_op.mode == MODE_REG && next->src_op.mode == MODE_REG) {
+                        if (str_case_eq(n1->src_op.reg, next->src_op.reg)) src_match = true;
                     }
                     // Check if both XOR with the exact same immediate value
-                    else if (curr->src_op.mode == MODE_IMMEDIATE && next->src_op.mode == MODE_IMMEDIATE) {
-                        if (curr->src_op.offset == next->src_op.offset &&
-                            str_case_eq(curr->src_op.raw, next->src_op.raw)) src_match = true;
+                    else if (n1->src_op.mode == MODE_IMMEDIATE && next->src_op.mode == MODE_IMMEDIATE) {
+                        if (n1->src_op.offset == next->src_op.offset &&
+                            str_case_eq(n1->src_op.raw, next->src_op.raw)) src_match = true;
                     }
 
                     if (src_match)
                     {
-                        curr->type = OP_OTHER;
-                        snprintf(curr->raw, sizeof(curr->raw), "; optimized out pair: XOR toggle");
-                        next->type = OP_OTHER;
-                        snprintf(next->raw, sizeof(next->raw), "; optimized out pair: XOR toggle");
+                        AsmNode *nodes[] = {n1, next};
+                        remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_PAIRS);
                         optimizations += 2;
-                        curr = next;
                         continue;
                     }
                 }
@@ -158,10 +148,8 @@ int peephole_pairs(AsmNode *head)
             n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
             str_case_eq(n1->dst_op.reg, n2->dst_op.reg))
         {
-            AsmNode *next_iter = n2->next;
-            remove_node(n1);
-            remove_node(n2);
-            curr = next_iter;
+            AsmNode *nodes[] = {n1, n2};
+            remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_PAIRS);
             optimizations += 2;
             continue;
         }

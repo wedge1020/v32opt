@@ -1,5 +1,110 @@
 #include "v32opt.h"
 
+#include "v32opt.h"
+
+// Map OptType enum to human-readable names
+const char *opt_type_names[]       = {
+    [OPT_PEEPHOLE_PAIRS]           = "peephole_pairs",
+    [OPT_PEEPHOLE_ALGEBRA]         = "peephole_algebra",
+    [OPT_PEEPHOLE_FORWARDING]      = "peephole_forwarding",
+    [OPT_PEEPHOLE_JUMPS]           = "peephole_jumps",
+    [OPT_PEEPHOLE_MOVS]            = "peephole_movs",
+    [OPT_PEEPHOLE_IMMEDIATES]      = "peephole_immediates",
+    [OPT_PEEPHOLE_REDUCE]          = "peephole_reduce",
+    [OPT_PEEPHOLE_SHIFTS]          = "peephole_shifts",
+    [OPT_PEEPHOLE_DEAD_STORES]     = "peephole_dead_stores",
+    [OPT_PEEPHOLE_LOADS]           = "peephole_loads",
+    [OPT_PEEPHOLE_IMMEDIATE_PROP]  = "peephole_immediate_prop",
+    [OPT_PEEPHOLE_JMP_CHAIN]       = "peephole_jmp_chain",
+    [OPT_DCE]                      = "dce",
+    [OPT_CONSTANT_FOLDING]         = "constant_folding",
+    [OPT_INLINE]                   = "inline",
+    [OPT_PROMOTE_REGS]             = "promote_regs",
+    [OPT_PROMOTE_LEAF]             = "promote_leaf",
+    [OPT_PROMOTE_LOOPS]            = "promote_loops",
+    [OPT_OMIT_FRAME_POINTERS]      = "omit_frame_pointers"
+};
+
+// Helper: remove nodes and insert debug comments
+void remove_with_debug(AsmNode **curr_ptr, AsmNode *nodes[], int count, OptType opt_type)
+{
+    if (config.debug) {
+        for (int i = 0; i < count; i++) {
+            insert_debug_comment(nodes[i]->prev, opt_type, nodes[i]->raw);
+        }
+    }
+    AsmNode *last = nodes[count - 1];
+    AsmNode *next_after = last->next;
+    for (int i = 0; i < count; i++) {
+        remove_node(nodes[i]);
+    }
+    *curr_ptr = next_after;
+}
+
+// Helper: strip comments from line
+void strip_comment_from_line(char *dest, const char *src, size_t dest_size) {
+    safe_str_copy(dest, src, dest_size);
+    char *semicolon = strchr(dest, ';');
+    if (semicolon) *semicolon = '\0';
+}
+
+// Helper: normalize whitespace (trim leading/trailing, collapse internal)
+void normalize_whitespace(char *dest, const char *src, size_t dest_size) {
+    const char *p = src;
+    char *q = dest;
+    char *end = dest + dest_size - 1;
+
+    // Skip leading whitespace
+    while (*p && isspace((unsigned char)*p)) p++;
+
+    // Copy and collapse internal whitespace
+    while (*p && q < end) {
+        if (isspace((unsigned char)*p)) {
+            while (isspace((unsigned char)*p)) p++;
+            if (q > dest) *q++ = ' ';  // Single space separator
+        } else {
+            *q++ = *p++;
+        }
+    }
+    *q = '\0';
+
+    // Remove trailing space
+    if (q > dest && *(q-1) == ' ') *(q-1) = '\0';
+}
+
+// Insert debug comment after a given node
+void  insert_debug_comment (AsmNode *after, OptType  opt_type, const char *original_instr)
+{
+    if (!config.debug)
+    {
+        return;
+    }
+
+    // Strip any existing comment from the original instruction
+    char stripped[8192];
+    strip_comment_from_line (stripped, original_instr, sizeof (stripped));
+
+    char normalized[8192];
+    normalize_whitespace(normalized, stripped, sizeof(normalized));
+
+    AsmNode *comment               = calloc (1, sizeof (AsmNode));
+    comment -> type                = OP_OTHER;
+    snprintf (comment -> raw, sizeof (comment -> raw), "; [DEBUG %s] %s",
+              opt_type_names[opt_type], original_instr);
+
+    // Insert after the given node
+    if (after)
+    {
+        comment -> prev            = after;
+        comment -> next            = after -> next;
+        if (after -> next)
+        {
+            after -> next -> prev  = comment;
+        }
+        after -> next              = comment;
+    }
+}
+
 // -------------------------------------------------------------------
 // String Parsing & AST Utilities
 // -------------------------------------------------------------------
@@ -136,21 +241,22 @@ Operand parse_operand(const char *str) {
         // FIX: Detect floating-point literals (e.g., "0.500000")
         // strtoul would incorrectly parse "0.5" as 0, causing silent data corruption
         // in later passes. Flag floats so downstream code treats them as unknown.
-        op.is_float = (strchr(str, '.') != NULL);
-        op.immediate = op.is_float ? 0 : (int)strtoul(str, NULL, 0);
+        op.is_float   = (strchr(str, '.') != NULL);
+        op.immediate  = op.is_float ? 0 : (int)strtoul(str, NULL, 0);
     }
-	// --- Register: ONLY R0-R15, SP, BP ---
-	else if (get_reg_index(str) >= 0)
+    // --- Register: ONLY R0-R15, SP, BP ---
+    else if (get_reg_index (str) >= 0)
+    {
+        op.mode = MODE_REG;
+        safe_str_copy(op.reg, str, sizeof(op.reg));
+    }
+    // --- Labels/Symbols: Everything else (e.g., __literal_string_11455) ---
+    else
 	{
-		op.mode = MODE_REG;
-		safe_str_copy(op.reg, str, sizeof(op.reg));
-	}
-	// --- Labels/Symbols: Everything else (e.g., __literal_string_11455) ---
-	else {
-		op.mode = MODE_IMMEDIATE;  // Treat as address (resolved by assembler)
-		op.immediate = 0;
-		op.is_float = false;
-	}
+        op.mode = MODE_IMMEDIATE;  // Treat as address (resolved by assembler)
+        op.immediate = 0;
+        op.is_float = false;
+    }
 
     return op;
 }
