@@ -12,7 +12,7 @@ __function_test_ieq_cib:
     PUSH BP
     MOV BP, SP
     IEQ R1, R2
-    CIB R1
+    CIB R1     ; MATCH
     MOV SP, BP
     POP BP
     RET
@@ -22,7 +22,7 @@ __function_test_ine_cib:
     PUSH BP
     MOV BP, SP
     INE R1, R2
-    CIB R1
+    CIB R1     ; MATCH
     MOV SP, BP
     POP BP
     RET
@@ -32,9 +32,9 @@ __function_test_ieq_cib_multiple:
     PUSH BP
     MOV BP, SP
     IEQ R1, R2
-    CIB R1
+    CIB R1     ; MATCH
     IEQ R3, R4
-    CIB R3
+    CIB R3     ; MATCH
     MOV SP, BP
     POP BP
     RET
@@ -48,7 +48,7 @@ __function_test_ieq_cib_jt:
     PUSH BP
     MOV BP, SP
     IEQ R1, R2
-    CIB R1
+    CIB R1     ; KEEP
     JT R1, target
 target:
     MOV SP, BP
@@ -60,7 +60,7 @@ __function_test_ieq_cib_jf:
     PUSH BP
     MOV BP, SP
     IEQ R1, R2
-    CIB R1
+    CIB R1     ; KEEP
     JF R1, target
 target:
     MOV SP, BP
@@ -72,7 +72,7 @@ __function_test_ine_cib_jt:
     PUSH BP
     MOV BP, SP
     INE R1, R2
-    CIB R1
+    CIB R1     ; KEEP
     JT R1, target
 target:
     MOV SP, BP
@@ -87,8 +87,8 @@ target:
 __function_test_bnot_pair:
     PUSH BP
     MOV BP, SP
-    BNOT R1
-    BNOT R1
+    BNOT R1    ; MATCH
+    BNOT R1    ; MATCH
     MOV SP, BP
     POP BP
     RET
@@ -97,8 +97,8 @@ __function_test_bnot_pair:
 __function_test_ineg_pair:
     PUSH BP
     MOV BP, SP
-    INEG R1
-    INEG R1
+    INEG R1    ; MATCH
+    INEG R1    ; MATCH
     MOV SP, BP
     POP BP
     RET
@@ -107,8 +107,8 @@ __function_test_ineg_pair:
 __function_test_not_pair:
     PUSH BP
     MOV BP, SP
-    NOT R1
-    NOT R1
+    NOT R1    ; MATCH
+    NOT R1    ; MATCH
     MOV SP, BP
     POP BP
     RET
@@ -117,8 +117,8 @@ __function_test_not_pair:
 __function_test_bnot_diff:
     PUSH BP
     MOV BP, SP
-    BNOT R1
-    BNOT R2
+    BNOT R1   ; KEEP
+    BNOT R2   ; KEEP
     MOV SP, BP
     POP BP
     RET
@@ -131,8 +131,8 @@ __function_test_bnot_diff:
 __function_test_xor_reg_pair:
     PUSH BP
     MOV BP, SP
-    XOR R1, R2
-    XOR R1, R2
+    XOR R1, R2  ; MATCH
+    XOR R1, R2  ; MATCH
     MOV SP, BP
     POP BP
     RET
@@ -141,8 +141,8 @@ __function_test_xor_reg_pair:
 __function_test_xor_imm_pair:
     PUSH BP
     MOV BP, SP
-    XOR R1, 42
-    XOR R1, 42
+    XOR R1, 42  ; MATCH
+    XOR R1, 42  ; MATCH
     MOV SP, BP
     POP BP
     RET
@@ -151,8 +151,8 @@ __function_test_xor_imm_pair:
 __function_test_xor_neg_pair:
     PUSH BP
     MOV BP, SP
-    XOR R1, -5
-    XOR R1, -5
+    XOR R1, -5  ; MATCH
+    XOR R1, -5  ; MATCH
     MOV SP, BP
     POP BP
     RET
@@ -161,8 +161,8 @@ __function_test_xor_neg_pair:
 __function_test_xor_diff_reg:
     PUSH BP
     MOV BP, SP
-    XOR R1, R2
-    XOR R3, R2
+    XOR R1, R2  ; KEEP
+    XOR R3, R2  ; KEEP
     MOV SP, BP
     POP BP
     RET
@@ -171,8 +171,8 @@ __function_test_xor_diff_reg:
 __function_test_xor_diff_imm:
     PUSH BP
     MOV BP, SP
-    XOR R1, 42
-    XOR R1, 43
+    XOR R1, 42  ; KEEP
+    XOR R1, 43  ; KEEP
     MOV SP, BP
     POP BP
     RET
@@ -185,8 +185,8 @@ __function_test_xor_diff_imm:
 __function_test_push_pop:
     PUSH BP
     MOV BP, SP
-    PUSH R1
-    POP R1
+    PUSH R1     ; MATCH
+    POP R1      ; MATCH
     MOV SP, BP
     POP BP
     RET
@@ -195,9 +195,9 @@ __function_test_push_pop:
 __function_test_push_pop_comments:
     PUSH BP
     MOV BP, SP
-    PUSH R1
+    PUSH R1     ; MATCH
     ; comment
-    POP R1
+    POP R1      ; MATCH
     MOV SP, BP
     POP BP
     RET
@@ -206,10 +206,10 @@ __function_test_push_pop_comments:
 __function_test_push_pop_multiple:
     PUSH BP
     MOV BP, SP
-    PUSH R1
-    POP R1
-    PUSH R2
-    POP R2
+    PUSH R1     ; MATCH
+    POP R1      ; MATCH
+    PUSH R2     ; MATCH
+    POP R2      ; MATCH
     MOV SP, BP
     POP BP
     RET
@@ -218,8 +218,8 @@ __function_test_push_pop_multiple:
 __function_test_push_pop_diff:
     PUSH BP
     MOV BP, SP
-    PUSH R1
-    POP R2
+    PUSH R1     ; KEEP
+    POP R2      ; KEEP
     MOV SP, BP
     POP BP
     RET
@@ -233,13 +233,13 @@ __function_test_combined:
     PUSH BP
     MOV BP, SP
     IEQ R1, R2        ; Pattern 1: IEQ + CIB
-    CIB R1
-    BNOT R3           ; Pattern 2: Self-inverting
-    BNOT R3
-    XOR R4, R5        ; Pattern 3: XOR pair
-    XOR R4, R5
-    PUSH R6           ; Pattern 4: PUSH/POP
-    POP R6
+    CIB R1            ; MATCH
+    BNOT R3           ; MATCH Pattern 2: Self-inverting
+    BNOT R3           ; MATCH
+    XOR R4, R5        ; MATCH Pattern 3: XOR pair
+    XOR R4, R5        ; MATCH
+    PUSH R6           ; MATCH Pattern 4: PUSH/POP
+    POP R6            ; MATCH
     MOV SP, BP
     POP BP
     RET

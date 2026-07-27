@@ -90,7 +90,7 @@ void  insert_debug_comment (AsmNode *after, OptType  opt_type, const char *origi
     AsmNode *comment               = calloc (1, sizeof (AsmNode));
     comment -> type                = OP_OTHER;
     snprintf (comment -> raw, sizeof (comment -> raw), "; [DEBUG %s] %s",
-              opt_type_names[opt_type], original_instr);
+              opt_type_names[opt_type], normalized);
 
     // Insert after the given node
     if (after)
