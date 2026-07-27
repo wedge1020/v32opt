@@ -151,11 +151,23 @@ int peephole_pairs(AsmNode *head)
             next_real = next_real->next;
         }
 
+/*
+		---- n2 or next_real?
+		// --- PUSH/POP Pair Elimination ---
+		if (n1->type == OP_PUSH && n2->type == OP_POP &&
+			n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
+			str_case_eq(n1->dst_op.reg, n2->dst_op.reg))
+		{
+			AsmNode *nodes[] = {n1, n2};
+			remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_PAIRS);
+			optimizations += 2;
+			continue;
+		}
+		----*/
         if (n1->type == OP_PUSH && next_real && next_real->type == OP_POP &&
             n1->dst_op.mode == MODE_REG && next_real->dst_op.mode == MODE_REG &&
             str_case_eq(n1->dst_op.reg, next_real->dst_op.reg))
         {
-			fprintf(stderr, "!!! MATCHED PUSH/POP: %s and %s\n", n1->raw, n2->raw);
             AsmNode *nodes[] = {n1, next_real};
             remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_PAIRS);
             optimizations += 2;
