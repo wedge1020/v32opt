@@ -49,8 +49,8 @@ __function_test_ieq_cib_jt:
     MOV BP, SP
     IEQ R1, R2
     CIB R1     ; KEEP
-    JT R1, target
-target:
+    JT R1, _target
+_target:
     MOV SP, BP
     POP BP
     RET
@@ -61,8 +61,8 @@ __function_test_ieq_cib_jf:
     MOV BP, SP
     IEQ R1, R2
     CIB R1     ; KEEP
-    JF R1, target
-target:
+    JF R1, _target2
+_target2:
     MOV SP, BP
     POP BP
     RET
@@ -73,8 +73,8 @@ __function_test_ine_cib_jt:
     MOV BP, SP
     INE R1, R2
     CIB R1     ; KEEP
-    JT R1, target
-target:
+    JT R1, _target3
+_target3:
     MOV SP, BP
     POP BP
     RET
@@ -97,8 +97,8 @@ __function_test_bnot_pair:
 __function_test_ineg_pair:
     PUSH BP
     MOV BP, SP
-    INEG R1    ; MATCH
-    INEG R1    ; MATCH
+    ISGN R1    ; MATCH
+    ISGN R1    ; MATCH
     MOV SP, BP
     POP BP
     RET
