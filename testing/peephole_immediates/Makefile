@@ -6,7 +6,7 @@ ASSEMBLER        = assemble
 TEXTURE_TOOL     = png2vircon
 PACKER           = packrom
 
-OPT_FLAGS        = -fopt_$(TEST)
+OPT_FLAGS        = -fopt_$(TEST) -t -v
 
 # This variable is empty by default, but is set to -g during a debug build
 DEBUG_FLAGS      =
@@ -65,13 +65,7 @@ $(TEST)Opt.v32: $(TEST)Opt.vbin
 	@$(PACKER) $(TEST)Opt.xml -o $(TEST)Opt.v32 && echo "OK" || echo "FAIL"
 
 report: $(TEST).v32 $(TEST)Opt.v32
-	@echo "---file size comparison-------------"
-	@stat -c '%20n: %8s bytes' $(TEST).asm $(TEST)Opt.asm
-	@echo "------------------------------------"
-	@echo
-	#@echo "---code differences-----------------"
-	#@diff $(TEST).asm $(TEST)Opt.asm
-	#@echo "------------------------------------"
+	@../run_test.sh $(TEST)
 
 # --- Clean Up ---
 clean:

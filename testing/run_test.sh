@@ -8,9 +8,9 @@ ls -l ${UNIT}.asm ${UNIT}Opt.asm
 echo "------------------------------------------------------------"
 echo
 echo "---MATCH results--------------------------------------------"
-ASMRESULT1=$(cat ${UNIT}.asm | grep 'MATCH' | wc -l)
+ASMRESULT1=$(cat ${UNIT}.asm | grep 'MATCH' | wc -l | tr -d ' ')
 echo "ASM: ${ASMRESULT1}"
-OPTRESULT1=$(cat ${UNIT}Opt.asm | grep 'MATCH' | wc -l)
+OPTRESULT1=$(cat ${UNIT}Opt.asm | grep 'MATCH' | wc -l | tr -d ' ')
 echo "OPT: ${OPTRESULT1} (should be 0)"
 if [ ! "${OPTRESULT1}" = "0" ]; then
 	echo "------------------------------------------------------------"
@@ -26,9 +26,9 @@ fi
 
 echo
 echo "---KEEP results---------------------------------------------"
-ASMRESULT2=$(cat ${UNIT}.asm | grep 'KEEP' | wc -l)
+ASMRESULT2=$(cat ${UNIT}.asm | grep 'KEEP' | wc -l | tr -d ' ')
 echo "ASM: ${ASMRESULT2}"
-OPTRESULT2=$(cat ${UNIT}Opt.asm | grep 'KEEP' | wc -l)
+OPTRESULT2=$(cat ${UNIT}Opt.asm | grep 'KEEP' | wc -l | tr -d ' ')
 echo "OPT: ${OPTRESULT2} (should be identical)"
 if [ ! "${ASMRESULT2}" = "${OPTRESULT2}" ]; then
 	echo "------------------------------------------------------------"
