@@ -7,7 +7,7 @@
 #include <stdbool.h>
 #include <ctype.h>
 
-#define  MAX_OPTIMIZATION_ALGORITHMS 19
+#define  MAX_OPTIMIZATION_ALGORITHMS 20
 #define  MAX_INLINE_CANDIDATES 64
 #define  MAX_BODY_INS 8
 #define  MAX_FUNCTIONS 4096
