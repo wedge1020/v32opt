@@ -1,7 +1,7 @@
 #include "v32opt.h"
 
 // -------------------------------------------------------------------
-// OPTIMIZATION CATEGORY: Dead Code Elimination
+// OPTIMIZATION: Dead Code Elimination
 // Removes functions that are never called (unreachable) from the program.
 // -------------------------------------------------------------------
 
@@ -26,7 +26,8 @@
 // Note: On Vircon32, all instructions are 1 cycle, so this optimization
 // only reduces code size, not execution time.
 // ===================================================================
-int pass_dead_function_elimination(AsmNode *head) {
+int opt_dce (AsmNode *head)
+{
     // --- STEP 1: COLLECT ALL FUNCTION DEFINITIONS ---
     FunctionDef funcs[MAX_FUNCTIONS];
     int func_count = 0;

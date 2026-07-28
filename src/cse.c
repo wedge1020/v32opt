@@ -70,7 +70,7 @@ static void build_expr_key(char *buf, size_t buf_size, const char *mnemonic, Ope
     }
 }
 
-int cse(AsmNode *head)
+int opt_cse (AsmNode *head)
 {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;

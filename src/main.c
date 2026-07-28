@@ -572,12 +572,12 @@ int  main (int  argc, char **argv)
 
         if (config.opt_cse)
         {
-            opts[OPT_CSE]  = cse (program_ast);
+            opts[OPT_CSE]  = opt_cse (program_ast);
         }
 
         if (config.opt_dce)
         {
-            opts[OPT_DCE]  = pass_dead_function_elimination (program_ast);
+            opts[OPT_DCE]  = opt_dce (program_ast);
         }
 
         // omit frame pointers
