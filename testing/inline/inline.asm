@@ -60,9 +60,9 @@ __helper:
 CALL __func_with_hlt
 RET
 
-__func_with_hlt:
-    HLT
-    RET
+__func_with_hlt: ; KEEP
+    HLT ; KEEP
+    RET ; KEEP
 
 ; ===================================================================
 ; ❌ SCENARIO 6: Large Function (MUST NOT INLINE)
@@ -151,9 +151,9 @@ CALL __func_conditional
 RET
 
 __func_conditional:
-    JT R1, skip
+    JT R1, _skip
     MOV R2, 10
-skip:
+_skip:
     MOV R3, 20
     RET
 
@@ -165,9 +165,9 @@ RET
 
 __func_multi_ret:
     MOV R1, 1
-    JT R1, exit_early
+    JT R1, _exit_early
     MOV R2, 2
-exit_early:
+_exit_early:
     RET
 
 ; ===================================================================

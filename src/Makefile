@@ -4,14 +4,25 @@ CC = gcc
 
 # --- Flags ---
 CFLAGS = -Wall -Wextra -Wno-format-truncation -g
+CFLAGS += -I. -I$(PEEPHOLE_DIR)
 CLIBS = -lm
 
 # --- Output Executable ---
 TARGET = ../v32opt
 
 # --- Object Files ---
-# Add runtime_embed.o to your object list
-OBJS = stack.o helpers.o peephole.o promote.o inline.o cfg.o dead.o tools.o main.o
+
+# Core sources
+CORE_SRCS = main.c tools.c cfg.c stack.c dead.c inline.c promote.c helpers.c
+
+# Peephole modules - automatically include all .c files in peephole/
+PEEPHOLE_DIR = peephole
+PEEPHOLE_SRCS := $(wildcard $(PEEPHOLE_DIR)/*.c)
+PEEPHOLE_OBJS := $(PEEPHOLE_SRCS:$(PEEPHOLE_DIR)/%.c=$(PEEPHOLE_DIR)/%.o)
+
+# All sources
+SRCS = $(CORE_SRCS) $(PEEPHOLE_SRCS)
+OBJS = $(SRCS:.c=.o)
 
 # --- Build Rules ---
 all: $(TARGET)

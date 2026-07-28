@@ -36,7 +36,7 @@ RET ; KEEP
 
 
 ; ===================================================================
-; ❌ SCENARIO 4: Valid Backward Jump / Infinite Loop (MUST KEEP)
+; ❌ SCENARIO 4: Valid Backward Jump / Infinite Loop (must keep)
 ; ===================================================================
 _L5_loop:
 MOV R1, 1 ; KEEP
@@ -44,7 +44,7 @@ JMP _L5_loop ; KEEP
 
 
 ; ===================================================================
-; ❌ SCENARIO 5: Jump to Non-Immediate Label (MUST KEEP)
+; ❌ SCENARIO 5: Jump to Non-Immediate Label (must keep)
 ; ===================================================================
 JMP _L7 ; KEEP
 _L6:

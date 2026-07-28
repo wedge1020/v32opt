@@ -34,6 +34,7 @@ ASMPCT=$(echo  "${ASMPCT}*100"               | bc -lq)
 ASMPCT=$(echo  "scale=3; ${ASMPCT} / 1"      | bc -lq)
 ASMPCT=$(echo  "100.000-${ASMPCT}"           | bc -lq)
 DECASMPCT=$(echo "${ASMPCT}" | cut -d'.' -f1)
+[ -z "${DECASMPCT}" ] && DECASMPCT=0
 [ "${DECASMPCT}" -lt 0 ] && QUAL="loss" || QUAL="savings"
 printf "%-9s %5s bytes\n" "ASM:"    "${REGASMSIZE}"
 printf "%-9s %5s bytes (%s%% %s)\n" "OPTASM:" "${OPTASMSIZE}" "${ASMPCT}" "${QUAL}"
@@ -47,6 +48,7 @@ VBINPCT=$(echo  "${VBINPCT}*100"               | bc -lq)
 VBINPCT=$(echo  "scale=3; ${VBINPCT} / 1"      | bc -lq)
 VBINPCT=$(echo  "100.000-${VBINPCT}"           | bc -lq)
 DECVBINPCT=$(echo "${VBINPCT}" | cut -d'.' -f1)
+[ -z "${DECVBINPCT}" ] && DECVBINPCT=0
 [ "${DECVBINPCT}" -lt 0 ] && QUAL="loss" || QUAL="savings"
 printf "%-9s %5s bytes\n" "VBIN:"    "${REGVBINSIZE}"
 printf "%-9s %5s bytes (%s%% %s)\n" "OPTVBIN:" "${OPTVBINSIZE}" "${VBINPCT}" "${QUAL}"
