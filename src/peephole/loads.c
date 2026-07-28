@@ -83,6 +83,12 @@ int peephole_loads(AsmNode *head)
 
                     if (!reg_modified)
                     {
+                        // 🔧 NEW GUARD: Skip if replacing with itself (no-op)
+                        if (str_case_eq(scan->dst_op.reg, loaded_reg)) {
+                            scan = scan->next;
+                            continue;
+                        }
+
                         insert_debug_comment(scan->prev, OPT_PEEPHOLE_LOADS, scan->raw);
                         // Replace MOV R2, [mem] with MOV R2, R1
                         scan->src_op = curr->dst_op;

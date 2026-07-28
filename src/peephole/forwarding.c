@@ -142,6 +142,16 @@ int peephole_forwarding(AsmNode *head)
                                                      !str_case_eq(scan->mnemonic, "JMP"));
                         if (is_illegal_imm_store) break;
 
+                        // 🔧 NEW GUARD: Block immediates into JMP (prevents invalid jumps)
+                        if (str_case_eq(scan->mnemonic, "JMP") && curr->src_op.mode == MODE_IMMEDIATE) {
+                            break;
+                        }
+
+                        // 🔧 NEW GUARD: Block immediates into non-register operands
+                        if (curr->src_op.mode == MODE_IMMEDIATE && scan->dst_op.mode != MODE_REG) {
+                            break;
+                        }
+
                         insert_debug_comment(scan->prev, OPT_PEEPHOLE_FORWARDING, scan->raw);
                         *target_op = curr->src_op;
 
