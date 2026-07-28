@@ -1,10 +1,10 @@
 ; ===================================================================
-; TEST: peephole_forwarding - All Scenarios
+; TEST: peephole_forwarding - Extended Stress & Regression Suite
 ; Run with: ./v32opt test_forwarding.asm -fopt_peephole_forwarding -v
 ; ===================================================================
 
 ; ===================================================================
-; ✅ RULE 1: Store-to-Load Forwarding
+; ✅ SECTION 1: Store-to-Load Forwarding (Rule 1)
 ; ===================================================================
 
 ; --- Basic store-to-load ---
@@ -17,12 +17,42 @@ __function_test_store_load:
     POP BP
     RET
 
-; --- With offset ---
-__function_test_store_load_offset:
+; --- Positive offset store-to-load ---
+__function_test_store_load_pos_offset:
     PUSH BP
     MOV BP, SP
     MOV [BP+4], R2
     MOV R3, [BP+4]     ; MATCH Should become: MOV R3, R2
+    MOV SP, BP
+    POP BP
+    RET
+
+; --- Negative offset store-to-load ---
+__function_test_store_load_neg_offset:
+    PUSH BP
+    MOV BP, SP
+    MOV [BP-8], R2
+    MOV R3, [BP-8]     ; MATCH Should become: MOV R3, R2
+    MOV SP, BP
+    POP BP
+    RET
+
+; --- Offset mismatch (SHOULD NOT forward) ---
+__function_test_store_load_offset_mismatch:
+    PUSH BP
+    MOV BP, SP
+    MOV [BP+4], R2
+    MOV R3, [BP+8]     ; KEEP Offsets differ (+4 vs +8)
+    MOV SP, BP
+    POP BP
+    RET
+
+; --- Base register mismatch (SHOULD NOT forward) ---
+__function_test_store_load_base_mismatch:
+    PUSH BP
+    MOV BP, SP
+    MOV [R1], R3
+    MOV R4, [R2]       ; KEEP Base registers differ (R1 vs R2)
     MOV SP, BP
     POP BP
     RET
@@ -34,8 +64,30 @@ __function_test_store_load_overwrite:
     MOV [R1], R2
     MOV R3, 0
     MOV [R1], R3       ; KEEP Overwrites memory
-    IADD R3, 1         ; Clobbers R3 so it CANNOT be forwarded to R4
+    IADD R3, 1         ; Clobbers R3 so Rule 1 cannot forward R3 to R4
     MOV R4, [R1]       ; KEEP Should NOT forward (memory changed)
+    MOV SP, BP
+    POP BP
+    RET
+
+; --- Base register modified before load (SHOULD NOT forward) ---
+__function_test_store_load_base_modified:
+    PUSH BP
+    MOV BP, SP
+    MOV [R1], R2
+    IADD R1, 4         ; Base reg R1 changed
+    MOV R3, [R1]       ; KEEP Should NOT forward (R1 changed)
+    MOV SP, BP
+    POP BP
+    RET
+
+; --- Source register modified before load (SHOULD NOT forward) ---
+__function_test_store_load_src_modified:
+    PUSH BP
+    MOV BP, SP
+    MOV [R1], R2
+    IADD R2, 1         ; Source reg R2 changed
+    MOV R3, [R1]       ; KEEP Should NOT forward (R2 changed)
     MOV SP, BP
     POP BP
     RET
@@ -45,15 +97,16 @@ __function_test_store_load_cfb:
     PUSH BP
     MOV BP, SP
     MOV [R1], R2
-    JMP _skip
+    JMP _skip_stl
     MOV R3, [R1]       ; KEEP Should NOT forward (across JMP)
-_skip:
+_skip_stl:
     MOV SP, BP
     POP BP
     RET
 
+
 ; ===================================================================
-; ✅ RULE 2: Copy Propagation (Register)
+; ✅ SECTION 2: Register Copy Propagation (Rule 2)
 ; ===================================================================
 
 ; --- Basic register propagation ---
@@ -66,45 +119,80 @@ __function_test_copy_prop_reg:
     POP BP
     RET
 
-; --- Through comments ---
+; --- Through comments and whitespace ---
 __function_test_copy_prop_comments:
     PUSH BP
     MOV BP, SP
     MOV R1, R2
-    ; comment
+    ; intermediate comment line
     MOV R3, R1          ; MATCH Should become: MOV R3, R2
     MOV SP, BP
     POP BP
     RET
 
-; --- Source register modified (SHOULD NOT propagate) ---
-__function_test_copy_prop_modified:
+; --- Defined register modified (SHOULD NOT propagate) ---
+__function_test_copy_prop_def_modified:
     PUSH BP
     MOV BP, SP
     MOV R1, R2
-    IADD R1, 5         ; KEEP Overwrites R1 (using ALU math to avoid new copy-prop def)
+    IADD R1, 5         ; Overwrites R1
     MOV R4, R1         ; KEEP Should NOT propagate (R1 changed)
     MOV SP, BP
     POP BP
     RET
 
-; --- Multiple propagations ---
-__function_test_copy_prop_multiple:
+; --- Source register modified (SHOULD NOT propagate) ---
+__function_test_copy_prop_src_modified:
     PUSH BP
     MOV BP, SP
     MOV R1, R2
-    MOV R3, R1         ; MATCH Should become: MOV R3, R2
-    MOV R4, R3         ; MATCH Should become: MOV R4, R2 (via R3->R2)
+    IADD R2, 5         ; Overwrites R2
+    MOV R4, R1         ; KEEP Should NOT propagate (R2 changed)
     MOV SP, BP
     POP BP
     RET
 
+; --- Multiple sequential reads ---
+__function_test_copy_prop_multi_read:
+    PUSH BP
+    MOV BP, SP
+    MOV R1, R2
+    MOV R3, R1         ; MATCH Should become: MOV R3, R2
+    IADD R4, R1        ; MATCH Should become: IADD R4, R2
+    ISUB R5, R1        ; MATCH Should become: ISUB R5, R2
+    MOV SP, BP
+    POP BP
+    RET
+
+; --- Chained multi-hop propagation ---
+__function_test_copy_prop_chained:
+    PUSH BP
+    MOV BP, SP
+    MOV R1, R2
+    MOV R3, R1         ; MATCH Should become: MOV R3, R2
+    MOV R4, R3         ; MATCH Should become: MOV R4, R2 (propagates R3->R2)
+    MOV SP, BP
+    POP BP
+    RET
+
+; --- Blocked by intervening Label (SHOULD NOT propagate) ---
+__function_test_copy_prop_label_boundary:
+    PUSH BP
+    MOV BP, SP
+    MOV R1, R2
+_block_label:
+    MOV R3, R1         ; KEEP Should NOT propagate across label boundary
+    MOV SP, BP
+    POP BP
+    RET
+
+
 ; ===================================================================
-; ✅ RULE 2: Copy Propagation (Immediate)
+; ✅ SECTION 3: Immediate & Label Copy Propagation (Rule 2)
 ; ===================================================================
 
-; --- Basic immediate propagation ---
-__function_test_copy_prop_imm:
+; --- Basic positive immediate propagation ---
+__function_test_copy_prop_imm_pos:
     PUSH BP
     MOV BP, SP
     MOV R1, 42
@@ -113,7 +201,27 @@ __function_test_copy_prop_imm:
     POP BP
     RET
 
-; --- Immediate to ALU ---
+; --- Negative immediate propagation ---
+__function_test_copy_prop_imm_neg:
+    PUSH BP
+    MOV BP, SP
+    MOV R1, -128
+    MOV R2, R1         ; MATCH Should become: MOV R2, -128
+    MOV SP, BP
+    POP BP
+    RET
+
+; --- Hexadecimal immediate propagation ---
+__function_test_copy_prop_imm_hex:
+    PUSH BP
+    MOV BP, SP
+    MOV R1, 0xFF00
+    MOV R2, R1         ; MATCH Should become: MOV R2, 0xFF00
+    MOV SP, BP
+    POP BP
+    RET
+
+; --- Immediate to ALU operations ---
 __function_test_copy_prop_alu:
     PUSH BP
     MOV BP, SP
@@ -121,27 +229,40 @@ __function_test_copy_prop_alu:
     IADD R2, R1        ; MATCH Should become: IADD R2, 10
     ISUB R3, R1        ; MATCH Should become: ISUB R3, 10
     IMUL R4, R1        ; MATCH Should become: IMUL R4, 10
+    AND R5, R1         ; MATCH Should become: IAND R5, 10
     MOV SP, BP
     POP BP
     RET
 
-; --- Immediate to label (SHOULD propagate) ---
-__function_test_copy_prop_label:
+; --- Label address propagation into JMP ---
+__function_test_copy_prop_label_jmp:
     PUSH BP
     MOV BP, SP
-    MOV R1, _my_label
-    JMP R1             ; MATCH Should become: JMP _my_label
+    MOV R1, _target_label
+    JMP R1             ; MATCH Should become: JMP _target_label
     MOV SP, BP
     POP BP
     RET
-_my_label:
+_target_label:
     HLT
 
+
 ; ===================================================================
-; ❌ GUARDS: Should NOT Propagate
+; ❌ SECTION 4: Guard Conditions (MUST KEEP)
 ; ===================================================================
 
-; --- Into POW (SHOULD NOT propagate) ---
+; --- Into Memory Store (SHOULD NOT propagate immediate) ---
+; Vircon32 CANNOT do MOV [R2], 100 directly; it requires a register.
+__function_test_guard_imm_store:
+    PUSH BP
+    MOV BP, SP
+    MOV R1, 100
+    MOV [R2], R1       ; KEEP Should NOT propagate 100 into indirect destination
+    MOV SP, BP
+    POP BP
+    RET
+
+; --- Into POW instruction (SHOULD NOT propagate) ---
 __function_test_guard_pow:
     PUSH BP
     MOV BP, SP
@@ -151,7 +272,7 @@ __function_test_guard_pow:
     POP BP
     RET
 
-; --- Into ATAN2 (SHOULD NOT propagate) ---
+; --- Into ATAN2 instruction (SHOULD NOT propagate) ---
 __function_test_guard_atan2:
     PUSH BP
     MOV BP, SP
@@ -161,49 +282,70 @@ __function_test_guard_atan2:
     POP BP
     RET
 
-; --- Into JT with numeric immediate (SHOULD NOT propagate) ---
-__function_test_guard_jt:
+; --- Into JT with numeric immediate target (SHOULD NOT propagate) ---
+__function_test_guard_jt_num:
     PUSH BP
     MOV BP, SP
     MOV R1, 0
-    JT R2, R1           ; KEEP Should NOT propagate 0 into JT target
+    JT R2, R1           ; KEEP Should NOT propagate numeric 0 into JT
     MOV SP, BP
     POP BP
     RET
 
-; --- Into JF with numeric immediate (SHOULD NOT propagate) ---
-__function_test_guard_jf:
+; --- Into JF with numeric immediate target (SHOULD NOT propagate) ---
+__function_test_guard_jf_num:
     PUSH BP
     MOV BP, SP
     MOV R1, 0
-    JF R2, R1           ; KEEP Should NOT propagate 0 into JF target
+    JF R2, R1           ; KEEP Should NOT propagate numeric 0 into JF
     MOV SP, BP
     POP BP
     RET
 
-; --- SP/BP protection ---
-__function_test_guard_sp_bp:
+; --- Stack Pointer (SP) Protection ---
+__function_test_guard_sp:
     PUSH BP
     MOV BP, SP
     MOV SP, R1
     MOV R2, SP          ; KEEP Should NOT propagate (SP protected)
+    MOV SP, BP
+    POP BP
+    RET
+
+; --- Base Pointer (BP) Protection ---
+__function_test_guard_bp:
+    PUSH BP
+    MOV BP, SP
     MOV BP, R3
     MOV R4, BP          ; KEEP Should NOT propagate (BP protected)
     MOV SP, BP
     POP BP
     RET
 
+
 ; ===================================================================
-; ✅ COMPLEX: Combined Scenarios
+; ✅ SECTION 5: Complex & Combined Scenarios
 ; ===================================================================
 
-; --- Store-to-load + copy propagation ---
-__function_test_combined:
+; --- Store-to-load followed immediately by copy propagation ---
+__function_test_combined_stl_and_cp:
     PUSH BP
     MOV BP, SP
     MOV [R1], R2
     MOV R3, [R1]        ; MATCH Rule 1: -> MOV R3, R2
-    MOV R4, R3          ; MATCH Rule 2: -> MOV R4, R2 (propagates R3->R2)
+    MOV R4, R3          ; MATCH Rule 2: -> MOV R4, R2
+    MOV SP, BP
+    POP BP
+    RET
+
+; --- Multi-instruction block propagation sequence ---
+__function_test_combined_sequence:
+    PUSH BP
+    MOV BP, SP
+    MOV R1, 25
+    IADD R2, R1        ; MATCH -> IADD R2, 25
+    MOV R3, R1         ; MATCH -> MOV R3, 25
+    IMUL R4, R3        ; MATCH -> IMUL R4, 25 (via R3->25 propagation)
     MOV SP, BP
     POP BP
     RET
