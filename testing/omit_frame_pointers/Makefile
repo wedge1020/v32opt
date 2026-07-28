@@ -1,12 +1,12 @@
 # --- Configuration ---
-TEST             = omit_frame_pointers
+TEST             = omit-frame-pointers
 OPTIMIZER        = ../../v32opt
 COMPILER         = compile
 ASSEMBLER        = assemble
 TEXTURE_TOOL     = png2vircon
 PACKER           = packrom
 
-OPT_FLAGS        = -fopt_$(TEST) -t -v
+OPT_FLAGS        = -f$(TEST) -t -v
 
 # This variable is empty by default, but is set to -g during a debug build
 DEBUG_FLAGS      =

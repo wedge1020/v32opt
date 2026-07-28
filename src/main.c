@@ -27,7 +27,8 @@ OptConfig config = {
 	.opt_dce                      = false,
 	.opt_constant_folding         = false,
 	.opt_inline                   = false,
-	.opt_inline_max               = 8,
+	.opt_inline_call_limit        = -1,
+	.opt_inline_max_body_ins      = 8,
 	.opt_promote_regs             = false,
 	.opt_promote_leaf             = false,
 	.opt_promote_loops            = false,
@@ -51,33 +52,33 @@ int  main (int  argc, char **argv)
         fprintf(stdout, "  -o <file>        Specify output assembly file name\n");
         fprintf(stdout, "  -O0              Disable all optimizations [default]\n");
         fprintf(stdout, "  -O1              Enables first level of optimizations:\n");
-        fprintf(stdout, "                       peephole_pairs, peephole_algebra,\n");
-        fprintf(stdout, "                       peephole_forwarding, peephole_jumps,\n");
-        fprintf(stdout, "                       peephole_movs, peephole_immediates,\n");
-        fprintf(stdout, "                       peephole_reduce, peephole_shifts,\n");
-        fprintf(stdout, "                       peephole_loads,\n");
-        fprintf(stdout, "                       peephole_immediate_prop, peephole_jmp_chain\n");
+        fprintf(stdout, "                       peephole-pairs, peephole-algebra,\n");
+        fprintf(stdout, "                       peephole-forwarding, peephole-jumps,\n");
+        fprintf(stdout, "                       peephole-movs, peephole-immediates,\n");
+        fprintf(stdout, "                       peephole-reduce, peephole-shifts,\n");
+        fprintf(stdout, "                       peephole-loads,\n");
+        fprintf(stdout, "                       peephole-immediate-prop, peephole-jmp-chain\n");
         fprintf(stdout, "  -O2              Enables second level (could break):\n");
         fprintf(stdout, "                       ALL included in -O1,\n");
-        fprintf(stdout, "                       cse, dce, constant_folding\n");
+        fprintf(stdout, "                       cse, dce, constant-folding\n");
         fprintf(stdout, "  -O3              Enables aggressive optimizations (could break):\n");
         fprintf(stdout, "                       ALL included in -O1 and -O2,\n");
         fprintf(stdout, "                       inline\n\n");
         fprintf(stdout, "Individual Optimization Toggles:\n");
-        fprintf(stdout, "  -fopt_<name>     Enable specific pass (e.g., -fopt_promote_regs)\n");
-        fprintf(stdout, "  -fno_opt_<name>  Disable specific pass (e.g., -fno_opt_inline)\n\n");
+        fprintf(stdout, "  -f<name>     Enable specific pass (e.g., -fpeephole-algebra)\n");
+        fprintf(stdout, "  -fno-<name>  Disable specific pass (e.g., -fno-inline)\n\n");
         fprintf(stdout, "Available optimization names:\n");
-        fprintf(stdout, "  peephole_pairs, peephole_algebra, peephole_forwarding,\n");
-        fprintf(stdout, "  peephole_jumps, peephole_movs, peephole_immediates,\n");
-        fprintf(stdout, "  peephole_reduce, peephole_shifts, peephole_dead_stores,\n");
-        fprintf(stdout, "  peephole_loads, peephole_immediate_prop, peephole_jmp_chain,\n");
-        fprintf(stdout, "  inline, cse, dce, constant_folding, promote_regs, promote_leaf,\n");
-        fprintf(stdout, "  promote_loops, omit_frame_pointers\n\n");
+        fprintf(stdout, "  peephole-pairs, peephole-algebra, peephole-forwarding,\n");
+        fprintf(stdout, "  peephole-jumps, peephole-movs, peephole-immediates,\n");
+        fprintf(stdout, "  peephole-reduce, peephole-shifts, peephole-dead-stores,\n");
+        fprintf(stdout, "  peephole-loads, peephole-immediate-prop, peephole-jmp-chain,\n");
+        fprintf(stdout, "  inline, cse, dce, constant-folding, promote-regs, promote-leaf,\n");
+        fprintf(stdout, "  promote-loops, omit-frame-pointers\n\n");
         fprintf(stdout, "Diagnostic Flags:\n");
         fprintf(stdout, "  -finline-max=N   Cap the number of inlined CALL sites to N\n");
-        fprintf(stdout, "  -fmax_passes=N   Cap the maximum iterative optimization passes to N\n\n");
-        fprintf(stdout, "NOTE: peephole_dead_stores, omit_frame_pointers,\n");
-        fprintf(stdout, "promote_regs, promote_leaf, and promote_loops not yet\n");
+        fprintf(stdout, "  -fmax-passes=N   Cap the maximum iterative optimization passes to N\n\n");
+        fprintf(stdout, "NOTE: peephole-dead-stores, omit-frame-pointers,\n");
+        fprintf(stdout, "promote-regs, promote-leaf, and promote-loops not yet\n");
         fprintf(stdout, "connected to any optimization category. Test and bugfix first\n\n");
         return (1);
     }
@@ -195,92 +196,94 @@ int  main (int  argc, char **argv)
             config.opt_promote_leaf             = false;
             config.opt_promote_loops            = false;
             config.opt_omit_frame_pointers      = false;
-        } else if (strcmp(argv[i], "-fopt_peephole_pairs")      == 0) {
+        } else if (strcmp(argv[i], "-fpeephole-pairs")      == 0) {
             config.opt_peephole_pairs           = true;
-        } else if (strcmp(argv[i], "-fopt_peephole_algebra")    == 0) {
+        } else if (strcmp(argv[i], "-fpeephole-algebra")    == 0) {
             config.opt_peephole_algebra         = true;
-        } else if (strcmp(argv[i], "-fopt_peephole_forwarding") == 0) {
+        } else if (strcmp(argv[i], "-fpeephole-forwarding") == 0) {
             config.opt_peephole_forwarding      = true;
-        } else if (strcmp(argv[i], "-fopt_peephole_jumps") == 0) {
+        } else if (strcmp(argv[i], "-fpeephole-jumps") == 0) {
             config.opt_peephole_jumps           = true;
-        } else if (strcmp(argv[i], "-fopt_peephole_movs") == 0) {
+        } else if (strcmp(argv[i], "-fpeephole-movs") == 0) {
             config.opt_peephole_movs            = true;
-        } else if (strcmp(argv[i], "-fopt_peephole_immediates") == 0) {
+        } else if (strcmp(argv[i], "-fpeephole-immediates") == 0) {
             config.opt_peephole_immediates      = true;
-        } else if (strcmp(argv[i], "-fopt_peephole_reduce") == 0) {
+        } else if (strcmp(argv[i], "-fpeephole-reduce") == 0) {
             config.opt_peephole_reduce          = true;
-        } else if (strcmp(argv[i], "-fopt_peephole_shifts") == 0) {
+        } else if (strcmp(argv[i], "-fpeephole-shifts") == 0) {
             config.opt_peephole_shifts          = true;
-        } else if (strcmp(argv[i], "-fopt_peephole_dead_stores") == 0) {
+        } else if (strcmp(argv[i], "-fpeephole-dead-stores") == 0) {
             config.opt_peephole_dead_stores     = true;
-        } else if (strcmp(argv[i], "-fopt_peephole_loads") == 0) {
+        } else if (strcmp(argv[i], "-fpeephole-loads") == 0) {
             config.opt_peephole_loads           = true;
-        } else if (strcmp(argv[i], "-fopt_peephole_immediate_prop") == 0) {
+        } else if (strcmp(argv[i], "-fpeephole-immediate-prop") == 0) {
             config.opt_peephole_immediate_prop  = true;
-        } else if (strcmp(argv[i], "-fopt_peephole_jmp_chain") == 0) {
+        } else if (strcmp(argv[i], "-fpeephole-jmp-chain") == 0) {
             config.opt_peephole_jmp_chain      = true;
-        } else if (strcmp(argv[i], "-fopt_cse") == 0) {
+        } else if (strcmp(argv[i], "-fcse") == 0) {
             config.opt_cse                      = true;
-        } else if (strcmp(argv[i], "-fopt_dce") == 0) {
+        } else if (strcmp(argv[i], "-fdce") == 0) {
             config.opt_dce = true;
-        } else if (strcmp(argv[i], "-fopt_constant_folding") == 0) {
+        } else if (strcmp(argv[i], "-fconstant-folding") == 0) {
             config.opt_constant_folding = true;
-        } else if (strcmp(argv[i], "-fopt_omit_frame_pointers") == 0) {
+        } else if (strcmp(argv[i], "-fomit-frame-pointers") == 0) {
             config.opt_omit_frame_pointers      = true;
-        } else if (strcmp(argv[i], "-fopt_inline") == 0) {
+        } else if (strcmp(argv[i], "-finline") == 0) {
             config.opt_inline = true;
-        } else if (strcmp(argv[i], "-fopt_promote_regs") == 0) {
+        } else if (strcmp(argv[i], "-fpromote-regs") == 0) {
             config.opt_promote_regs             = true;
-        } else if (strcmp(argv[i], "-fopt_promote_leaf") == 0) {
+        } else if (strcmp(argv[i], "-fpromote-leaf") == 0) {
             config.opt_promote_leaf             = true;
-        } else if (strcmp(argv[i], "-fopt_promote_loops") == 0) {
+        } else if (strcmp(argv[i], "-fpromote-loops") == 0) {
             config.opt_promote_loops            = true;
-        } else if (strcmp(argv[i], "-fno_opt_peephole_jumps") == 0) {
+        } else if (strcmp(argv[i], "-fno-peephole-jumps") == 0) {
             config.opt_peephole_jumps = false;
-        } else if (strcmp(argv[i], "-fno_opt_peephole_movs") == 0) {
+        } else if (strcmp(argv[i], "-fno-peephole-movs") == 0) {
             config.opt_peephole_movs = false;
-        } else if (strcmp(argv[i], "-fno_opt_peephole_immediates") == 0) {
+        } else if (strcmp(argv[i], "-fno-peephole-immediates") == 0) {
             config.opt_peephole_immediates = false;
-        } else if (strcmp(argv[i], "-fno_opt_peephole_reduce") == 0) {
+        } else if (strcmp(argv[i], "-fno-peephole-reduce") == 0) {
             config.opt_peephole_reduce = false;
-        } else if (strcmp(argv[i], "-fno_opt_peephole_pairs") == 0) {
+        } else if (strcmp(argv[i], "-fno-peephole-pairs") == 0) {
             config.opt_peephole_pairs = false;
-        } else if (strcmp(argv[i], "-fno_opt_peephole_algebra") == 0) {
+        } else if (strcmp(argv[i], "-fno-peephole-algebra") == 0) {
             config.opt_peephole_algebra = false;
-        } else if (strcmp(argv[i], "-fno_opt_peephole_forwarding") == 0) {
+        } else if (strcmp(argv[i], "-fno-peephole-forwarding") == 0) {
             config.opt_peephole_forwarding = false;
-        } else if (strcmp(argv[i], "-fno_opt_peephole_loads") == 0) {
+        } else if (strcmp(argv[i], "-fno-peephole-loads") == 0) {
             config.opt_peephole_loads = false;
-        } else if (strcmp(argv[i], "-fno_opt_peephole_immediate_prop") == 0) {
+        } else if (strcmp(argv[i], "-fno-peephole-immediate-prop") == 0) {
             config.opt_peephole_immediate_prop  = false;
-        } else if (strcmp(argv[i], "-fno_opt_peephole_jumps") == 0) {
+        } else if (strcmp(argv[i], "-fno-peephole-jumps") == 0) {
             config.opt_peephole_jumps = false;
-        } else if (strcmp(argv[i], "-fno_opt_peephole_jmp_chain") == 0) {
+        } else if (strcmp(argv[i], "-fno-peephole-jmp-chain") == 0) {
             config.opt_peephole_jmp_chain      = false;
-        } else if (strcmp(argv[i], "-fno_opt_peephole_movs") == 0) {
+        } else if (strcmp(argv[i], "-fno-peephole-movs") == 0) {
             config.opt_peephole_movs = false;
-        } else if (strcmp(argv[i], "-fno_opt_cse") == 0) {
+        } else if (strcmp(argv[i], "-fno-cse") == 0) {
             config.opt_cse                      = false;
-        } else if (strcmp(argv[i], "-fno_opt_dce") == 0) {
+        } else if (strcmp(argv[i], "-fno-dce") == 0) {
             config.opt_dce = false;
-        } else if (strcmp(argv[i], "-fno_opt_constant_folding") == 0) {
+        } else if (strcmp(argv[i], "-fno-constant-folding") == 0) {
             config.opt_constant_folding = false;
-        } else if (strcmp(argv[i], "-fno_opt_omit_frame_pointers") == 0) {
+        } else if (strcmp(argv[i], "-fno-omit-frame-pointers") == 0) {
             config.opt_omit_frame_pointers      = false;
-        } else if (strcmp(argv[i], "-fno_opt_inline") == 0) {
+        } else if (strcmp(argv[i], "-fno-inline") == 0) {
             config.opt_inline = false;
-        } else if (strcmp(argv[i], "-fno_opt_promote_regs") == 0) {
+        } else if (strcmp(argv[i], "-fno-promote-regs") == 0) {
             config.opt_promote_regs = false;
-        } else if (strcmp(argv[i], "-fno_opt_promote_leaf") == 0) {
+        } else if (strcmp(argv[i], "-fno-promote-leaf") == 0) {
             config.opt_promote_leaf = false;
-        } else if (strcmp(argv[i], "-fno_opt_promote_loops") == 0) {
+        } else if (strcmp(argv[i], "-fno-promote-loops") == 0) {
             config.opt_promote_loops = false;
         } else if (strncmp(argv[i], "-finline-max=", 13) == 0) {
-            config.opt_inline_max = atoi(argv[i] + 13);
+            config.opt_inline_max_body_ins = atoi(argv[i] + 13);
+        } else if (strncmp(argv[i], "-finline-call-limit=", 13) == 0) {
+            config.opt_inline_call_limit = atoi(argv[i] + 13);
         } else if (strncmp(argv[i], "-finline-exclude=", 17) == 0) {
             safe_str_copy(g_inline_exclude_name, argv[i] + 17,
                           sizeof(g_inline_exclude_name));
-        } else if (strncmp(argv[i], "-fmax_passes=", 13) == 0) {
+        } else if (strncmp(argv[i], "-fmax-passes=", 13) == 0) {
             max_passes = atoi(argv[i] + 13);
         } else if (out_idx == 0 && argv[i][0] != '-') {
             safe_str_copy(outFile, argv[i], sizeof(outFile));

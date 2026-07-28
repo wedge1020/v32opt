@@ -1,12 +1,12 @@
 # --- Configuration ---
-TEST             = peephole_dead_stores
+TEST             = peephole-dead-stores
 OPTIMIZER        = ../../v32opt
 COMPILER         = compile
 ASSEMBLER        = assemble
 TEXTURE_TOOL     = png2vircon
 PACKER           = packrom
 
-OPT_FLAGS        = -fopt_$(TEST)
+OPT_FLAGS        = -f$(TEST)
 
 # This variable is empty by default, but is set to -g during a debug build
 DEBUG_FLAGS      =
