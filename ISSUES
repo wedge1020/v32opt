@@ -1,7 +1,7 @@
 endless loop, when done tends to produce premature HLT
 -fpeephole-forwarding
 -fpeephole-loads
--fpeephole-movs
+-fpeephole-movs --> will not actually run, even with -fpeephole-movs
 
 -fpeephole-dead-stores also disabled
 
