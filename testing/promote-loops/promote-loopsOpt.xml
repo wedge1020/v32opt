@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no" ?>
 <rom-definition version="1.0">
-    <rom type="cartridge" title="v32opt promote_loops test [original]" version="1.0" />
-<binary path="promote_loops.vbin" />
+    <rom type="cartridge" title="v32opt promote-loops test [optimized]" version="1.0" />
+<binary path="promote-loopsOpt.vbin" />
 <textures />
 <sounds />
 </rom-definition>

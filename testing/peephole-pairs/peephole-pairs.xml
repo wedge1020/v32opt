@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no" ?>
 <rom-definition version="1.0">
-    <rom type="cartridge" title="v32opt peephole_jumps test [original]" version="1.0" />
-<binary path="peephole_jumps.vbin" />
+    <rom type="cartridge" title="v32opt peephole-pairs test [original]" version="1.0" />
+<binary path="peephole-pairs.vbin" />
 <textures />
 <sounds />
 </rom-definition>
