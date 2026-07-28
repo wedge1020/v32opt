@@ -1,6 +1,6 @@
 ; ===================================================================
-; TEST: peephole_movs - Comprehensive Test Suite
-; Run with: ./v32opt test_movs.asm -fopt_peephole_movs -v -g
+; TEST: peephole-movs - Comprehensive Test Suite
+; Run with: ./v32opt peephole-movs.asm -fpeephole-movs -v -g
 ; ===================================================================
 
 ; ===================================================================

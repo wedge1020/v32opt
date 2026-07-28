@@ -1,6 +1,6 @@
 ; ===================================================================
-; TEST: peephole_forwarding - Extended Stress & Regression Suite
-; Run with: ./v32opt test_forwarding.asm -fopt_peephole_forwarding -v
+; TEST: peephole-forwarding - Extended Stress & Regression Suite
+; Run with: ./v32opt peephole-forwarding.asm -fpeephole-forwarding -v
 ; ===================================================================
 
 ; ===================================================================

@@ -1,6 +1,6 @@
 ; ===================================================================
 ; TEST: constant_folding - Global Constant Propagation
-; Run with: ./v32opt test_constant_folding.asm -fopt_constant_folding -v
+; Run with: ./v32opt constant-folding.asm -fconstant-folding -v
 ; ===================================================================
 
 ; ===================================================================

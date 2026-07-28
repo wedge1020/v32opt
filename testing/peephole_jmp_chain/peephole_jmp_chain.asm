@@ -1,6 +1,6 @@
 ; ===================================================================
-; TEST: peephole_jmp_chain - All Scenarios
-; Run with: ./v32opt test_jmp_chain.asm -fopt_peephole_jmp_chain -v
+; TEST: peephole-jmp-chain - All Scenarios
+; Run with: ./v32opt peephole-jmp-chain.asm -fpeephole-jmp-chain -v
 ; ===================================================================
 
 ; ===================================================================

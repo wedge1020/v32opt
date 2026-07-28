@@ -1,6 +1,6 @@
 ; ===================================================================
-; TEST: peephole_cse - Common Subexpression Elimination
-; Run with: ./v32opt peephole_cse.asm -fopt_peephole_cse -v
+; TEST: cse - Common Subexpression Elimination
+; Run with: ./v32opt cse.asm -fcse -v
 ; Note: Vircon32 uses 2-operand format: IADD R1, R2 means R1 = R1 + R2
 ; CSE Pattern: MOV Rx, A; OP Rx, B; ... MOV Ry, A; OP Ry, B -> MOV Ry, Rx
 ; ===================================================================

@@ -1,6 +1,6 @@
 ; ===================================================================
-; TEST: peephole_jumps - Rigorous Edge Cases & Coverage
-; Run with: ./v32opt test_jumps.asm -fopt_peephole_jumps -v
+; TEST: peephole-jumps - Rigorous Edge Cases & Coverage
+; Run with: ./v32opt peephole-jumps.asm -fpeephole-jumps -v
 ; ===================================================================
 
 ; ===================================================================

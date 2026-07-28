@@ -1,6 +1,6 @@
 ; ===================================================================
-; TEST: peephole_pairs - All Scenarios
-; Run with: ./v32opt test_pairs.asm -fopt_peephole_pairs -v
+; TEST: peephole-pairs - All Scenarios
+; Run with: ./v32opt peephole-pairs.asm -fpeephole-pairs -v
 ; ===================================================================
 
 ; ===================================================================

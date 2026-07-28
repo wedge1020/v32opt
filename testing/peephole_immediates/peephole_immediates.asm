@@ -1,6 +1,6 @@
 ; ===================================================================
-; TEST: peephole_immediates - All Scenarios
-; Run with: ./v32opt test_immediates.asm -fopt_peephole_immediates -v
+; TEST: peephole-immediates - All Scenarios
+; Run with: ./v32opt peephole-immediates.asm -fpeephole-immediates -v
 ; ===================================================================
 
 ; ===================================================================

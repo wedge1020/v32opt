@@ -77,7 +77,7 @@ int  main (int  argc, char **argv)
     char outFile[256] = {0};
     char dotFile[256] = {0};
     int  max_passes   = 1000;
-    OptType tally[MAX_OPTIMIZATION_ALGORITHMS]  = { 0 };
+    OptType tally[MAX_OPTIMIZATION_ALGORITHMS+5]  = { 0 };
 
     //for (int index  = 0; index <  MAX_OPTIMIZATION_ALGORITHMS; index++)
 //    {
@@ -455,7 +455,7 @@ int  main (int  argc, char **argv)
     int pass_count = 0;
     do {
         opts_in_pass = 0;
-        OptType opts[MAX_OPTIMIZATION_ALGORITHMS] = { 0 };
+        OptType opts[MAX_OPTIMIZATION_ALGORITHMS+5] = { 0 };
         pass_count++;
 
         // ----------------------------------------------------------------
@@ -583,7 +583,7 @@ int  main (int  argc, char **argv)
         }
 
         // Calculate total optimizations for this pass
-        for (int index = 0; index < MAX_OPTIMIZATION_ALGORITHMS; index++)
+        for (int index = 0; index < MAX_OPTIMIZATION_ALGORITHMS+5; index++)
         {
             opts_in_pass  = opts_in_pass + opts[index]; // totals for the round
             tally[index]  = tally[index] + opts[index]; // tally each opt
@@ -595,58 +595,58 @@ int  main (int  argc, char **argv)
         // Verbose output for this pass
         if (config.verbose && opts_in_pass > 0) {
             printf("Pass %d applied %d optimizations:\n", passes, opts_in_pass);
-            for (int index = 0; index < MAX_OPTIMIZATION_ALGORITHMS; index++)
+            for (int index = 0; index < MAX_OPTIMIZATION_ALGORITHMS+5; index++)
             {
                 if (opts[index] >  0)
                 {
                     switch (index)
                     {
                         case OPT_PEEPHOLE_PAIRS:
-                            fprintf (stdout, "  - peephole_pairs:          ");
+                            fprintf (stdout, "  - peephole-pairs:          ");
                             break;
 
                         case OPT_PEEPHOLE_ALGEBRA:
-                            fprintf (stdout, "  - peephole_algebra:        ");
+                            fprintf (stdout, "  - peephole-algebra:        ");
                             break;
 
                         case OPT_PEEPHOLE_FORWARDING:
-                            fprintf (stdout, "  - peephole_forwarding:     ");
+                            fprintf (stdout, "  - peephole-forwarding:     ");
                             break;
 
                         case OPT_PEEPHOLE_JUMPS:
-                            fprintf (stdout, "  - peephole_jumps:          ");
+                            fprintf (stdout, "  - peephole-jumps:          ");
                             break;
 
                         case OPT_PEEPHOLE_MOVS:
-                            fprintf (stdout, "  - peephole_movs:           ");
+                            fprintf (stdout, "  - peephole-movs:           ");
                             break;
 
                         case OPT_PEEPHOLE_IMMEDIATES:
-                            fprintf (stdout, "  - peephole_immediates:     ");
+                            fprintf (stdout, "  - peephole-immediates:     ");
                             break;
 
                         case OPT_PEEPHOLE_REDUCE:
-                            fprintf (stdout, "  - peephole_reduce:         ");
+                            fprintf (stdout, "  - peephole-reduce:         ");
                             break;
 
                         case OPT_PEEPHOLE_DEAD_STORES:
-                            fprintf (stdout, "  - peephole_dead_stores:    ");
+                            fprintf (stdout, "  - peephole-dead-stores:    ");
                             break;
 
                         case OPT_PEEPHOLE_LOADS:
-                            fprintf (stdout, "  - peephole_loads:          ");
+                            fprintf (stdout, "  - peephole-loads:          ");
                             break;
 
                         case OPT_PEEPHOLE_IMMEDIATE_PROP:
-                            fprintf (stdout, "  - peephole_immediate_prop: ");
+                            fprintf (stdout, "  - peephole-immediate-prop: ");
                             break;
 
                         case OPT_PEEPHOLE_JMP_CHAIN:
-                            fprintf (stdout, "  - peephole_jmp_chain:      ");
+                            fprintf (stdout, "  - peephole-jmp-chain:      ");
                             break;
 
                         case OPT_PEEPHOLE_SHIFTS:
-                            fprintf (stdout, "  - peephole_shifts:         ");
+                            fprintf (stdout, "  - peephole-shifts:         ");
                             break;
 
                         case OPT_CSE:
@@ -658,7 +658,7 @@ int  main (int  argc, char **argv)
                             break;
 
                         case OPT_CONSTANT_FOLDING:
-                            fprintf (stdout, "  - constant_folding:        ");
+                            fprintf (stdout, "  - constant-folding:        ");
                             break;
 
                         case OPT_INLINE:
@@ -666,19 +666,19 @@ int  main (int  argc, char **argv)
                             break;
 
                         case OPT_PROMOTE_REGS:
-                            fprintf (stdout, "  - promote_regs:            ");
+                            fprintf (stdout, "  - promote-regs:            ");
                             break;
 
                         case OPT_PROMOTE_LEAF:
-                            fprintf (stdout, "  - promote_leaf:            ");
+                            fprintf (stdout, "  - promote-leaf:            ");
                             break;
 
                         case OPT_PROMOTE_LOOPS:
-                            fprintf (stdout, "  - promote_loops:           ");
+                            fprintf (stdout, "  - promote-loops:           ");
                             break;
 
                         case OPT_OMIT_FRAME_POINTERS:
-                            fprintf (stdout, "  - omit_frame_pointers:     ");
+                            fprintf (stdout, "  - omit-frame-pointers:     ");
                             break;
                     }
 
@@ -790,51 +790,51 @@ int  main (int  argc, char **argv)
                     switch (index)
                     {
                         case OPT_PEEPHOLE_PAIRS:
-                            fprintf (stdout, "  - peephole_pairs:          ");
+                            fprintf (stdout, "  - peephole-pairs:          ");
                             break;
 
                         case OPT_PEEPHOLE_ALGEBRA:
-                            fprintf (stdout, "  - peephole_algebra:        ");
+                            fprintf (stdout, "  - peephole-algebra:        ");
                             break;
 
                         case OPT_PEEPHOLE_FORWARDING:
-                            fprintf (stdout, "  - peephole_forwarding:     ");
+                            fprintf (stdout, "  - peephole-forwarding:     ");
                             break;
 
                         case OPT_PEEPHOLE_JUMPS:
-                            fprintf (stdout, "  - peephole_jumps:          ");
+                            fprintf (stdout, "  - peephole-jumps:          ");
                             break;
 
                         case OPT_PEEPHOLE_MOVS:
-                            fprintf (stdout, "  - peephole_movs:           ");
+                            fprintf (stdout, "  - peephole-movs:           ");
                             break;
 
                         case OPT_PEEPHOLE_IMMEDIATES:
-                            fprintf (stdout, "  - peephole_immediates:     ");
+                            fprintf (stdout, "  - peephole-immediates:     ");
                             break;
 
                         case OPT_PEEPHOLE_REDUCE:
-                            fprintf (stdout, "  - peephole_reduce:         ");
+                            fprintf (stdout, "  - peephole-reduce:         ");
                             break;
 
                         case OPT_PEEPHOLE_DEAD_STORES:
-                            fprintf (stdout, "  - peephole_dead_stores:    ");
+                            fprintf (stdout, "  - peephole-dead-stores:    ");
                             break;
 
                         case OPT_PEEPHOLE_LOADS:
-                            fprintf (stdout, "  - peephole_loads:          ");
+                            fprintf (stdout, "  - peephole-loads:          ");
                             break;
 
                         case OPT_PEEPHOLE_IMMEDIATE_PROP:
-                            fprintf (stdout, "  - peephole_immediate_prop: ");
+                            fprintf (stdout, "  - peephole-immediate-prop: ");
                             break;
 
                         case OPT_PEEPHOLE_JMP_CHAIN:
-                            fprintf (stdout, "  - peephole_jmp_chain:      ");
+                            fprintf (stdout, "  - peephole-jmp-chain:      ");
                             break;
 
                         case OPT_PEEPHOLE_SHIFTS:
-                            fprintf (stdout, "  - peephole_shifts:         ");
+                            fprintf (stdout, "  - peephole-shifts:         ");
                             break;
 
                         case OPT_CSE:
@@ -846,7 +846,7 @@ int  main (int  argc, char **argv)
                             break;
 
                         case OPT_CONSTANT_FOLDING:
-                            fprintf (stdout, "  - constant_folding:        ");
+                            fprintf (stdout, "  - constant-folding:        ");
                             break;
 
                         case OPT_INLINE:
@@ -854,19 +854,19 @@ int  main (int  argc, char **argv)
                             break;
 
                         case OPT_PROMOTE_REGS:
-                            fprintf (stdout, "  - promote_regs:            ");
+                            fprintf (stdout, "  - promote-regs:            ");
                             break;
 
                         case OPT_PROMOTE_LEAF:
-                            fprintf (stdout, "  - promote_leaf:            ");
+                            fprintf (stdout, "  - promote-leaf:            ");
                             break;
 
                         case OPT_PROMOTE_LOOPS:
-                            fprintf (stdout, "  - promote_loops:           ");
+                            fprintf (stdout, "  - promote-loops:           ");
                             break;
 
                         case OPT_OMIT_FRAME_POINTERS:
-                            fprintf (stdout, "  - omit_frame_pointers:     ");
+                            fprintf (stdout, "  - omit-frame-pointers:     ");
                             break;
                     }
 
@@ -906,51 +906,51 @@ int  main (int  argc, char **argv)
                 switch (index)
                 {
                     case OPT_PEEPHOLE_PAIRS:
-                        fprintf (stdout, "peephole_pairs:");
+                        fprintf (stdout, "peephole-pairs:");
                         break;
 
                     case OPT_PEEPHOLE_ALGEBRA:
-                        fprintf (stdout, "peephole_algebra:");
+                        fprintf (stdout, "peephole-algebra:");
                         break;
 
                     case OPT_PEEPHOLE_FORWARDING:
-                        fprintf (stdout, "peephole_forwarding:");
+                        fprintf (stdout, "peephole-forwarding:");
                         break;
 
                     case OPT_PEEPHOLE_JUMPS:
-                        fprintf (stdout, "peephole_jumps:");
+                        fprintf (stdout, "peephole-jumps:");
                         break;
 
                     case OPT_PEEPHOLE_MOVS:
-                        fprintf (stdout, "peephole_movs:");
+                        fprintf (stdout, "peephole-movs:");
                         break;
 
                     case OPT_PEEPHOLE_IMMEDIATES:
-                        fprintf (stdout, "peephole_immediates:");
+                        fprintf (stdout, "peephole-immediates:");
                         break;
 
                     case OPT_PEEPHOLE_REDUCE:
-                        fprintf (stdout, "peephole_reduce:");
+                        fprintf (stdout, "peephole-reduce:");
                         break;
 
                     case OPT_PEEPHOLE_DEAD_STORES:
-                        fprintf (stdout, "peephole_dead_stores:");
+                        fprintf (stdout, "peephole-dead-stores:");
                         break;
 
                     case OPT_PEEPHOLE_LOADS:
-                        fprintf (stdout, "peephole_loads:");
+                        fprintf (stdout, "peephole-loads:");
                         break;
 
                     case OPT_PEEPHOLE_IMMEDIATE_PROP:
-                        fprintf (stdout, "peephole_immediate_prop: ");
+                        fprintf (stdout, "peephole-immediate-prop: ");
                         break;
 
                     case OPT_PEEPHOLE_JMP_CHAIN:
-                        fprintf (stdout, "peephole_jmp_chain:");
+                        fprintf (stdout, "peephole-jmp-chain:");
                         break;
 
                     case OPT_PEEPHOLE_SHIFTS:
-                        fprintf (stdout, "peephole_shifts:");
+                        fprintf (stdout, "peephole-shifts:");
                         break;
 
                     case OPT_CSE:
@@ -962,7 +962,7 @@ int  main (int  argc, char **argv)
                         break;
 
                     case OPT_CONSTANT_FOLDING:
-                        fprintf (stdout, "constant_folding:");
+                        fprintf (stdout, "constant-folding:");
                         break;
 
                     case OPT_INLINE:
@@ -970,19 +970,19 @@ int  main (int  argc, char **argv)
                         break;
 
                     case OPT_PROMOTE_REGS:
-                        fprintf (stdout, "promote_regs:");
+                        fprintf (stdout, "promote-regs:");
                         break;
 
                     case OPT_PROMOTE_LEAF:
-                        fprintf (stdout, "promote_leaf:");
+                        fprintf (stdout, "promote-leaf:");
                         break;
 
                     case OPT_PROMOTE_LOOPS:
-                        fprintf (stdout, "promote_loops:");
+                        fprintf (stdout, "promote-loops:");
                         break;
 
                     case OPT_OMIT_FRAME_POINTERS:
-                        fprintf (stdout, "omit_frame_pointers:");
+                        fprintf (stdout, "omit-frame-pointers:");
                         break;
                 }
 

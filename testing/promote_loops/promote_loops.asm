@@ -1,6 +1,6 @@
 ; ===================================================================
-; TEST: pass_promote_loop_registers - Compiler-Style Patterns
-; Run with: ./v32opt test_promote_loops.asm -fopt_promote_loops -v
+; TEST: promote-loops - Compiler-Style Patterns
+; Run with: ./v32opt promote-loops.asm -fpromote-loops -v
 ; ===================================================================
 
 ; ===================================================================

@@ -1,6 +1,6 @@
 ; ===================================================================
 ; TEST: omit_frame_pointers - All Scenarios (Enhanced)
-; Run with: ./v32opt test_frame.asm -fopt_omit_frame_pointers -v
+; Run with: ./v32opt omit-frame-pointers.asm -fomit-frame-pointers -v
 ; ===================================================================
 
 ; ===================================================================

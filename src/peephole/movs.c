@@ -29,17 +29,31 @@ int peephole_movs(AsmNode *head)
     {
         if (curr->type == OP_MOV)
         {
-            // --- Self-Referential Load Check ---
-            // If MOV loads from [r1] into r1, r1 is clobbered with the loaded
-            // value. Subsequent moves cannot treat r1 as the same address pointer.
-            bool self_referential_load =
-                (curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_INDIRECT) &&
-                str_case_eq(curr->dst_op.reg, curr->src_op.reg);
+            // 🔧 NEW: Skip SP and BP entirely (special registers)
+            if ((curr->dst_op.mode == MODE_REG && (str_case_eq(curr->dst_op.reg, "SP") || str_case_eq(curr->dst_op.reg, "BP"))) ||
+                (curr->src_op.mode == MODE_REG && (str_case_eq(curr->src_op.reg, "SP") || str_case_eq(curr->src_op.reg, "BP"))))
+            {
+                curr = curr->next;
+                continue;
+            }
 
-            // Identify registers and memory usage for hazard checking
-            const char *dst_reg = (curr->dst_op.mode == MODE_REG || curr->dst_op.mode == MODE_INDIRECT) ? curr->dst_op.reg : NULL;
-            const char *src_reg = (curr->src_op.mode == MODE_REG || curr->src_op.mode == MODE_INDIRECT) ? curr->src_op.reg : NULL;
-            bool touches_memory = (curr->dst_op.mode == MODE_INDIRECT || curr->src_op.mode == MODE_INDIRECT);
+            // 🔧 NEW: Skip MOVs with immediate operands (avoid re-exposing patterns)
+            if (curr->src_op.mode == MODE_IMMEDIATE || curr->dst_op.mode == MODE_IMMEDIATE)
+            {
+                curr = curr->next;
+                continue;
+            }
+
+            // 🔧 NEW: Skip MOVs involving memory operands (avoid memory hazards)
+            if (curr->dst_op.mode == MODE_INDIRECT || curr->src_op.mode == MODE_INDIRECT)
+            {
+                curr = curr->next;
+                continue;
+            }
+
+            // Identify registers for hazard checking
+            const char *dst_reg = curr->dst_op.reg;
+            const char *src_reg = curr->src_op.reg;
 
             AsmNode *scan = curr->next;
             while (scan)
@@ -61,24 +75,32 @@ int peephole_movs(AsmNode *head)
                     break;
                 }
 
-                // If either instruction accesses memory, stop on any memory write
-                if (touches_memory)
+                // 🔧 NEW: Stop if either register is clobbered by scan
+                if (modifies_register(scan, dst_reg) || modifies_register(scan, src_reg))
                 {
-                    if (scan->type == OP_PUSH || scan->type == OP_POP ||
-                        scan->type == OP_MOVS || scan->type == OP_SETS ||
-                        (scan->has_dst && scan->dst_op.mode == MODE_INDIRECT))
-                    {
-                        break;
-                    }
+                    break;
                 }
 
                 // Check if scan is a MOV instruction we can optimize
                 if (scan->type == OP_MOV)
                 {
+                    // 🔧 NEW: Skip MOVs with immediate operands in scan
+                    if (scan->src_op.mode == MODE_IMMEDIATE || scan->dst_op.mode == MODE_IMMEDIATE)
+                    {
+                        scan = scan->next;
+                        continue;
+                    }
+
+                    // 🔧 NEW: Skip MOVs involving memory operands in scan
+                    if (scan->dst_op.mode == MODE_INDIRECT || scan->src_op.mode == MODE_INDIRECT)
+                    {
+                        scan = scan->next;
+                        continue;
+                    }
+
                     // --- Duplicate Move Elimination ---
-                    // MOV r1, X; ... MOV r1, X → second MOV is redundant
-                    if (!self_referential_load &&
-                        operands_equal(&curr->dst_op, &scan->dst_op) &&
+                    // MOV r1, r2; ... MOV r1, r2 → second MOV is redundant
+                    if (operands_equal(&curr->dst_op, &scan->dst_op) &&
                         operands_equal(&curr->src_op, &scan->src_op))
                     {
                         AsmNode *next_scan = scan->next;
@@ -105,13 +127,6 @@ int peephole_movs(AsmNode *head)
                             continue;
                         }
                     }
-                }
-
-                // Stop scanning if any register used by curr is modified by scan
-                if ((dst_reg && modifies_register(scan, dst_reg)) ||
-                    (src_reg && modifies_register(scan, src_reg)))
-                {
-                    break;
                 }
 
                 scan = scan->next;

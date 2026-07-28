@@ -1,6 +1,6 @@
 ; ===================================================================
-; TEST: peephole_dead_stores - All Scenarios
-; Run with: ./v32opt test_dead_stores.asm -fopt_peephole_dead_stores -v
+; TEST: peephole-dead-stores - All Scenarios
+; Run with: ./v32opt peephole-dead-stores.asm -fpeephole-dead-stores -v
 ; ===================================================================
 
 ; ===================================================================

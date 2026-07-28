@@ -1,6 +1,6 @@
 ; ===================================================================
-; TEST: peephole_algebra - All Scenarios
-; Run with: ./v32opt test_algebra.asm -fopt_peephole_algebra -v
+; TEST: peephole-algebra - All Scenarios
+; Run with: ./v32opt peephole-algebra.asm -fpeephole-algebra -v
 ; ===================================================================
 
 ; ===================================================================

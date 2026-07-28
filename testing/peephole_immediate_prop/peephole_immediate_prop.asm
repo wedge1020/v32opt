@@ -1,6 +1,6 @@
 ; ===================================================================
-; TEST: peephole_immediate_prop - All Patterns
-; Run with: ./v32opt test_immediate_prop.asm -fopt_peephole_immediate_prop -v
+; TEST: peephole-immediate-prop - All Patterns
+; Run with: ./v32opt peephole-immediate-prop.asm -fpeephole-immediate-prop -v
 ; ===================================================================
 
 ; ===================================================================

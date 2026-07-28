@@ -1,6 +1,6 @@
 ; ===================================================================
-; TEST: peephole_loads - Comprehensive Test Suite
-; Run with: ./v32opt test_loads.asm -fopt_peephole_loads -v -g
+; TEST: peephole-loads - Comprehensive Test Suite
+; Run with: ./v32opt peephole-loads.asm -fpeephole-loads -v -g
 ; ===================================================================
 
 ; ===================================================================
