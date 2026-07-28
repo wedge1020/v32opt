@@ -1,0 +1,12 @@
+endless loop, when done tends to produce premature HLT
+-fpeephole-forwarding
+-fpeephole-loads
+-fpeephole-movs
+
+-fpeephole-dead-stores also disabled
+
+still failing some unit tests (but generally seem to work)
+-fpeephole-jumps
+-fpeephole-jmp-chains
+-fcse
+-finline

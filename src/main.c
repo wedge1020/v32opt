@@ -126,16 +126,16 @@ int  main (int  argc, char **argv)
         } else if (strcmp(argv[i], "-O1") == 0) {
             config.opt_peephole_pairs           = true;
             config.opt_peephole_algebra         = true;
-            config.opt_peephole_forwarding      = true;
-            config.opt_peephole_jumps           = false;
-            config.opt_peephole_movs            = true;
+            config.opt_peephole_jumps           = true;
+            config.opt_peephole_jmp_chain       = true;
+            config.opt_peephole_forwarding      = false;
+            config.opt_peephole_loads           = false;
+            config.opt_peephole_movs            = false;
             config.opt_peephole_immediates      = true;
-            config.opt_peephole_reduce          = false;
-            config.opt_peephole_shifts          = false;
+            config.opt_peephole_reduce          = true;
+            config.opt_peephole_shifts          = true;
             config.opt_peephole_dead_stores     = false;
-            config.opt_peephole_loads           = true;
             config.opt_peephole_immediate_prop  = true;
-            config.opt_peephole_jmp_chain       = false;
             config.opt_cse                      = false;
             config.opt_dce                      = false;
             config.opt_constant_folding         = false;
@@ -147,14 +147,14 @@ int  main (int  argc, char **argv)
         } else if (strcmp(argv[i], "-O2") == 0) {
             config.opt_peephole_pairs           = true;
             config.opt_peephole_algebra         = true;
-            config.opt_peephole_forwarding      = true;
             config.opt_peephole_jumps           = true;
-            config.opt_peephole_movs            = true;
             config.opt_peephole_immediates      = true;
             config.opt_peephole_reduce          = true;
             config.opt_peephole_shifts          = true;
             config.opt_peephole_dead_stores     = false;
-            config.opt_peephole_loads           = true;
+            config.opt_peephole_forwarding      = false;
+            config.opt_peephole_loads           = false;
+            config.opt_peephole_movs            = false;
             config.opt_peephole_immediate_prop  = true;
             config.opt_peephole_jmp_chain       = true;
             config.opt_cse                      = true;
@@ -168,14 +168,14 @@ int  main (int  argc, char **argv)
         } else if (strcmp(argv[i], "-O3") == 0) {
             config.opt_peephole_pairs           = true;
             config.opt_peephole_algebra         = true;
-            config.opt_peephole_forwarding      = true;
+            config.opt_peephole_forwarding      = false;
             config.opt_peephole_jumps           = true;
-            config.opt_peephole_movs            = true;
+            config.opt_peephole_movs            = false;
             config.opt_peephole_immediates      = true;
             config.opt_peephole_reduce          = true;
             config.opt_peephole_shifts          = true;
             config.opt_peephole_dead_stores     = false;
-            config.opt_peephole_loads           = true;
+            config.opt_peephole_loads           = false;
             config.opt_peephole_immediate_prop  = true;
             config.opt_peephole_jmp_chain       = true;
             config.opt_cse                      = true;
