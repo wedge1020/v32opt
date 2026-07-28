@@ -260,12 +260,12 @@ generate clean  call-stack backtraces during runtime  crashes. By placing
 
 ### Individual Optimization Control
 
-You can enable or disable specific passes granularly using `-fopt_<name>`
-and `-fno_opt_<name>`:
+You can enable or disable specific passes granularly using `-f<name>`
+and `-fno-<name>`:
 
 ```bash
 # Example: Run O2 but disable jump chaining and enable loop register promotion
-$ v32opt game.asm -O2 -fno_opt_peephole_jmp_chain -fopt_promote_loops
+$ v32opt game.asm -O2 -fno-peephole-jmp-chain -fpromote-loops
 ```
 
 ---
@@ -284,7 +284,7 @@ performance behaviours. If  you desire more optimization  (more may bring
 risks of broken  assembly or errant runtime behaviour),  you can progress
 to the higher level optimizations.
 
-### 1. Adjacent Instruction Pair Elimination (`peephole_pairs`)
+### Adjacent Instruction Pair Elimination (`peephole-pairs`)
 
 Scans  consecutive   pairs  to  remove  redundant   operations,  such  as
 Convert Integer  to Boolean (`CIB`) instructions  immediately following a
@@ -309,7 +309,7 @@ generally useless  progressions, eating  up CPU  cycles and  not actually
 contributing  anything to  your  game. Removing  them  means less  cycles
 consumed per frame (and that *could* improve performance).
 
-### 2. Algebraic Simplification (`peephole_algebra`)
+### Algebraic Simplification (`peephole-algebra`)
 
 Eliminates self-moves (`MOV r, r`) and identity arithmetic (`IADD`/`ISUB`
 with  `0`). It  also converts  multiplications by  2 into  self-additions
@@ -328,7 +328,7 @@ Similar to the pair elimination,  look for obvious math transactions that
 don't  result in  any modifications.  They  can be  safely stripped  out,
 leading to reduce cycles per frame.
 
-### 3. Store-to-Load Forwarding (`peephole_forwarding`)
+### Store-to-Load Forwarding (`peephole-forwarding`)
 
 When a value is stored from a register to memory and immediately loaded back from that exact memory address into another register, the memory read is replaced with a direct register-to-register move.
 
@@ -343,7 +343,7 @@ you 1 word  of space, as the resulting double  registered `MOV` will only
 need  1 word  to  store  the instruction,  where  any indirect  reference
 requires a second, follow-on word for the immediate value/address.
 
-### 4. Redundant Jump Elimination (`peephole_jumps`)
+### Redundant Jump Elimination (`peephole-jumps`)
 
 Removes  unconditional jumps  (`JMP`) that  point directly  to the  label
 immediately following the instruction.
@@ -354,7 +354,7 @@ JMP loop_continue                    ; (Fall-through jump removed)
 loop_continue:                       loop_continue:
 ```
 
-### 5. Redundant & Mirror Move Elimination (`peephole_movs`)
+### Redundant & Mirror Move Elimination (`peephole-movs`)
 
 Removes consecutive duplicate moves (`MOV R1, X; MOV R1, X`) and "mirror"
 moves where  two registers swap  values twice without  modification (`MOV
@@ -369,7 +369,7 @@ MOV R2, R3                           MOV R2, R3
 MOV R3, R2                           ; (Mirror move removed)
 ```
 
-### 6. Immediate Math Combining (`peephole_immediates`)
+### Immediate Math Combining (`peephole-immediates`)
 
 Combines sequential additions  or subtractions on the  same register with
 immediate operands  into a single  combined operation. If  the operations
@@ -383,7 +383,7 @@ IADD R2, 10                          ; (Both removed: +10 -10 = 0)
 ISUB R2, 10
 ```
 
-### 7. Strength Reduction (`peephole_reduce`)
+### Strength Reduction (`peephole-reduce`)
 
 Simplifies arithmetic operations  with special constants. Multiplications
 by  `0`  become  `MOV  0`,   multiplications  or  divisions  by  `1`  are
@@ -402,7 +402,7 @@ more "costly"  in terms of cycles  needed to perform the  instruction. On
 Vircon32, that  is not an  issue. Still, simplifying operations  can help
 with overall readability.
 
-### 8. Shift Optimizations (`peephole_shifts`)
+### Shift Optimizations (`peephole-shifts`)
 
 Removes no-op shifts by `0` and  converts left-shifts by `1` (`SHL r, 1`)
 into self-additions (`IADD r, r`).
@@ -414,7 +414,7 @@ SHL R1, 0                            ; (Shift by 0 removed)
 SHL R2, 1                            IADD R2, R2
 ```
 
-### 9. Dead Store Elimination (`peephole_dead_stores`)
+### Dead Store Elimination (`peephole-dead-stores`)
 
 Removes memory  stores that are  immediately overwritten by  a subsequent
 store to  the exact same  indirect memory address without  an intervening
@@ -426,7 +426,7 @@ MOV [R1+0], R2                       ; (Overwritten store removed)
 MOV [R1+0], R3                       MOV [R1+0], R3
 ```
 
-### 10. Redundant Load Elimination (`peephole_loads`)
+### Redundant Load Elimination (`peephole-loads`)
 
 When  two  registers sequentially  load  from  the same  indirect  memory
 address, the second load is replaced with a direct register move from the
@@ -441,7 +441,7 @@ MOV R3, [R2+8]                       MOV R3, R1
 Again, the `MOV R3,  R1` will end up saving a word as  it doesn't need to
 reference any immediate data.
 
-### 11. Immediate Propagation (`peephole_immediate_prop`)
+### Immediate Propagation (`peephole-immediate-prop`)
 
 Propagates  constant  immediate values  loaded  via  `MOV` directly  into
 immediately following arithmetic instructions  or moves that consume that
@@ -461,7 +461,7 @@ possibilities.
 
 Optimization can be as much an art as it is a science.
 
-### 12. Jump Chain Elimination (`peephole_jmp_chain`)
+### Jump Chain Elimination (`peephole-jmp-chain`)
 
 Short-circuits jump  indirection. If a jump  lands on a label  whose only
 immediate instruction  is another unconditional  jump, the first  jump is
@@ -482,7 +482,42 @@ JMP label_final                      JMP label_final
 Phase 2 constructs a **Control Flow  Graph (CFG)** across basic blocks to
 perform program-wide data-flow analysis.
 
-### 13. Dead Function Elimination (`dce`)
+### Common Subexpression Elimination (CSE)
+
+**What it does:** Detects and eliminates redundant computations within basic blocks. When the same operation is applied to the same source operands (after identical `MOV` initializations), the second occurrence is replaced with a `MOV` from the first result register. On Vircon32, where all instructions are 1 cycle, this **reduces code size** by eliminating duplicate word usage.
+
+---
+
+#### **Pattern**
+```
+MOV Rx, A    ; Compute Rx = A
+OP Rx, B     ; Compute Rx = Rx OP B
+...
+MOV Ry, A    ; Re-initialize Ry = A (same as Rx was)
+OP Ry, B     ; -- CSE replaces this with: MOV Ry, Rx
+```
+
+---
+
+#### **Examples**
+
+| Before | After | Savings |
+|--------|-------|---------|
+| `MOV R1, R5`<br>`IADD R1, R2`<br>`MOV R3, R5`<br>`IADD R3, R2` | `MOV R1, R5`<br>`IADD R1, R2`<br>`MOV R3, R5`<br>`MOV R3, R1` | 1 word |
+| `MOV R1, R5`<br>`IMUL R1, 42`<br>`MOV R3, R5`<br>`IMUL R3, 42` | `MOV R1, R5`<br>`IMUL R1, 42`<br>`MOV R3, R5`<br>`MOV R3, R1` | **2 words** (IMUL+imm = 2 words, MOV = 1) |
+| `MOV R1, R5`<br>`FADD R1, R2`<br>`MOV R3, R5`<br>`FADD R3, R2` | `MOV R1, R5`<br>`FADD R1, R2`<br>`MOV R3, R5`<br>`MOV R3, R1` | 1 word |
+
+---
+
+#### **Supported Operations**
+All arithmetic, logical, and floating-point ops:
+`IADD`, `ISUB`, `IMUL`, `IDIV`, `AND`, `OR`, `XOR`, `FADD`, `FSUB`, `FMUL`, etc.
+Works with registers, immediates (including negatives), and respects:
+- ✅ Control flow boundaries (`JMP`, `JT`, `JF`, `CALL`, `RET`, labels)
+- ✅ Register modifications between expressions
+- ✅ Different operations (e.g., `IADD` ≠ `ISUB`)
+
+### Dead Function Elimination (`dce`)
 
 Performs  a  reachability  analysis  starting from  known  program  roots
 (`__boot_vector`,  `main`,  `_start`,  interrupt  service  routines,  and
@@ -504,7 +539,7 @@ More  for  the  lua  compiler,  as recent  versions  of  the  Vircon32  C
 compiler actually perform a form  of dead function elimination during the
 compilation step.
 
-### 14. Global Constant Propagation & Folding (`constant_folding`)
+### Global Constant Propagation & Folding (`constant-folding`)
 
 Uses  a lattice-based  worklist algorithm  over  the CFG  to track  known
 register constants across block  boundaries. It folds constant arithmetic
@@ -521,7 +556,7 @@ block_2:                             block_2:
     MOV R2, R1                           MOV R2, 0xA
 ```
 
-### 15. Frame Pointer Elimination (`omit_frame_pointers`)
+### Frame Pointer Elimination (`omit-frame-pointers`)
 
 Scans  entire function  bodies to  verify  if the  Base Pointer  register
 (`BP`)  is ever  referenced or  dereferenced by  instructions within  the
@@ -550,7 +585,7 @@ __function_add:          __function_add:
 
 ## Phase 3: Interprocedural Inlining (`-O3`)
 
-### 16. Function Inlining (`inline`)
+### Function Inlining (`inline`)
 
 Identifies trivial functions (short  execution lengths and simple control
 flow) and replaces their `CALL`  sites directly with the function's body.
@@ -581,9 +616,9 @@ up  and  tear down  of  a  function). But  it  also  is considered  quite
 
 > **Note:**  These  passes  are   currently  disconnected  from  standard
 > `-O1`/`-O2`/`-O3` optimization levels  while undergoing testing. Enable
-> them explicitly using individual `-fopt_` toggles.
+> them explicitly using individual `-f` toggles.
 
-### 17. Stack Slot Promotion (`promote_regs` / `promote_leaf`)
+### Stack Slot Promotion (`promote-regs` / `promote-leaf`)
 
 Performs  scalar  replacement  of  aggregates on  the  stack.  In  **leaf
 functions** (functions that make no `CALL`s and never take the address of
@@ -613,7 +648,7 @@ As you can  see in this (short) example, it  actually makes the footprint
 of code  larger, but if the  core action is  more than just a  few lines,
 this can start to offer real benefit.
 
-### 18. Loop-Invariant Register Promotion (`promote_loops`)
+### Loop-Invariant Register Promotion (`promote-loops`)
 
 Targets call-free loops (`__for_start`, `__while_start`) to promote stack
 variables  referenced  inside the  loop  body  into CPU  registers.  This
