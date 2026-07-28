@@ -214,6 +214,7 @@ typedef struct {
     bool opt_dce;
     bool opt_constant_folding;
     bool opt_inline;
+	int  opt_inline_max;
     bool opt_promote_regs;
     bool opt_promote_leaf;
     bool opt_promote_loops;

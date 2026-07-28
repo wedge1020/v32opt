@@ -1,196 +1,248 @@
 #include "v32opt.h"
 
-// -------------------------------------------------------------------
-// OPTIMIZATION CATEGORY: Trivial Leaf Function Inlining
-// Replaces CALL sites with the body of small, non-recursive functions
-// that have no side effects (no stack manipulation, no calls).
-// -------------------------------------------------------------------
+// ================================================================================
+// OPTIMIZATION: Trivial Leaf Function Inlining (inline)
+// --------------------------------------------------------------------------------
+// REPLACES: CALL <func> → <func_body> (for small, non-recursive functions)
+// GOAL:     Eliminate CALL/RET overhead, reduce code size, expose new peephole ops.
+//
+// VIRCON32 NOTES:
+//   - All instructions are 1 cycle → Inlining is purely for SIZE reduction.
+//   - Focus on register-only ops; avoid inlining functions with stack/indirection.
+//   - BP-based offsets ([BP+N]) are rewritten to SP-based ([SP+N-2]) at call sites.
+//
+// EXAMPLES:
+//   ; BEFORE               ; AFTER (inlined)
+//   CALL __add_one         IADD R1, 1
+//   ...                    ...
+//   __add_one:             __add_one:
+//     IADD R1, 1             IADD R1, 1
+//     RET                    RET
+//
+// AGGRESSIVENESS LEVELS (via -finline-max=N):
+//   - N=8:  Default (inline functions ≤8 instructions)
+//   - N=16: Aggressive (inline functions ≤16 instructions)
+//   - N=0:  Disable inlining entirely
+// ================================================================================
 
-// ===================================================================
-// TRIVIAL LEAF FUNCTION INLINING
-//
-// Identifies and inlines "trivial" functions that:
-//   - Have <= MAX_BODY_INS (8) instructions
-//   - Do not call other functions
-//   - Do not modify SP (stack pointer) directly
-//   - Do not use [BP-N] (negative offsets, i.e., local variables)
-//   - End with RET
-//
-// Inlining process:
-//   1. Scan for function labels and collect candidates
-//   2. At each CALL site, replace with the candidate's body
-//   3. Rewrite [BP+N] operands to [SP+(N-2)] to account for the missing prologue
-//   4. Skip inlining before the first label (to avoid %define ordering issues)
-//
-// Note: On Vircon32, ALL instructions are 1 cycle, so inlining is purely for
-// code size reduction and does not affect performance. No cycle-count
-// assumptions are made.
-//
-// Destructive comparisons (IEQ/INE/etc.) are NOT an issue here because:
-//   - This pass only clones/inlines existing instructions
-//   - It does not modify or eliminate comparison operations
-// ===================================================================
+// --- Debug Infrastructure ---
+// Uses `insert_debug_comment` to log:
+//   - Inlined calls (e.g., "; [DEBUG inline] Replaced CALL __add_one with body")
+//   - Skipped candidates (e.g., "; [DEBUG inline] Skipped __complex: too large (12 insns)")
+// Enable with `-fdebug` flag (sets `config.debug = true` in main.c).
+
 int inline_trivial_functions(AsmNode *head) {
     // --- PHASE 1: COLLECT INLINING CANDIDATES ---
-    // Scan the assembly for functions that qualify as "trivial" leaf functions.
+    // Scan for functions that qualify as "trivial":
+    //   - ≤ config.opt_inline_max (default: 8) instructions
+    //   - No CALL/JMP/JT/JF (leaf functions only)
+    //   - No SP/BP modification (stack-neutral)
+    //   - No [BP-N] (local variables)
+    //   - Ends with RET
     InlineCandidate candidates[MAX_INLINE_CANDIDATES];
     int candidate_count = 0;
 
     AsmNode *curr = head ? head->next : NULL;
-
     while (curr) {
-        // --- Candidate Detection: Look for Function Labels ---
         if (curr->type == OP_LABEL && candidate_count < MAX_INLINE_CANDIDATES) {
-            // Extract function name from label (e.g., "my_func:" -> "my_func")
+            // Extract function name (e.g., "__add_one:" → "__add_one")
             char func_name[128] = {0};
-            char line_copy[8192];
-            safe_str_copy(line_copy, curr->raw, sizeof(line_copy));
-            char *trimmed_lbl = trim(line_copy);
-
-            safe_str_copy(func_name, trimmed_lbl, sizeof(func_name));
+            safe_str_copy(func_name, trim(curr->raw), sizeof(func_name));
             char *colon = strchr(func_name, ':');
             if (colon) *colon = '\0';
             trim(func_name);
 
-            // --- Skip Prologue (BP setup) ---
-            // Standard Vircon32 prologue: PUSH BP; MOV BP, SP
+            // --- Skip Prologue (PUSH BP; MOV BP, SP) ---
             AsmNode *scan = curr->next;
-            while (scan && (scan->type == OP_OTHER || scan->type == OP_LABEL)) 
+            while (scan && (scan->type == OP_OTHER || scan->type == OP_LABEL))
                 scan = scan->next;
 
-            // Skip PUSH BP
+            // Standard Vircon32 prologue
             if (scan && scan->type == OP_PUSH && str_case_eq(scan->dst_op.reg, "BP")) {
                 scan = scan->next;
-                // Skip MOV BP, SP
-                if (scan && scan->type == OP_MOV && str_case_eq(scan->dst_op.reg, "BP") && str_case_eq(scan->src_op.reg, "SP")) {
+                if (scan && scan->type == OP_MOV && str_case_eq(scan->dst_op.reg, "BP") &&
+                    str_case_eq(scan->src_op.reg, "SP")) {
                     scan = scan->next;
                 }
             }
 
             // --- Collect Function Body ---
-            AsmNode *core_nodes[MAX_BODY_INS];
+            AsmNode *core_nodes[config.opt_inline_max];
             int core_count = 0;
             bool valid_candidate = true;
 
             while (scan) {
-                // Skip nested labels
-                if (scan->type == OP_LABEL) {
+                if (scan->type == OP_LABEL) {  // Skip nested labels
                     scan = scan->next;
                     continue;
                 }
 
-                // --- Epilogue Detection: MOV SP, BP; POP BP; RET ---
-                // Stop at function end
-                if (scan->type == OP_MOV && str_case_eq(scan->dst_op.reg, "SP") && str_case_eq(scan->src_op.reg, "BP")) 
+                // --- Epilogue Detection ---
+                if ((scan->type == OP_MOV && str_case_eq(scan->dst_op.reg, "SP") &&
+                     str_case_eq(scan->src_op.reg, "BP")) ||
+                    str_case_eq(scan->mnemonic, "RET")) {
                     break;
-                if (str_case_eq(scan->mnemonic, "RET")) 
-                    break;
+                }
 
-                // --- Disqualification Checks ---
-                // Reject if function contains calls or jumps (not a leaf)
-                if (str_case_eq(scan->mnemonic, "CALL") || str_case_eq(scan->mnemonic, "JMP") ||
-                    str_case_eq(scan->mnemonic, "JT")   || str_case_eq(scan->mnemonic, "JF")) {
+				// --- Disqualification Checks ---
+				// Reject if function contains calls or jumps (not a leaf)
+				if (str_case_eq(scan->mnemonic, "CALL") ||
+					str_case_eq(scan->mnemonic, "JMP") ||
+					str_case_eq(scan->mnemonic, "JT") ||
+					str_case_eq(scan->mnemonic, "JF")) {
+					valid_candidate = false;
+					if (config.debug) {
+						AsmNode *debug_node = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
+						snprintf(debug_node->raw, sizeof(debug_node->raw),
+								 "; [DEBUG inline] Skipped %s: contains control flow", func_name);
+						debug_node->prev = curr;
+						debug_node->next = curr->next;
+						if (curr->next) curr->next->prev = debug_node;
+						curr->next = debug_node;
+					}
+					break;
+				}
+
+                // Reject stack manipulation (SP/BP ops)
+                if (str_case_eq(scan->mnemonic, "PUSH") || str_case_eq(scan->mnemonic, "POP") ||
+                    str_case_eq(scan->dst_op.reg, "SP") || str_case_eq(scan->src_op.reg, "SP")) {
+                    if (config.debug) {
+                        AsmNode *debug_node = create_node(
+                            NULL, OP_OTHER, NULL, NULL, NULL);
+                        snprintf(debug_node->raw, sizeof(debug_node->raw),
+                                 "; [DEBUG inline] Skipped %s: modifies SP/BP", func_name);
+                        debug_node->prev = curr;
+                        debug_node->next = curr->next;
+                        if (curr->next) curr->next->prev = debug_node;
+                        curr->next = debug_node;
+                    }
                     valid_candidate = false;
                     break;
                 }
 
-                // FIX: Reject any candidate that touches SP directly.
-                // PUSH/POP or any instruction using SP as an operand changes
-                // the stack layout, which the BP->SP offset rewrite below
-                // cannot account for.
-                if (str_case_eq(scan->mnemonic, "PUSH") || str_case_eq(scan->mnemonic, "POP")) {
-                    valid_candidate = false;
-                    break;
-                }
-                if (str_case_eq(scan->dst_op.reg, "SP") || str_case_eq(scan->src_op.reg, "SP")) {
-                    valid_candidate = false;
-                    break;
-                }
-
-                // FIX: Reject any [BP-N] (negative offset) reference.
-                // This indicates a local variable slot that the callee's
-                // prologue allocated. The inliner cannot handle these because
-                // it doesn't emit a new prologue for the inlined body.
-                if ((scan->dst_op.mode == MODE_INDIRECT && str_case_eq(scan->dst_op.reg, "BP") && scan->dst_op.offset < 0) ||
-                    (scan->src_op.mode == MODE_INDIRECT && str_case_eq(scan->src_op.reg, "BP") && scan->src_op.offset < 0)) {
+                // Reject local variables ([BP-N])
+                if ((scan->dst_op.mode == MODE_INDIRECT && str_case_eq(scan->dst_op.reg, "BP") &&
+                     scan->dst_op.offset < 0) ||
+                    (scan->src_op.mode == MODE_INDIRECT && str_case_eq(scan->src_op.reg, "BP") &&
+                     scan->src_op.offset < 0)) {
+                    if (config.debug) {
+                        AsmNode *debug_node = create_node(
+                            NULL, OP_OTHER, NULL, NULL, NULL);
+                        snprintf(debug_node->raw, sizeof(debug_node->raw),
+                                 "; [DEBUG inline] Skipped %s: uses local vars [BP-N]", func_name);
+                        debug_node->prev = curr;
+                        debug_node->next = curr->next;
+                        if (curr->next) curr->next->prev = debug_node;
+                        curr->next = debug_node;
+                    }
                     valid_candidate = false;
                     break;
                 }
 
-                // --- Collect Instruction (if under limit) ---
-                if (core_count < MAX_BODY_INS) {
+                // Collect instruction if under limit
+                if (core_count < config.opt_inline_max) {
                     core_nodes[core_count++] = scan;
                 } else {
-                    // Body exceeds maximum size
+                    if (config.debug) {
+                        AsmNode *debug_node = create_node(
+                            NULL, OP_OTHER, NULL, NULL, NULL);
+                        snprintf(debug_node->raw, sizeof(debug_node->raw),
+                                 "; [DEBUG inline] Skipped %s: too large (%d insns)", func_name, core_count);
+                        debug_node->prev = curr;
+                        debug_node->next = curr->next;
+                        if (curr->next) curr->next->prev = debug_node;
+                        curr->next = debug_node;
+                    }
                     valid_candidate = false;
                     break;
                 }
-
                 scan = scan->next;
             }
 
             // --- Register Valid Candidate ---
-            if (valid_candidate && core_count > 0 && core_count <= MAX_BODY_INS) {
+            if (valid_candidate && core_count > 0 && core_count <= config.opt_inline_max) {
                 safe_str_copy(candidates[candidate_count].name, func_name, sizeof(candidates[candidate_count].name));
                 candidates[candidate_count].body_count = core_count;
                 for (int i = 0; i < core_count; i++) {
                     candidates[candidate_count].body_nodes[i] = core_nodes[i];
                 }
                 candidate_count++;
+                if (config.debug) {
+                    AsmNode *debug_node = create_node(
+                        NULL, OP_OTHER, NULL, NULL, NULL);
+                    snprintf(debug_node->raw, sizeof(debug_node->raw),
+                             "; [DEBUG inline] Candidate: %s (%d insns)", func_name, core_count);
+                    debug_node->prev = curr;
+                    debug_node->next = curr->next;
+                    if (curr->next) curr->next->prev = debug_node;
+                    curr->next = debug_node;
+                }
             }
         }
         curr = curr->next;
     }
 
-    // --- PHASE 2: PERFORM INLINING AT CALL SITES ---
-    int inlined_calls = 0;
-    curr = head ? head->next : NULL;
+	// --- PHASE 2: PERFORM INLINING AT CALL SITES ---
+	int inlined_calls = 0;
+	curr = head ? head->next : NULL;
+	bool seen_first_label = false;  // Initialize to false
 
-    // FIX: Do not inline before the first label.
-    // Vircon32 assembly files start with a "program start section"
-    // (CALLs + HLT) before the "%define global_X N" block that defines
-    // global variable addresses. If we inline a function called from
-    // this section, its body (which may reference "[global_X]") would be
-    // placed before the %define lines, causing assembler errors.
-    // Solution: Track if we've seen the first label, and skip inlining
-    // until we have.
-    bool seen_first_label = false;
+	while (curr) {
+		AsmNode *next_node = curr->next;
 
-    while (curr) {
-        AsmNode *next_node = curr->next;
+		// Set seen_first_label ONLY after encountering the first OP_LABEL
+		if (curr->type == OP_LABEL) {
+			seen_first_label = true;
+		}
 
-        // Track if we've passed the initial non-label section
-        if (curr->type == OP_LABEL) {
-            seen_first_label = true;
-        }
-
-        // --- Process CALL Instructions (After First Label) ---
-        if (str_case_eq(curr->mnemonic, "CALL") && seen_first_label) {
+		// --- Process CALL Instructions (ONLY after first label) ---
+		if (str_case_eq(curr->mnemonic, "CALL") && seen_first_label) {
             char target_label[128] = {0};
             safe_str_copy(target_label, trim(curr->dst_op.raw), sizeof(target_label));
 
-            // DIAGNOSTIC: Skip if inlining limit reached
-            // Allows bisecting inlined call sites for debugging
-            if (g_inline_call_limit >= 0 && g_inline_calls_so_far >= g_inline_call_limit) {
+            // --- Diagnostic Flags ---
+            // Skip if inlining limit reached (for debugging)
+            if (config.opt_inline_max >= 0 && g_inline_calls_so_far >= config.opt_inline_max) {
+                if (config.debug) {
+                    AsmNode *debug_node = create_node(
+                        NULL, OP_OTHER, NULL, NULL, NULL);
+                    snprintf(debug_node->raw, sizeof(debug_node->raw),
+                             "; [DEBUG inline] Skipped CALL %s: hit -finline-max=%d",
+                             target_label, config.opt_inline_max);
+                    debug_node->prev = curr->prev;
+                    debug_node->next = curr;
+                    if (curr->prev) curr->prev->next = debug_node;
+                    curr->prev = debug_node;
+                }
                 curr = next_node;
                 continue;
             }
 
-            // DIAGNOSTIC: Skip if target is in exclude list
-            // Allows testing one specific function in isolation
+            // Skip if target is in exclude list (for debugging)
             if (g_inline_exclude_name[0] != '\0') {
                 char list_copy[1024];
                 safe_str_copy(list_copy, g_inline_exclude_name, sizeof(list_copy));
                 bool excluded = false;
                 char *tok = strtok(list_copy, ",");
                 while (tok) {
-                    if (str_case_eq(trim(tok), target_label)) { 
-                        excluded = true; 
-                        break; 
+                    if (str_case_eq(trim(tok), target_label)) {
+                        excluded = true;
+                        break;
                     }
                     tok = strtok(NULL, ",");
                 }
                 if (excluded) {
+                    if (config.debug) {
+                        AsmNode *debug_node = create_node(
+                            NULL, OP_OTHER, NULL, NULL, NULL);
+                        snprintf(debug_node->raw, sizeof(debug_node->raw),
+                                 "; [DEBUG inline] Skipped CALL %s: excluded by -finline-exclude",
+                                 target_label);
+                        debug_node->prev = curr->prev;
+                        debug_node->next = curr;
+                        if (curr->prev) curr->prev->next = debug_node;
+                        curr->prev = debug_node;
+                    }
                     curr = next_node;
                     continue;
                 }
@@ -199,6 +251,18 @@ int inline_trivial_functions(AsmNode *head) {
             // --- Find Matching Candidate ---
             for (int c = 0; c < candidate_count; c++) {
                 if (str_case_eq(target_label, candidates[c].name)) {
+                    if (config.debug) {
+                        AsmNode *debug_node = create_node(
+                            NULL, OP_OTHER, NULL, NULL, NULL);
+                        snprintf(debug_node->raw, sizeof(debug_node->raw),
+                                 "; [DEBUG inline] Inlined CALL %s (%d insns)",
+                                 target_label, candidates[c].body_count);
+                        debug_node->prev = curr->prev;
+                        debug_node->next = curr;
+                        if (curr->prev) curr->prev->next = debug_node;
+                        curr->prev = debug_node;
+                    }
+
                     // Insert inlined body BEFORE the CALL
                     AsmNode *insertion_point = curr->prev;
 
@@ -206,12 +270,9 @@ int inline_trivial_functions(AsmNode *head) {
                     for (int b = 0; b < candidates[c].body_count; b++) {
                         AsmNode *inlined_ins = clone_node(candidates[c].body_nodes[b]);
 
-                        // FIX: Rewrite [BP+N] to [SP+(N-2)]
-                        // In the callee, [BP+N] refers to the Nth argument
-                        // (N=2 is first argument, N=3 is second, etc.)
-                        // At the call site, these same arguments are at
-                        // [SP+0], [SP+1], etc. (pushed before CALL)
-                        // So we subtract 2 from the offset and change BP to SP.
+                        // Rewrite [BP+N] → [SP+(N-2)] to account for missing prologue
+                        // In callee: [BP+N] = Nth argument (N=2: first arg)
+                        // At call site: arguments are at [SP+0], [SP+1], etc.
                         if (inlined_ins->dst_op.mode == MODE_INDIRECT &&
                             str_case_eq(inlined_ins->dst_op.reg, "BP") &&
                             inlined_ins->dst_op.offset >= 2) {
@@ -230,7 +291,6 @@ int inline_trivial_functions(AsmNode *head) {
                         }
 
                         // Regenerate raw text from rewritten operands
-                        // (write_vircon32_asm emits raw directly, not parsed structs)
                         if (inlined_ins->has_dst && inlined_ins->has_src) {
                             snprintf(inlined_ins->raw, sizeof(inlined_ins->raw), "    %s %s, %s",
                                      inlined_ins->mnemonic, inlined_ins->dst_op.raw, inlined_ins->src_op.raw);
@@ -255,9 +315,11 @@ int inline_trivial_functions(AsmNode *head) {
                 }
             }
         }
-
         curr = next_node;
     }
 
+    if (config.debug && inlined_calls > 0) {
+        printf("[DEBUG inline] Inlined %d call(s) total\n", inlined_calls);
+    }
     return inlined_calls;
 }

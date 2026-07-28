@@ -27,6 +27,7 @@ OptConfig config = {
 	.opt_dce                      = false,
 	.opt_constant_folding         = false,
 	.opt_inline                   = false,
+	.opt_inline_max               = 8,
 	.opt_promote_regs             = false,
 	.opt_promote_leaf             = false,
 	.opt_promote_loops            = false,
@@ -275,7 +276,7 @@ int  main (int  argc, char **argv)
         } else if (strcmp(argv[i], "-fno_opt_promote_loops") == 0) {
             config.opt_promote_loops = false;
         } else if (strncmp(argv[i], "-finline-max=", 13) == 0) {
-            g_inline_call_limit = atoi(argv[i] + 13);
+            config.opt_inline_max = atoi(argv[i] + 13);
         } else if (strncmp(argv[i], "-finline-exclude=", 17) == 0) {
             safe_str_copy(g_inline_exclude_name, argv[i] + 17,
                           sizeof(g_inline_exclude_name));

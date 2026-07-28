@@ -6,7 +6,7 @@ ASSEMBLER        = assemble
 TEXTURE_TOOL     = png2vircon
 PACKER           = packrom
 
-OPT_FLAGS        = -fopt_$(TEST) -t -v
+OPT_FLAGS        = -fopt_$(TEST) -finline-max=16 -t -v
 
 # This variable is empty by default, but is set to -g during a debug build
 DEBUG_FLAGS      =

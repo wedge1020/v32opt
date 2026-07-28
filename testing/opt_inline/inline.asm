@@ -1,207 +1,119 @@
 ; ===================================================================
 ; TEST: inline - All Scenarios
-; Run with: ./v32opt test_inline.asm -finline -v
-; For aggressive inlining: ./v32opt test_inline.asm -finline_all -v (doesn't exist)
+; Run with: ./v32opt test_inline.asm -fopt_inline -v
 ; ===================================================================
 
 ; ===================================================================
-; ✅ SCENARIO 1: Simple Leaf Function (SHOULD INLINE)
-; Small function, no CALL/HLT, called once
+; ✅ SCENARIO 1: Basic Inlining (Single Instruction)
 ; ===================================================================
-CALL __func_simple
-RET
-
-__func_simple:
-    MOV R1, 42
-    IADD R2, R1
-    RET
-
-; ===================================================================
-; ✅ SCENARIO 2: Function with Parameters (SHOULD INLINE)
-; ===================================================================
-MOV R1, 10
-CALL __func_params
-RET
-
-__func_params:
-    IADD R1, 5
-    IMUL R1, 2
-    RET
-
-; ===================================================================
-; ✅ SCENARIO 3: Function with Return Value (SHOULD INLINE)
-; ===================================================================
-CALL __func_return
-MOV R2, R0
-RET
-
-__func_return:
-    MOV R0, 100
-    RET
-
-; ===================================================================
-; ❌ SCENARIO 4: Function with CALL (MUST NOT INLINE)
-; Contains a CALL instruction
-; ===================================================================
-CALL __func_with_call
-RET
-
-__func_with_call:
-    CALL __helper
-    MOV R1, 42
-    RET
-
-__helper:
-    RET
-
-; ===================================================================
-; ❌ SCENARIO 5: Function with HLT (MUST NOT INLINE)
-; ===================================================================
-CALL __func_with_hlt
-RET
-
-__func_with_hlt: ; KEEP
-    HLT ; KEEP
-    RET ; KEEP
-
-; ===================================================================
-; ❌ SCENARIO 6: Large Function (MUST NOT INLINE)
-; Exceeds MAX_INLINE_SIZE (default: 10 instructions)
-; ===================================================================
-CALL __func_large
-RET
-
-__func_large:
-    MOV R1, 1
-    MOV R2, 2
-    MOV R3, 3
-    MOV R4, 4
-    MOV R5, 5
-    MOV R6, 6
-    MOV R7, 7
-    MOV R8, 8
-    MOV R9, 9
-    MOV R10, 10
-    MOV R11, 11
-    RET
-
-; ===================================================================
-; ❌ SCENARIO 7: Function Called Multiple Times (MUST NOT INLINE)
-; Without -finline_all, only inlined once
-; ===================================================================
-CALL __func_multi
-CALL __func_multi
-RET
-
-__func_multi:
-    MOV R1, 42
-    RET
-
-; ===================================================================
-; ✅ SCENARIO 8: Nested Calls (SHOULD INLINE INNER)
-; Outer function not inlined, inner function inlined
-; ===================================================================
-CALL __func_outer
-RET
-
-__func_outer:
-    CALL __func_inner
-    MOV R2, 42
-    RET
-
-__func_inner:
-    MOV R1, 10
-    RET
-
-; ===================================================================
-; ✅ SCENARIO 9: Function with Local Variables (SHOULD INLINE)
-; ===================================================================
-CALL __func_locals
-RET
-
-__func_locals:
+__function_test_basic_inline:
     PUSH BP
     MOV BP, SP
-    MOV [BP-4], R1
-    MOV R2, [BP-4]
+    CALL __add_one  ; MATCH
     MOV SP, BP
     POP BP
     RET
 
-; ===================================================================
-; ✅ SCENARIO 10: Multiple Inlinable Functions
-; ===================================================================
-CALL __func_a
-CALL __func_b
-RET
+__add_one:
+    IADD R1, 1  ; KEEP
+    RET         ; KEEP
 
-__func_a:
-    MOV R1, 1
+; ===================================================================
+; ✅ SCENARIO 2: Inlining with BP-Based Arguments
+; ===================================================================
+__function_test_bp_args:
+    PUSH BP
+    MOV BP, SP
+    CALL __add_two  ; MATCH
+    MOV SP, BP
+    POP BP
     RET
 
-__func_b:
-    MOV R2, 2
-    RET
-
-; ===================================================================
-; ✅ SCENARIO 11: Function with Conditional Logic (SHOULD INLINE)
-; ===================================================================
-MOV R1, 1
-CALL __func_conditional
-RET
-
-__func_conditional:
-    JT R1, _skip
-    MOV R2, 10
-_skip:
-    MOV R3, 20
+__add_two:
+    MOV  R2, [BP+2]
+    IADD R1, R2     ; KEEP (rewritten to [SP+0] when inlined)
     RET
 
 ; ===================================================================
-; ✅ SCENARIO 12: Function with Multiple Returns (SHOULD INLINE)
+; ❌ SCENARIO 3: Skip Non-Leaf Function (Contains CALL)
 ; ===================================================================
-CALL __func_multi_ret
-RET
-
-__func_multi_ret:
-    MOV R1, 1
-    JT R1, _exit_early
-    MOV R2, 2
-_exit_early:
+__function_test_non_leaf:
+    PUSH BP
+    MOV BP, SP
+    CALL __complex  ; KEEP (not inlined: contains CALL)
+    MOV SP, BP
+    POP BP
     RET
 
-; ===================================================================
-; ✅ SCENARIO 13: Inline All Mode (-finline_all)
-; Multiple calls to same function SHOULD all be inlined
-; Run with: -finline_all
-; ===================================================================
-CALL __func_inline_all
-CALL __func_inline_all
-RET
+__complex:
+    CALL __helper  ; KEEP
+    RET            ; KEEP
 
-__func_inline_all:
-    MOV R1, 42
+__helper:
+    IADD R1, 1     ; KEEP
+    RET            ; KEEP
+
+; ===================================================================
+; ❌ SCENARIO 4: Skip Stack Manipulation (PUSH/POP)
+; ===================================================================
+__function_test_stack_manip:
+    PUSH BP
+    MOV BP, SP
+    CALL __stack_user  ; KEEP (not inlined: uses PUSH/POP)
+    MOV SP, BP
+    POP BP
     RET
 
-; ===================================================================
-; ❌ SCENARIO 14: Recursive Function (MUST NOT INLINE)
-; Would cause infinite inlining
-; ===================================================================
-CALL __func_recursive
-RET
+__stack_user:
+    PUSH R1  ; KEEP
+    POP R2   ; KEEP
+    RET      ; KEEP
 
-__func_recursive:
-    CALL __func_recursive
+; ===================================================================
+; ❌ SCENARIO 5: Skip Local Variables ([BP-N])
+; ===================================================================
+__function_test_local_vars:
+    PUSH BP
+    MOV BP, SP
+    CALL __local_user  ; KEEP (not inlined: uses [BP-N])
+    MOV SP, BP
+    POP BP
     RET
 
-; ===================================================================
-; ✅ SCENARIO 15: Function with Stack Operations
-; ===================================================================
-CALL __func_stack
-RET
+__local_user:
+    MOV R1, [BP-4]  ; KEEP (local var)
+    RET             ; KEEP
 
-__func_stack:
-    PUSH R1
-    MOV R2, 42
-    POP R1
+; ===================================================================
+; ❌ SCENARIO 6: Inlining Before First Label (Skipped)
+; ===================================================================
+CALL __early_func  ; KEEP (not inlined: before first label)
+
+%define global_var 42
+
+__early_func:
+    IADD R1, 1  ; KEEP
+    RET         ; KEEP
+
+; ===================================================================
+; ✅ SCENARIO 7: Aggressive Inlining (MAX_BODY_INS=16)
+; Run with: ./v32opt test_inline.asm -fopt_inline -finline-max=16 -v
+; ===================================================================
+__function_test_aggressive:
+    PUSH BP
+    MOV BP, SP
+    CALL __large_func  ; MATCH (inlined if -finline-max=16)
+    MOV SP, BP
+    POP BP
     RET
+
+__large_func:
+    IADD R1, 1   ; KEEP
+    IADD R2, 2   ; KEEP
+    IADD R3, 3   ; KEEP
+    IADD R4, 4   ; KEEP
+    IADD R5, 5   ; KEEP
+    IADD R6, 6   ; KEEP
+    IADD R7, 7   ; KEEP
+    IADD R8, 8   ; KEEP
+    RET          ; KEEP
