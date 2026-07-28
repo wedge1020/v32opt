@@ -1,5 +1,5 @@
 # --- Configuration ---
-TEST             = cse
+TEST             = opt_cse
 OPTIMIZER        = ../../v32opt
 COMPILER         = compile
 ASSEMBLER        = assemble
