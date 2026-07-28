@@ -114,3 +114,40 @@ bool is_numeric_immediate(const Operand *op) {
     if (raw[0] == '0' && (raw[1] == 'x' || raw[1] == 'X')) return true;
     return false;
 }
+
+// Helper to structurally verify if two operands are identical
+bool operands_equal(const Operand *op1, const Operand *op2)
+{
+    if (op1->mode != op2->mode) return false;
+    
+    if (op1->mode == MODE_REG) {
+        return str_case_eq(op1->reg, op2->reg);
+    }
+    if (op1->mode == MODE_INDIRECT) {
+        return str_case_eq(op1->reg, op2->reg) && (op1->offset == op2->offset);
+    }
+    if (op1->mode == MODE_IMMEDIATE) {
+        if (op1->is_float != op2->is_float) return false;
+        if (op1->is_float) return op1->float_value == op2->float_value;
+        return op1->immediate == op2->immediate;
+    }
+    return str_case_eq(op1->raw, op2->raw);
+}
+
+// ===================================================================
+// HELPER: Extract clean label name from an OP_LABEL node
+// ===================================================================
+void get_label_name(const AsmNode *node, char *buf, size_t buf_size)
+{
+    buf[0] = '\0';
+    if (!node || node->type != OP_LABEL) return;
+
+    safe_str_copy(buf, node->raw, buf_size);
+    char *colon = strchr(buf, ':');
+    if (colon) *colon = '\0';
+
+    char *trimmed = trim(buf);
+    if (trimmed != buf) {
+        memmove(buf, trimmed, strlen(trimmed) + 1);
+    }
+}

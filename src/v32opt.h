@@ -123,6 +123,7 @@ typedef struct {
     int immediate;    
     char raw[128];    
     bool is_float;
+	float float_value;
 } Operand;
 
 typedef struct AsmNode {
@@ -239,6 +240,7 @@ void     safe_str_copy           (char       *, const char *, size_t);
 char    *trim                    (char       *);
 bool     str_case_eq             (const char *, const char *);
 int      get_reg_index           (const char *);
+bool     operands_equal          (const Operand *, const Operand *);
 bool     is_power_of_two         (int);
 int      get_log2                (int);
 
@@ -247,15 +249,16 @@ AsmNode *create_node   (const char *, OpType, const char *, const char *, const 
 void     remove_node   (AsmNode    *);
 AsmNode *clone_node    (AsmNode    *);
 
-bool     is_unconditional_branch  (AsmNode    *);
-bool     is_conditional_branch    (AsmNode    *);
-bool     is_branch_or_call        (AsmNode    *);
-bool     modifies_register        (AsmNode    *, const char *);
-bool     is_control_flow_boundary (AsmNode    *);
-bool     is_register_read         (AsmNode    *, const char *);
-bool     is_live_out_register     (const char *);
-long     parse_imm_val            (const char *);
+bool     is_unconditional_branch  (AsmNode       *);
+bool     is_conditional_branch    (AsmNode       *);
+bool     is_branch_or_call        (AsmNode       *);
+bool     modifies_register        (AsmNode       *, const char *);
+bool     is_control_flow_boundary (AsmNode       *);
+bool     is_register_read         (AsmNode       *, const char *);
+bool     is_live_out_register     (const char    *);
+long     parse_imm_val            (const char    *);
 bool     is_numeric_immediate     (const Operand *);
+void     get_label_name           (const AsmNode *, char       *, size_t);
 
 // parsing / writing functions
 //

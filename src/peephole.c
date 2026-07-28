@@ -417,156 +417,9 @@ int peephole_forwarding(AsmNode *head)
     }
     return optimizations;
 }
-/*
-int peephole_forwarding(AsmNode *head)
-{
-    int optimizations = 0;
-    AsmNode *curr = head ? head->next : NULL;
-
-    while (curr)
-    {
-        if (curr->type == OP_MOV)
-        {
-            // =========================================================
-            // RULE 1: Store-to-Load Forwarding
-            // =========================================================
-            if (curr->dst_op.mode == MODE_INDIRECT && curr->src_op.mode == MODE_REG)
-            {
-                char *mem_reg = curr->dst_op.reg;
-                int mem_off = curr->dst_op.offset;
-                char *src_reg = curr->src_op.reg;
-
-                AsmNode *scan = curr->next;
-                while (scan)
-                {
-                    if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
-                        scan = scan->next;
-                        continue;
-                    }
-
-                    if (is_control_flow_boundary(scan)) break;
-
-                    // 🔥 STOP on ANY store to memory with same base register
-                    if (scan->type == OP_MOV && scan->dst_op.mode == MODE_INDIRECT &&
-                        str_case_eq(scan->dst_op.reg, mem_reg)) {
-                        break;
-                    }
-
-                    // Stop if memory base register or source register is modified
-                    if (modifies_register(scan, mem_reg) || modifies_register(scan, src_reg)) break;
-
-                    if (scan->type == OP_MOV && scan->dst_op.mode == MODE_REG &&
-                        scan->src_op.mode == MODE_INDIRECT &&
-                        str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset == mem_off)
-                    {
-                        insert_debug_comment(scan->prev, OPT_PEEPHOLE_FORWARDING, scan->raw);
-                        scan->src_op = curr->src_op;
-                        snprintf(scan->raw, sizeof(scan->raw), "    MOV %s, %s",
-                                 scan->dst_op.raw, scan->src_op.raw);
-                        optimizations++;
-                        break;
-                    }
-
-                    scan = scan->next;
-                }
-            }
-
-            // =========================================================
-            // RULE 2: Copy Propagation
-            // =========================================================
-            if (curr->dst_op.mode == MODE_REG)
-            {
-                char *def_reg = curr->dst_op.reg;
-
-                if (str_case_eq(def_reg, "SP") || str_case_eq(def_reg, "BP")) {
-                    curr = curr->next;
-                    continue;
-                }
-
-                AsmNode *scan = curr->next;
-                while (scan)
-                {
-                    if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
-                        scan = scan->next;
-                        continue;
-                    }
-
-                    if (is_control_flow_boundary(scan)) break;
-
-                    if (modifies_register(scan, def_reg)) break;
-                    if (curr->src_op.mode == MODE_REG && modifies_register(scan, curr->src_op.reg)) {
-                        break;
-                    }
-
-                    bool uses_def_reg = false;
-                    Operand *target_op = NULL;
-
-                    // Two-operand instructions: check src_op
-                    if (scan->has_src && scan->src_op.mode == MODE_REG &&
-                        str_case_eq(scan->src_op.reg, def_reg)) {
-                        uses_def_reg = true;
-                        target_op = &scan->src_op;
-                    }
-                    // 🔥 FIX: JMP uses src_op for its target in Vircon32
-                    else if (str_case_eq(scan->mnemonic, "JMP") && scan->has_src &&
-                             scan->src_op.mode == MODE_REG &&
-                             str_case_eq(scan->src_op.reg, def_reg)) {
-                        uses_def_reg = true;
-                        target_op = &scan->src_op;
-                    }
-
-                    if (uses_def_reg)
-                    {
-                        // Guard: Block numeric immediates into JT/JF
-                        if ((str_case_eq(scan->mnemonic, "JT") || str_case_eq(scan->mnemonic, "JF")) &&
-                            curr->src_op.mode == MODE_IMMEDIATE &&
-                            (isdigit((unsigned char)curr->src_op.raw[0]) ||
-                             (curr->src_op.raw[0] == '-' && isdigit((unsigned char)curr->src_op.raw[1])))) {
-                            break;
-                        }
-
-                        // Guard: Block POW/ATAN2
-                        if (str_case_eq(scan->mnemonic, "POW") || str_case_eq(scan->mnemonic, "ATAN2")) {
-                            break;
-                        }
-
-                        // Guard: Block illegal immediate stores
-                        bool is_illegal_imm_store = (curr->src_op.mode == MODE_IMMEDIATE &&
-                                                     scan->has_dst && scan->dst_op.mode != MODE_REG);
-                        if (is_illegal_imm_store) break;
-
-                        insert_debug_comment(scan->prev, OPT_PEEPHOLE_FORWARDING, scan->raw);
-                        *target_op = curr->src_op;
-
-                        if (str_case_eq(scan->mnemonic, "JMP")) {
-                            snprintf(scan->raw, sizeof(scan->raw), "    JMP %s", target_op->raw);
-                        } else if (scan->has_dst && scan->has_src) {
-                            snprintf(scan->raw, sizeof(scan->raw), "    %s %s, %s",
-                                     scan->mnemonic, scan->dst_op.raw, scan->src_op.raw);
-                        } else if (scan->has_dst) {
-                            snprintf(scan->raw, sizeof(scan->raw), "    %s %s",
-                                     scan->mnemonic, scan->dst_op.raw);
-                        } else {
-                            snprintf(scan->raw, sizeof(scan->raw), "    %s %s",
-                                     scan->mnemonic, scan->src_op.raw);
-                        }
-                        optimizations++;
-                    }
-
-                    scan = scan->next;
-                }
-            }
-        }
-        curr = curr->next;
-    }
-    return optimizations;
-}
-*/
 
 // ===================================================================
-// PEEPHOLE: Redundant Jump Elimination
-// Removes jumps that target the immediately following label:
-//   - JMP L; L: → remove JMP
+// PEEPHOLE: Jump Optimizations
 // ===================================================================
 int peephole_jumps(AsmNode *head)
 {
@@ -575,47 +428,105 @@ int peephole_jumps(AsmNode *head)
 
     while (curr)
     {
-        if (str_case_eq(curr->mnemonic, "JMP"))
+        // ----------------------------------------------------------
+        // PATTERN 1: Redundant Jump to Next Label
+        // Eliminates JMP/JT/JF where the target label is immediately 
+        // the next instruction in the linked list.
+        // ----------------------------------------------------------
+        if (curr->type == OP_JMP || curr->type == OP_JT || curr->type == OP_JF)
         {
-            // Skip over comments/blank lines to find the next real instruction
-            AsmNode *next_node = curr->next;
-            while (next_node && next_node->type == OP_OTHER &&
-                  (next_node->raw[0] == '\0' || next_node->raw[0] == ';'))
-            {
-                next_node = next_node->next;
-            }
+            const char *target_label = (curr->type == OP_JMP) 
+                ? (curr->has_dst ? curr->dst_op.raw : curr->src_op.raw)
+                : curr->src_op.raw;
 
-            // --- Jump to Next Label ---
-            // If the next non-comment node is a label, and the JMP targets
-            // that label, the JMP is redundant (fall-through).
-            if (next_node && next_node->type == OP_LABEL)
+            // Check if the strictly adjacent next node is the target label
+            if (target_label && target_label[0] != '\0' && 
+                curr->next && curr->next->type == OP_LABEL)
             {
-                // Extract label name (remove trailing colon if present)
-                char lbl[128] = {0};
-                safe_str_copy(lbl, next_node->raw, sizeof(lbl));
-                char *colon = strchr(lbl, ':');
-                if (colon) *colon = '\0';
+                char lbl_name[128];
+                get_label_name(curr->next, lbl_name, sizeof(lbl_name));
 
-                if (str_case_eq(trim(lbl), trim(curr->dst_op.raw)))
+                if (str_case_eq(lbl_name, target_label))
                 {
-                    AsmNode *to_remove = curr;
-                    curr = curr->next;
-                    remove_node(to_remove);
+                    AsmNode *nodes[] = {curr};
+                    remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_JUMPS);
                     optimizations++;
-                    continue; // Skip the removed node
+                    continue; // remove_with_debug advances curr to the next valid node
                 }
             }
         }
+
+        // ----------------------------------------------------------
+        // PATTERN 2: Branch Over Jump (Condition Inversion)
+        // Transforms:
+        //     JF R1, __else_label
+        //     JMP __end_label
+        //     __else_label:
+        // Into:
+        //     JT R1, __end_label
+        //     __else_label:
+        // ----------------------------------------------------------
+        else if (curr->type == OP_JT || curr->type == OP_JF)
+        {
+            const char *branch_target = curr->src_op.raw;
+            AsmNode *next_jmp = curr->next;
+
+            // Next instruction MUST be an unconditional jump
+            if (next_jmp && next_jmp->type == OP_JMP)
+            {
+                const char *jmp_target = next_jmp->has_dst ? next_jmp->dst_op.raw : next_jmp->src_op.raw;
+                AsmNode *next_lbl = next_jmp->next;
+
+                // The instruction immediately following the JMP MUST be the branch target label
+                if (next_lbl && next_lbl->type == OP_LABEL && jmp_target && jmp_target[0] != '\0')
+                {
+                    char lbl_name[128];
+                    get_label_name(next_lbl, lbl_name, sizeof(lbl_name));
+
+                    if (str_case_eq(lbl_name, branch_target))
+                    {
+                        // Inject debug comment prior to mutating the instruction
+                        if (curr->prev) {
+                            insert_debug_comment(curr->prev, OPT_PEEPHOLE_JUMPS, curr->raw);
+                        }
+
+                        // Invert conditional jump mnemonic and node type
+                        if (curr->type == OP_JT) {
+                            curr->type = OP_JF;
+                            strcpy(curr->mnemonic, "JF");
+                        } else {
+                            curr->type = OP_JT;
+                            strcpy(curr->mnemonic, "JT");
+                        }
+
+                        // Rewrite target operand to point directly to the JMP's destination
+                        safe_str_copy(curr->src_op.raw, jmp_target, sizeof(curr->src_op.raw));
+                        snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %s",
+                                 curr->mnemonic, curr->dst_op.raw, jmp_target);
+
+                        // Remove the redundant unconditional JMP instruction
+                        AsmNode *nodes[] = {next_jmp};
+                        AsmNode *dummy = next_jmp;
+                        remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_JUMPS);
+
+                        optimizations++;
+                        continue; // Stay on curr to allow chained optimizations
+                    }
+                }
+            }
+        }
+
         curr = curr->next;
     }
+
     return optimizations;
 }
 
 // ===================================================================
 // PEEPHOLE: Redundant & Mirror Move Elimination
-// Removes redundant MOV pairs:
-//   - MOV r1, X; MOV r1, X → remove second MOV
-//   - MOV r1, r2; MOV r2, r1 → remove second MOV (mirror)
+// Scans forward within basic blocks to remove redundant MOV instructions:
+//   - Duplicate moves: MOV r1, X;  ... MOV r1, X  → remove second MOV
+//   - Mirror moves:    MOV r1, r2; ... MOV r2, r1 → remove second MOV
 // ===================================================================
 int peephole_movs(AsmNode *head)
 {
@@ -626,53 +537,97 @@ int peephole_movs(AsmNode *head)
     {
         if (curr->type == OP_MOV)
         {
-            // Skip over comments/blank lines to find the next real instruction
-            AsmNode *n2 = curr->next;
-            while (n2 && n2->type == OP_OTHER &&
-                  (n2->raw[0] == '\0' || n2->raw[0] == ';'))
-            {
-                n2 = n2->next;
-            }
-            if (!n2) break;
+            // --- Self-Referential Load Check ---
+            // If MOV loads from [r1] into r1, r1 is clobbered with the loaded
+            // value. Subsequent moves cannot treat r1 as the same address pointer.
+            bool self_referential_load =
+                (curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_INDIRECT) &&
+                str_case_eq(curr->dst_op.reg, curr->src_op.reg);
 
-            if (n2->type == OP_MOV)
-            {
-                // --- Self-Referential Load Check ---
-                // If the first MOV loads from [r1] into r1, we cannot eliminate
-                // the second MOV even if it uses r1, because the value might change.
-                bool self_referential_load =
-                    (curr->src_op.mode == MODE_INDIRECT) &&
-                    str_case_eq(curr->src_op.reg, curr->dst_op.reg);
+            // Identify registers and memory usage for hazard checking
+            const char *dst_reg = (curr->dst_op.mode == MODE_REG || curr->dst_op.mode == MODE_INDIRECT) ? curr->dst_op.reg : NULL;
+            const char *src_reg = (curr->src_op.mode == MODE_REG || curr->src_op.mode == MODE_INDIRECT) ? curr->src_op.reg : NULL;
+            bool touches_memory = (curr->dst_op.mode == MODE_INDIRECT || curr->src_op.mode == MODE_INDIRECT);
 
-                // --- Duplicate Move Elimination ---
-                // MOV r1, X; MOV r1, X → second MOV is redundant
-                if (!self_referential_load &&
-                    str_case_eq(curr->dst_op.raw, n2->dst_op.raw) &&
-                    str_case_eq(curr->src_op.raw, n2->src_op.raw))
+            AsmNode *scan = curr->next;
+            while (scan)
+            {
+                // Skip inline comments and blank lines
+                if (scan->type == OP_OTHER)
                 {
-                    remove_node(n2);
-                    optimizations++;
+                    scan = scan->next;
                     continue;
                 }
 
-                // --- Mirror Move Elimination ---
-                // MOV r1, r2; MOV r2, r1 → second MOV is redundant
-                // (swapping the same two registers twice restores original state)
-                if (curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_REG &&
-                    n2->dst_op.mode == MODE_REG && n2->src_op.mode == MODE_REG)
+                // Stop on control flow boundaries, jumps, calls, or labels
+                if (is_control_flow_boundary(scan) ||
+                    str_case_eq(scan->mnemonic, "CALL") ||
+                    str_case_eq(scan->mnemonic, "JT")   ||
+                    str_case_eq(scan->mnemonic, "JF")   ||
+                    scan->type == OP_LABEL)
                 {
-                    if (str_case_eq(curr->dst_op.reg, n2->src_op.reg) &&
-                        str_case_eq(curr->src_op.reg, n2->dst_op.reg))
+                    break;
+                }
+
+                // If either instruction accesses memory, stop on any memory write or modification
+                if (touches_memory)
+                {
+                    if (scan->type == OP_PUSH || scan->type == OP_POP ||
+                        scan->type == OP_MOVS || scan->type == OP_SETS ||
+                        (scan->has_dst && scan->dst_op.mode == MODE_INDIRECT))
                     {
-                        remove_node(n2);
-                        optimizations++;
-                        continue;
+                        break;
                     }
                 }
+
+                // Check if scan is a MOV instruction we can optimize
+                if (scan->type == OP_MOV)
+                {
+                    // --- Duplicate Move Elimination ---
+                    // MOV r1, X; ... MOV r1, X → second MOV is redundant
+                    if (!self_referential_load &&
+                        operands_equal(&curr->dst_op, &scan->dst_op) &&
+                        operands_equal(&curr->src_op, &scan->src_op))
+                    {
+                        AsmNode *next_scan = scan->next;
+                        AsmNode *nodes[] = {scan};
+                        remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_MOVS);
+                        optimizations++;
+                        scan = next_scan;
+                        continue;
+                    }
+
+                    // --- Mirror Move Elimination ---
+                    // MOV r1, r2; ... MOV r2, r1 → second MOV is redundant
+                    if (curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_REG &&
+                        scan->dst_op.mode == MODE_REG && scan->src_op.mode == MODE_REG)
+                    {
+                        if (str_case_eq(curr->dst_op.reg, scan->src_op.reg) &&
+                            str_case_eq(curr->src_op.reg, scan->dst_op.reg))
+                        {
+                            AsmNode *next_scan = scan->next;
+                            AsmNode *nodes[] = {scan};
+                            remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_MOVS);
+                            optimizations++;
+                            scan = next_scan;
+                            continue;
+                        }
+                    }
+                }
+
+                // Stop scanning if any register used by curr is modified by scan
+                if ((dst_reg && modifies_register(scan, dst_reg)) ||
+                    (src_reg && modifies_register(scan, src_reg)))
+                {
+                    break;
+                }
+
+                scan = scan->next;
             }
         }
         curr = curr->next;
     }
+
     return optimizations;
 }
 
@@ -1053,49 +1008,6 @@ int peephole_loads(AsmNode *head)
 
     return optimizations;
 }
-/*
-int peephole_loads(AsmNode *head)
-{
-    int optimizations = 0;
-    AsmNode *curr = head ? head->next : NULL;
-
-    while (curr && curr->next)
-    {
-        AsmNode *n1 = curr;
-        AsmNode *n2 = curr->next;
-
-        // Skip if n1 is not a load (MOV from indirect address to register)
-        if (n1->type != OP_MOV || n1->dst_op.mode != MODE_REG)
-        {
-            curr = curr->next;
-            continue;
-        }
-
-        // Skip if n2 is not also a load
-        if (n2->type != OP_MOV || n2->dst_op.mode != MODE_REG)
-        {
-            curr = curr->next;
-            continue;
-        }
-
-        // --- Consecutive Loads from Same Address ---
-        // If both loads read from the same memory location [reg+offset],
-        // the second load can use the first's destination register instead.
-        if (n1->src_op.mode == MODE_INDIRECT && n2->src_op.mode == MODE_INDIRECT &&
-            str_case_eq(n1->src_op.reg, n2->src_op.reg) &&
-            n1->src_op.offset == n2->src_op.offset)
-        {
-            // Replace n2's source (memory) with n1's destination (register)
-            n2->src_op = n1->dst_op;
-            snprintf(n2->raw, sizeof(n2->raw), "    MOV %s, %s", n2->dst_op.raw, n2->src_op.raw);
-            optimizations++;
-        }
-
-        curr = curr->next;
-    }
-    return optimizations;
-}
-*/
 
 // ===================================================================
 // PEEPHOLE: Immediate Propagation & Constant Folding
@@ -1125,18 +1037,16 @@ int peephole_immediate_prop(AsmNode *head)
                 }
 
                 if (is_identity) {
-                    curr->type = OP_OTHER;
-                    snprintf(curr->raw, sizeof(curr->raw), "; optimized out identity: %s", curr->mnemonic);
+                    AsmNode *nodes[] = {curr};
+                    remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_IMMEDIATE_PROP);
                     optimizations++;
-                    curr = curr->next;
-                    continue;
+                    continue; // curr is automatically updated to next_after by remove_with_debug
                 }
             }
         }
 
         // ----------------------------------------------------------
         // PATTERN 2: Constant Folding (MOV Reg, Imm -> next ALU Reg, Imm)
-        // FIX: Only fold the VERY NEXT instruction (no scanning)
         // ----------------------------------------------------------
         if (curr->type == OP_MOV && curr->has_dst && curr->has_src &&
             curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE)
@@ -1145,9 +1055,9 @@ int peephole_immediate_prop(AsmNode *head)
             long imm1 = parse_imm_val(curr->src_op.raw);
 
             // Get the very next non-comment/blank instruction
+            // 🔥 FIX: Skip ALL OP_OTHER nodes regardless of indentation or raw[0]
             AsmNode *next_real = curr->next;
-            while (next_real && next_real->type == OP_OTHER &&
-                   (next_real->raw[0] == '\0' || next_real->raw[0] == ';')) {
+            while (next_real && next_real->type == OP_OTHER) {
                 next_real = next_real->next;
             }
 
@@ -1184,6 +1094,7 @@ int peephole_immediate_prop(AsmNode *head)
                 else if (next_real->type == OP_IMUL) { folded_val = imm1 * imm2; folded = true; }
 
                 if (folded) {
+                    insert_debug_comment(next_real->prev, OPT_PEEPHOLE_IMMEDIATE_PROP, next_real->raw);
                     next_real->type = OP_MOV;
                     strcpy(next_real->mnemonic, "MOV");
                     next_real->has_dst = true;
@@ -1200,7 +1111,6 @@ int peephole_immediate_prop(AsmNode *head)
 
         // ----------------------------------------------------------
         // PATTERN 3: Sequential Math Combining (IADD/ISUB Reg, Imm -> next IADD/ISUB Reg, Imm)
-        // FIX: Only combine the VERY NEXT instruction
         // ----------------------------------------------------------
         else if ((curr->type == OP_IADD || curr->type == OP_ISUB) &&
                  curr->has_dst && curr->has_src &&
@@ -1211,9 +1121,9 @@ int peephole_immediate_prop(AsmNode *head)
             if (curr->type == OP_ISUB) imm1 = -imm1;
 
             // Get the very next non-comment/blank instruction
+            // 🔥 FIX: Skip ALL OP_OTHER nodes
             AsmNode *next_real = curr->next;
-            while (next_real && next_real->type == OP_OTHER &&
-                   (next_real->raw[0] == '\0' || next_real->raw[0] == ';')) {
+            while (next_real && next_real->type == OP_OTHER) {
                 next_real = next_real->next;
             }
 
@@ -1234,7 +1144,8 @@ int peephole_immediate_prop(AsmNode *head)
 
                 long combined = imm1 + imm2;
 
-                // Update type to match new mnemonic
+                // Update curr instruction in place
+                insert_debug_comment(curr->prev, OPT_PEEPHOLE_IMMEDIATE_PROP, curr->raw);
                 if (combined >= 0) {
                     curr->type = OP_IADD;
                     strcpy(curr->mnemonic, "IADD");
@@ -1248,9 +1159,12 @@ int peephole_immediate_prop(AsmNode *head)
                 snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %ld",
                          curr->mnemonic, curr->dst_op.raw, combined);
 
-                next_real->type = OP_OTHER;
-                snprintf(next_real->raw, sizeof(next_real->raw), "; optimized out combined math");
+                // Remove next_real using standard debugging removal without advancing curr
+                AsmNode *nodes[] = {next_real};
+                AsmNode *dummy = next_real;
+                remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_IMMEDIATE_PROP);
                 optimizations++;
+                continue; // Stay on curr to chain 3+ sequential operations!
             }
         }
 
