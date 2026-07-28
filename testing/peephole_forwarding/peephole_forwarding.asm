@@ -32,7 +32,9 @@ __function_test_store_load_overwrite:
     PUSH BP
     MOV BP, SP
     MOV [R1], R2
+    MOV R3, 0
     MOV [R1], R3       ; KEEP Overwrites memory
+    IADD R3, 1         ; Clobbers R3 so it CANNOT be forwarded to R4
     MOV R4, [R1]       ; KEEP Should NOT forward (memory changed)
     MOV SP, BP
     POP BP
@@ -80,7 +82,7 @@ __function_test_copy_prop_modified:
     PUSH BP
     MOV BP, SP
     MOV R1, R2
-    MOV R1, R3         ; KEEP Overwrites R1
+    IADD R1, 5         ; KEEP Overwrites R1 (using ALU math to avoid new copy-prop def)
     MOV R4, R1         ; KEEP Should NOT propagate (R1 changed)
     MOV SP, BP
     POP BP
@@ -92,7 +94,7 @@ __function_test_copy_prop_multiple:
     MOV BP, SP
     MOV R1, R2
     MOV R3, R1         ; MATCH Should become: MOV R3, R2
-    MOV R4, R3         ; MATCH Should become: MOV R4, R2 (via R3→R2)
+    MOV R4, R3         ; MATCH Should become: MOV R4, R2 (via R3->R2)
     MOV SP, BP
     POP BP
     RET
@@ -200,8 +202,8 @@ __function_test_combined:
     PUSH BP
     MOV BP, SP
     MOV [R1], R2
-    MOV R3, [R1]        ; MATCH Rule 1: → MOV R3, R2
-    MOV R4, R3          ; MATCH Rule 2: → MOV R4, R2 (propagates R3→R2)
+    MOV R3, [R1]        ; MATCH Rule 1: -> MOV R3, R2
+    MOV R4, R3          ; MATCH Rule 2: -> MOV R4, R2 (propagates R3->R2)
     MOV SP, BP
     POP BP
     RET

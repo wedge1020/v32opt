@@ -6,8 +6,15 @@
 bool modifies_register(AsmNode *node, const char *reg_name) {
     if (!node || !reg_name) return false;
 
+    // 🔥 FIX: Instructions that READ dst_op as an operand target, not WRITE to it
+    bool dst_is_read_only = (str_case_eq(node->mnemonic, "JMP")  ||
+                             str_case_eq(node->mnemonic, "PUSH") ||
+                             str_case_eq(node->mnemonic, "JT")   ||
+                             str_case_eq(node->mnemonic, "JF")   ||
+                             str_case_eq(node->mnemonic, "CALL"));
+
     // Check if the node explicitly overwrites the destination register
-    if (node->has_dst && node->dst_op.mode == MODE_REG) {
+    if (!dst_is_read_only && node->has_dst && node->dst_op.mode == MODE_REG) {
         if (str_case_eq(node->dst_op.reg, reg_name)) return true;
     }
 
