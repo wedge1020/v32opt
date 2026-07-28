@@ -21,7 +21,7 @@ all: opt vbin v32 report
 # Debug target: Sets the debug flags and builds all targets
 debug: DEBUG_FLAGS = -g
 debug: ASM_DEBUG_FLAGS = -g program
-debug: OPT_DEBUG_FLAGS = -v
+debug: OPT_DEBUG_FLAGS = -d
 debug: all
 
 # --- Build Rules ---
