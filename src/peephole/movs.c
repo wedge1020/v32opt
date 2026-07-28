@@ -1,37 +1,24 @@
 #include "v32opt.h"
 
-////////////////////////////////////////////////////////////////////////////////////////
-//
-// -------------------------------------------------------------------
-// OPTIMIZATION CATEGORY: Peephole Optimizations
-// Small-window (1-3 instruction) local transformations that improve
-// code without global analysis.
-// -------------------------------------------------------------------
-//
-// Note: On Vircon32, ALL instructions are 1 cycle, so many transformations
-// are cost-neutral. We keep them for code clarity, size reduction, or
-// idiomatic style.
-//
-// peephole_pairs()          - adjacent instruction pair elimination (DEBUG)
-// peephole_algebra()        - algebraic simplifications (DEBUG)
-// peephole_forwarding()     - store-to-load forwarding (DEBUG)
-// peephole_jumps()          - redundant jump elimination (DEBUG, broken)
-// peephole_movs()           - redundant MOV elimination (DEBUG)
-// peephole_immediates()     - combine immediates (DEBUG)
-// peephole_reduce()         - strength reduction (cost-neutral on Vircon32)
-// peephole_shifts()         - shift optimizations
-// peephole_dead_stores()    - dead store elimination
-// peephole_loads()          - redundant load elimination (DEBUG)
-// peephole_immediate_prop() - immediate propagation (DEBUG)
-// peephole_jmp_chain()      - jump chain elimination
-//
-////////////////////////////////////////////////////////////////////////////////////////
-
 // ===================================================================
 // PEEPHOLE: Redundant & Mirror Move Elimination
+//
 // Scans forward within basic blocks to remove redundant MOV instructions:
-//   - Duplicate moves: MOV r1, X;  ... MOV r1, X  → remove second MOV
+//
+// Patterns handled:
+//   - Duplicate moves: MOV r1, X; ... MOV r1, X → remove second MOV
 //   - Mirror moves:    MOV r1, r2; ... MOV r2, r1 → remove second MOV
+//
+// Example:
+//   Input:  MOV R1, 42
+//           MOV R1, 42
+//   Output: MOV R1, 42
+//
+//   Input:  MOV R1, R2
+//           MOV R2, R1
+//   Output: MOV R1, R2
+//
+// Returns: Number of optimizations applied
 // ===================================================================
 int peephole_movs(AsmNode *head)
 {
@@ -74,7 +61,7 @@ int peephole_movs(AsmNode *head)
                     break;
                 }
 
-                // If either instruction accesses memory, stop on any memory write or modification
+                // If either instruction accesses memory, stop on any memory write
                 if (touches_memory)
                 {
                     if (scan->type == OP_PUSH || scan->type == OP_POP ||

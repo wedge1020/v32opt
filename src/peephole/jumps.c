@@ -1,34 +1,27 @@
 #include "v32opt.h"
 
-////////////////////////////////////////////////////////////////////////////////////////
-//
-// -------------------------------------------------------------------
-// OPTIMIZATION CATEGORY: Peephole Optimizations
-// Small-window (1-3 instruction) local transformations that improve
-// code without global analysis.
-// -------------------------------------------------------------------
-//
-// Note: On Vircon32, ALL instructions are 1 cycle, so many transformations
-// are cost-neutral. We keep them for code clarity, size reduction, or
-// idiomatic style.
-//
-// peephole_pairs()          - adjacent instruction pair elimination (DEBUG)
-// peephole_algebra()        - algebraic simplifications (DEBUG)
-// peephole_forwarding()     - store-to-load forwarding (DEBUG)
-// peephole_jumps()          - redundant jump elimination (DEBUG, broken)
-// peephole_movs()           - redundant MOV elimination (DEBUG)
-// peephole_immediates()     - combine immediates (DEBUG)
-// peephole_reduce()         - strength reduction (cost-neutral on Vircon32)
-// peephole_shifts()         - shift optimizations
-// peephole_dead_stores()    - dead store elimination
-// peephole_loads()          - redundant load elimination (DEBUG)
-// peephole_immediate_prop() - immediate propagation (DEBUG)
-// peephole_jmp_chain()      - jump chain elimination
-//
-////////////////////////////////////////////////////////////////////////////////////////
-
 // ===================================================================
 // PEEPHOLE: Jump Optimizations
+//
+// Handles three patterns for optimizing control flow:
+//
+// PATTERN 1: Redundant Jump to Next Label
+//   - Removes JMP/JT/JF when target label is immediately next
+//   - Handles comments/blanks between jump and label
+//   Example: JMP _L1; _L1: → (JMP removed)
+//
+// PATTERN 2: Branch Over Jump (Condition Inversion)
+//   - Transforms JF R1, L1; JMP L2; L1: → JT R1, L2; L1:
+//   - Handles comments/blanks between instructions
+//   Example: JF R0, _else; JMP _then; _else: → JT R0, _then; _else:
+//
+// PATTERN 3: Unreachable Code Elimination (JMP to label only)
+//   - Removes code between JMP and its target label
+//   - Does NOT apply to indirect jumps (JMP R0) or immediate jumps (JMP 0x1000)
+//   - Does NOT apply to RET/HLT (prevents cross-scenario removal)
+//   Example: JMP _L8; MOV R1, 99; MOV R2, 100; _L8: → JMP _L8; _L8:
+//
+// Returns: Number of optimizations applied
 // ===================================================================
 int peephole_jumps(AsmNode *head)
 {
@@ -41,6 +34,8 @@ int peephole_jumps(AsmNode *head)
 
         // ----------------------------------------------------------
         // PATTERN 1: Redundant Jump to Next Label
+        // Eliminates JMP/JT/JF where the target label follows,
+        // possibly with comments/blanks in between.
         // ----------------------------------------------------------
         if (!did_optimize && (curr->type == OP_JMP || curr->type == OP_JT || curr->type == OP_JF))
         {
@@ -50,14 +45,15 @@ int peephole_jumps(AsmNode *head)
 
             if (target_label && target_label[0] != '\0')
             {
-                AsmNode *next_non_comment = curr->next;
-                while (next_non_comment && next_non_comment->type == OP_OTHER)
-                    next_non_comment = next_non_comment->next;
+                // Skip OP_OTHER nodes to find the next non-comment node
+                AsmNode *next_non_comment = skip_other_nodes(curr->next);
 
+                // Check if the next non-comment node is the target label
                 if (next_non_comment && next_non_comment->type == OP_LABEL)
                 {
                     char lbl_name[128];
                     get_label_name(next_non_comment, lbl_name, sizeof(lbl_name));
+
                     if (str_case_eq(lbl_name, target_label))
                     {
                         insert_debug_comment(curr->prev, OPT_PEEPHOLE_JUMPS, curr->raw);
@@ -71,40 +67,56 @@ int peephole_jumps(AsmNode *head)
         }
 
         // ----------------------------------------------------------
-        // PATTERN 2: Branch Over Jump
+        // PATTERN 2: Branch Over Jump (Condition Inversion)
+        // Transforms:
+        //     JF R1, __else_label
+        //     JMP __end_label
+        //     __else_label:
+        // Into:
+        //     JT R1, __end_label
+        //     __else_label:
         // ----------------------------------------------------------
         if (!did_optimize && (curr->type == OP_JT || curr->type == OP_JF))
         {
             const char *branch_target = curr->src_op.raw;
-            AsmNode *next_jmp = curr->next;
-            while (next_jmp && next_jmp->type == OP_OTHER)
-                next_jmp = next_jmp->next;
+            AsmNode *next_jmp = skip_other_nodes(curr->next);
 
+            // Next non-comment instruction MUST be an unconditional jump
             if (next_jmp && next_jmp->type == OP_JMP)
             {
                 const char *jmp_target = next_jmp->has_dst ? next_jmp->dst_op.raw : next_jmp->src_op.raw;
-                AsmNode *next_lbl = next_jmp->next;
-                while (next_lbl && next_lbl->type == OP_OTHER)
-                    next_lbl = next_lbl->next;
+                AsmNode *next_lbl = skip_other_nodes(next_jmp->next);
 
+                // The instruction after the JMP MUST be the branch target label
                 if (next_lbl && next_lbl->type == OP_LABEL && jmp_target && jmp_target[0] != '\0')
                 {
                     char lbl_name[128];
                     get_label_name(next_lbl, lbl_name, sizeof(lbl_name));
+
                     if (str_case_eq(lbl_name, branch_target))
                     {
+                        // Inject debug comment prior to mutating the instruction
                         insert_debug_comment(curr->prev, OPT_PEEPHOLE_JUMPS, curr->raw);
+
+                        // Invert conditional jump mnemonic and node type
                         if (curr->type == OP_JT) {
-                            curr->type = OP_JF; strcpy(curr->mnemonic, "JF");
+                            curr->type = OP_JF;
+                            strcpy(curr->mnemonic, "JF");
                         } else {
-                            curr->type = OP_JT; strcpy(curr->mnemonic, "JT");
+                            curr->type = OP_JT;
+                            strcpy(curr->mnemonic, "JT");
                         }
+
+                        // Rewrite target operand to point directly to the JMP's destination
                         safe_str_copy(curr->src_op.raw, jmp_target, sizeof(curr->src_op.raw));
                         snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %s",
-                                curr->mnemonic, curr->dst_op.raw, jmp_target);
+                                 curr->mnemonic, curr->dst_op.raw, jmp_target);
+
+                        // Remove the redundant unconditional JMP instruction
                         AsmNode *nodes[] = {next_jmp};
                         AsmNode *dummy = next_jmp;
                         remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_JUMPS);
+
                         optimizations++;
                         did_optimize = true;
                     }
@@ -114,7 +126,10 @@ int peephole_jumps(AsmNode *head)
 
         // ----------------------------------------------------------
         // PATTERN 3: Unreachable Code Elimination
-        // ONLY for JMP to label (not RET/HLT) - prevents cross-scenario removal
+        // After JMP to label: remove code until target label ONLY if no
+        //   other labels are encountered first.
+        // Does NOT apply to JMP Rn or JMP immediate.
+        // Does NOT apply to RET/HLT (prevents cross-scenario removal)
         // ----------------------------------------------------------
         if (!did_optimize && curr->type == OP_JMP)
         {
@@ -125,20 +140,7 @@ int peephole_jumps(AsmNode *head)
             }
 
             // Only apply to label targets (not registers or immediates)
-            bool is_reg = (str_case_eq(target_label, "R0")  || str_case_eq(target_label, "R1")  ||
-                          str_case_eq(target_label, "R2")  || str_case_eq(target_label, "R3")  ||
-                          str_case_eq(target_label, "R4")  || str_case_eq(target_label, "R5")  ||
-                          str_case_eq(target_label, "R6")  || str_case_eq(target_label, "R7")  ||
-                          str_case_eq(target_label, "R8")  || str_case_eq(target_label, "R9")  ||
-                          str_case_eq(target_label, "R10") || str_case_eq(target_label, "R11") ||
-                          str_case_eq(target_label, "R12") || str_case_eq(target_label, "R13") ||
-                          str_case_eq(target_label, "R14") || str_case_eq(target_label, "R15") ||
-                          str_case_eq(target_label, "SP")  || str_case_eq(target_label, "BP"));
-            bool is_imm = (isdigit((unsigned char)target_label[0]) ||
-                          (target_label[0] == '-' && isdigit((unsigned char)target_label[1])) ||
-                          (target_label[0] == '0' && target_label[1] == 'x'));
-
-            if (!is_reg && !is_imm)
+            if (!is_register_operand(target_label) && !is_immediate_string(target_label))
             {
                 AsmNode *to_remove[256];
                 int remove_count = 0;
@@ -151,18 +153,22 @@ int peephole_jumps(AsmNode *head)
                         char lbl_name[128];
                         get_label_name(scan, lbl_name, sizeof(lbl_name));
                         if (str_case_eq(lbl_name, target_label))
-                            break; // Found target
+                        {
+                            break; // Found target, stop here (don't remove target label)
+                        }
                         else
-                            break; // Found different label - STOP
+                        {
+                            break; // Found DIFFERENT label, stop here (don't remove it)
+                        }
                     }
+
                     to_remove[remove_count++] = scan;
                     scan = scan->next;
                 }
 
                 if (remove_count > 0)
                 {
-                    if (config.debug)
-                        insert_debug_comment(curr, OPT_PEEPHOLE_JUMPS, "DEAD CODE ELIMINATED");
+                    insert_debug_comment(curr, OPT_PEEPHOLE_JUMPS, "DEAD CODE ELIMINATED");
                     remove_with_debug(&curr->next, to_remove, remove_count, OPT_PEEPHOLE_JUMPS);
                     optimizations += remove_count;
                     did_optimize = true;
@@ -171,7 +177,9 @@ int peephole_jumps(AsmNode *head)
         }
 
         if (!did_optimize)
+        {
             curr = curr->next;
+        }
     }
 
     return optimizations;

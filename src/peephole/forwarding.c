@@ -1,37 +1,27 @@
 #include "v32opt.h"
 
-////////////////////////////////////////////////////////////////////////////////////////
-//
-// -------------------------------------------------------------------
-// OPTIMIZATION CATEGORY: Peephole Optimizations
-// Small-window (1-3 instruction) local transformations that improve
-// code without global analysis.
-// -------------------------------------------------------------------
-//
-// Note: On Vircon32, ALL instructions are 1 cycle, so many transformations
-// are cost-neutral. We keep them for code clarity, size reduction, or
-// idiomatic style.
-//
-// peephole_pairs()          - adjacent instruction pair elimination (DEBUG)
-// peephole_algebra()        - algebraic simplifications (DEBUG)
-// peephole_forwarding()     - store-to-load forwarding (DEBUG)
-// peephole_jumps()          - redundant jump elimination (DEBUG, broken)
-// peephole_movs()           - redundant MOV elimination (DEBUG)
-// peephole_immediates()     - combine immediates (DEBUG)
-// peephole_reduce()         - strength reduction (cost-neutral on Vircon32)
-// peephole_shifts()         - shift optimizations
-// peephole_dead_stores()    - dead store elimination
-// peephole_loads()          - redundant load elimination (DEBUG)
-// peephole_immediate_prop() - immediate propagation (DEBUG)
-// peephole_jmp_chain()      - jump chain elimination
-//
-////////////////////////////////////////////////////////////////////////////////////////
-
 // ===================================================================
 // PEEPHOLE: Forward-Scanning Store & Copy Propagation
-// Scans forward within basic blocks to forward:
-//   1. Store-to-Load: MOV [mem], R1; ... MOV R2, [mem] -> MOV R2, R1
-//   2. Copy Prop:     MOV R1, val;   ... OP R2, R1     -> OP R2, val
+//
+// Scans forward within basic blocks to eliminate redundant operations
+// by propagating values through registers and memory.
+//
+// Patterns handled:
+//   1. Store-to-Load Forwarding: MOV [mem], R1; ... MOV R2, [mem] → MOV R2, R1
+//   2. Copy Propagation:     MOV R1, val;   ... OP R2, R1     → OP R2, val
+//
+// Example:
+//   Input:  MOV [R1+4], R2
+//           MOV R3, [R1+4]
+//   Output: MOV [R1+4], R2
+//           MOV R3, R2
+//
+//   Input:  MOV R1, 42
+//           IADD R2, R1
+//   Output: MOV R1, 42
+//           IADD R2, 42
+//
+// Returns: Number of optimizations applied
 // ===================================================================
 int peephole_forwarding(AsmNode *head)
 {
@@ -62,7 +52,7 @@ int peephole_forwarding(AsmNode *head)
                     // Stop if memory base register or source register is modified
                     if (modifies_register(scan, mem_reg) || modifies_register(scan, src_reg)) break;
 
-                    // 🔥 STOP on ANY store to memory with same base register
+                    // Stop on ANY store to memory with same base register
                     if (scan->type == OP_MOV && scan->dst_op.mode == MODE_INDIRECT &&
                         str_case_eq(scan->dst_op.reg, mem_reg)) {
                         break;
@@ -94,6 +84,7 @@ int peephole_forwarding(AsmNode *head)
             {
                 char *def_reg = curr->dst_op.reg;
 
+                // Don't propagate SP or BP - they have special semantics
                 if (str_case_eq(def_reg, "SP") || str_case_eq(def_reg, "BP")) {
                     curr = curr->next;
                     continue;
@@ -107,6 +98,7 @@ int peephole_forwarding(AsmNode *head)
                         continue;
                     }
 
+                    // Stop if the defined register is modified
                     if (modifies_register(scan, def_reg)) break;
                     if (curr->src_op.mode == MODE_REG && modifies_register(scan, curr->src_op.reg)) {
                         break;
@@ -121,7 +113,7 @@ int peephole_forwarding(AsmNode *head)
                         uses_def_reg = true;
                         target_op = &scan->src_op;
                     }
-                    // 🔥 FIX: Single-operand instructions (like JMP) are parsed into dst_op!
+                    // Single-operand instructions (like JMP) use dst_op
                     else if (str_case_eq(scan->mnemonic, "JMP") && scan->has_dst &&
                              scan->dst_op.mode == MODE_REG &&
                              str_case_eq(scan->dst_op.reg, def_reg)) {
@@ -177,5 +169,6 @@ int peephole_forwarding(AsmNode *head)
         }
         curr = curr->next;
     }
+
     return optimizations;
 }

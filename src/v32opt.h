@@ -271,7 +271,7 @@ void     write_vircon32_asm (const char *, AsmNode *);
 
 //////////////////////////////////////////////////////////////////////////////
 //
-// peephole optimizations
+// peephole optimizations (in individual files under peephole/)
 //
 int      peephole_pairs           (AsmNode *);
 int      peephole_algebra         (AsmNode *);
@@ -286,11 +286,23 @@ int      peephole_loads           (AsmNode *);
 int      peephole_immediate_prop  (AsmNode *);
 int      peephole_jmp_chain       (AsmNode *);
 
-bool     modifies_register        (AsmNode *, const char *);
-bool     is_control_flow_boundary (AsmNode *);
-long     parse_imm_val            (const char *);
-bool     is_register_read         (AsmNode *, const char *);
-bool     is_live_out_register     (const char *);
+//////////////////////////////////////////////////////////////////////////////
+//
+// helper functions (helpers.c)
+//
+AsmNode *skip_other_nodes         (AsmNode       *);
+AsmNode *skip_comments_and_blanks (AsmNode       *);
+AsmNode *next_non_other           (AsmNode       *);
+bool     is_register_operand      (const char    *);
+bool     is_immediate_string      (const char    *);
+bool     modifies_register        (AsmNode       *, const char    *);
+bool     is_control_flow_boundary (AsmNode       *);
+bool     is_register_read         (AsmNode       *, const char    *);
+bool     is_live_out_register     (const char    *);
+long     parse_imm_val            (const char    *);
+bool     is_numeric_immediate     (const Operand *);
+bool     operands_equal           (const Operand *, const Operand *);
+void     get_label_name           (const AsmNode *, char          *, size_t);
 
 // stack optimizations
 //

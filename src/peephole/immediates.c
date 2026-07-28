@@ -1,37 +1,26 @@
 #include "v32opt.h"
 
-////////////////////////////////////////////////////////////////////////////////////////
-//
-// -------------------------------------------------------------------
-// OPTIMIZATION CATEGORY: Peephole Optimizations
-// Small-window (1-3 instruction) local transformations that improve
-// code without global analysis.
-// -------------------------------------------------------------------
-//
-// Note: On Vircon32, ALL instructions are 1 cycle, so many transformations
-// are cost-neutral. We keep them for code clarity, size reduction, or
-// idiomatic style.
-//
-// peephole_pairs()          - adjacent instruction pair elimination (DEBUG)
-// peephole_algebra()        - algebraic simplifications (DEBUG)
-// peephole_forwarding()     - store-to-load forwarding (DEBUG)
-// peephole_jumps()          - redundant jump elimination (DEBUG, broken)
-// peephole_movs()           - redundant MOV elimination (DEBUG)
-// peephole_immediates()     - combine immediates (DEBUG)
-// peephole_reduce()         - strength reduction (cost-neutral on Vircon32)
-// peephole_shifts()         - shift optimizations
-// peephole_dead_stores()    - dead store elimination
-// peephole_loads()          - redundant load elimination (DEBUG)
-// peephole_immediate_prop() - immediate propagation (DEBUG)
-// peephole_jmp_chain()      - jump chain elimination
-//
-////////////////////////////////////////////////////////////////////////////////////////
-
 // ===================================================================
 // PEEPHOLE: Immediate Math Combining
+//
 // Combines consecutive arithmetic operations with immediate operands:
+//
+// Patterns handled:
 //   - IADD r, 5; ISUB r, 3 → IADD r, 2
 //   - IADD r, 5; ISUB r, 5 → remove both (cancels out)
+//   - IADD r, -3; IADD r, 5 → IADD r, 2
+//   - ISUB r, 3; ISUB r, 2 → ISUB r, 5
+//
+// Example:
+//   Input:  IADD R1, 10
+//           ISUB R1, 3
+//   Output: IADD R1, 7
+//
+//   Input:  IADD R1, 5
+//           ISUB R1, 5
+//   Output: (both removed)
+//
+// Returns: Number of optimizations applied
 // ===================================================================
 int peephole_immediates(AsmNode *head)
 {
@@ -42,17 +31,16 @@ int peephole_immediates(AsmNode *head)
     {
         // Only process IADD/ISUB with register destination and immediate source
         if ((curr->type == OP_IADD || curr->type == OP_ISUB) &&
-            curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float)
+            curr->dst_op.mode == MODE_REG &&
+            curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float)
         {
-            // 🔥 FIX: Skip ALL OP_OTHER nodes (comments/blanks), not just those starting with ;
-            AsmNode *n2 = curr->next;
-            while (n2 && n2->type == OP_OTHER) {
-                n2 = n2->next;
-            }
+            // Skip ALL OP_OTHER nodes (comments/blanks)
+            AsmNode *n2 = skip_other_nodes(curr->next);
 
             // Check if n2 is also an IADD/ISUB with same destination and immediate
             if (n2 && (n2->type == OP_IADD || n2->type == OP_ISUB) &&
-                n2->dst_op.mode == MODE_REG && n2->src_op.mode == MODE_IMMEDIATE && !n2->src_op.is_float &&
+                n2->dst_op.mode == MODE_REG &&
+                n2->src_op.mode == MODE_IMMEDIATE && !n2->src_op.is_float &&
                 str_case_eq(curr->dst_op.reg, n2->dst_op.reg))
             {
                 // Calculate effective values: IADD adds, ISUB subtracts
