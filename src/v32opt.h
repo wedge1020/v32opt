@@ -318,11 +318,14 @@ bool     references_bp            (AsmNode *);
 // inline optimization
 //
 int      inline_trivial_functions (AsmNode *);
-int      cse                      (AsmNode *);
+
+// common subexpression elimination
+//
+int      opt_cse                  (AsmNode *);
 
 // dead function elimination
 //
-int      pass_dead_function_elimination (AsmNode *);
+int      opt_dce                  (AsmNode *);
 
 // Add to "control flow graph" section:
 BasicBlock* find_block_by_label(ControlFlowGraph *, const char *);
