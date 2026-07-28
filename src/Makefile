@@ -4,7 +4,7 @@ CC = gcc
 
 # --- Flags ---
 CFLAGS = -Wall -Wextra -Wno-format-truncation -g
-CFLAGS += -I. -I$(PEEPHOLE_DIR)
+CFLAGS += -I.
 CLIBS = -lm
 
 # --- Output Executable ---

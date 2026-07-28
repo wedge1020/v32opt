@@ -51,19 +51,9 @@ int  main (int  argc, char **argv)
         fprintf(stdout, "  --dot <cfg.dot>  Export Control Flow Graph to DOT format\n");
         fprintf(stdout, "  -o <file>        Specify output assembly file name\n");
         fprintf(stdout, "  -O0              Disable all optimizations [default]\n");
-        fprintf(stdout, "  -O1              Enables first level of optimizations:\n");
-        fprintf(stdout, "                       peephole-pairs, peephole-algebra,\n");
-        fprintf(stdout, "                       peephole-forwarding, peephole-jumps,\n");
-        fprintf(stdout, "                       peephole-movs, peephole-immediates,\n");
-        fprintf(stdout, "                       peephole-reduce, peephole-shifts,\n");
-        fprintf(stdout, "                       peephole-loads,\n");
-        fprintf(stdout, "                       peephole-immediate-prop, peephole-jmp-chain\n");
-        fprintf(stdout, "  -O2              Enables second level (could break):\n");
-        fprintf(stdout, "                       ALL included in -O1,\n");
-        fprintf(stdout, "                       cse, dce, constant-folding\n");
+        fprintf(stdout, "  -O1              Enables first level optimizations\n");
+        fprintf(stdout, "  -O2              Enables second level optimizations\n");
         fprintf(stdout, "  -O3              Enables aggressive optimizations (could break):\n");
-        fprintf(stdout, "                       ALL included in -O1 and -O2,\n");
-        fprintf(stdout, "                       inline\n\n");
         fprintf(stdout, "Individual Optimization Toggles:\n");
         fprintf(stdout, "  -f<name>     Enable specific pass (e.g., -fpeephole-algebra)\n");
         fprintf(stdout, "  -fno-<name>  Disable specific pass (e.g., -fno-inline)\n\n");
@@ -77,7 +67,7 @@ int  main (int  argc, char **argv)
         fprintf(stdout, "Diagnostic Flags:\n");
         fprintf(stdout, "  -finline-max=N   Cap the number of inlined CALL sites to N\n");
         fprintf(stdout, "  -fmax-passes=N   Cap the maximum iterative optimization passes to N\n\n");
-        fprintf(stdout, "NOTE: peephole-dead-stores, omit-frame-pointers,\n");
+        fprintf(stdout, "NOTE: peephole-dead-stores,\n");
         fprintf(stdout, "promote-regs, promote-leaf, and promote-loops not yet\n");
         fprintf(stdout, "connected to any optimization category. Test and bugfix first\n\n");
         return (1);
@@ -174,7 +164,7 @@ int  main (int  argc, char **argv)
             config.opt_promote_regs             = false;
             config.opt_promote_leaf             = false;
             config.opt_promote_loops            = false;
-            config.opt_omit_frame_pointers      = false;
+            config.opt_omit_frame_pointers      = true;
         } else if (strcmp(argv[i], "-O3") == 0) {
             config.opt_peephole_pairs           = true;
             config.opt_peephole_algebra         = true;
@@ -195,7 +185,7 @@ int  main (int  argc, char **argv)
             config.opt_promote_regs             = false;
             config.opt_promote_leaf             = false;
             config.opt_promote_loops            = false;
-            config.opt_omit_frame_pointers      = false;
+            config.opt_omit_frame_pointers      = true;
         } else if (strcmp(argv[i], "-fpeephole-pairs")      == 0) {
             config.opt_peephole_pairs           = true;
         } else if (strcmp(argv[i], "-fpeephole-algebra")    == 0) {
