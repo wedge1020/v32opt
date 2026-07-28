@@ -100,6 +100,7 @@ typedef enum
 	OPT_PEEPHOLE_LOADS,
 	OPT_PEEPHOLE_IMMEDIATE_PROP,
 	OPT_PEEPHOLE_JMP_CHAIN,
+	OPT_CSE,
 	OPT_DCE,
 	OPT_CONSTANT_FOLDING,
 	OPT_INLINE,
@@ -209,6 +210,7 @@ typedef struct {
     bool opt_peephole_loads;
     bool opt_peephole_immediate_prop;
     bool opt_peephole_jmp_chain;
+    bool opt_cse;
     bool opt_dce;
     bool opt_constant_folding;
     bool opt_inline;
@@ -315,7 +317,8 @@ bool     references_bp            (AsmNode *);
 
 // inline optimization
 //
-int      inline_trivial_functions  (AsmNode *);
+int      inline_trivial_functions (AsmNode *);
+int      cse                      (AsmNode *);
 
 // dead function elimination
 //

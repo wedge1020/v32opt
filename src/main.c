@@ -23,6 +23,7 @@ OptConfig config = {
 	.opt_peephole_loads           = false,
 	.opt_peephole_immediate_prop  = false,
 	.opt_peephole_jmp_chain       = false,
+	.opt_cse                      = false,
 	.opt_dce                      = false,
 	.opt_constant_folding         = false,
 	.opt_inline                   = false,
@@ -57,7 +58,7 @@ int  main (int  argc, char **argv)
         fprintf(stdout, "                       peephole_immediate_prop, peephole_jmp_chain\n");
         fprintf(stdout, "  -O2              Enables second level (could break):\n");
         fprintf(stdout, "                       ALL included in -O1,\n");
-        fprintf(stdout, "                       dce, constant_folding\n");
+        fprintf(stdout, "                       cse, dce, constant_folding\n");
         fprintf(stdout, "  -O3              Enables aggressive optimizations (could break):\n");
         fprintf(stdout, "                       ALL included in -O1 and -O2,\n");
         fprintf(stdout, "                       inline\n\n");
@@ -69,7 +70,7 @@ int  main (int  argc, char **argv)
         fprintf(stdout, "  peephole_jumps, peephole_movs, peephole_immediates,\n");
         fprintf(stdout, "  peephole_reduce, peephole_shifts, peephole_dead_stores,\n");
         fprintf(stdout, "  peephole_loads, peephole_immediate_prop, peephole_jmp_chain,\n");
-        fprintf(stdout, "  inline, dce, constant_folding, promote_regs, promote_leaf,\n");
+        fprintf(stdout, "  inline, cse, dce, constant_folding, promote_regs, promote_leaf,\n");
         fprintf(stdout, "  promote_loops, omit_frame_pointers\n\n");
         fprintf(stdout, "Diagnostic Flags:\n");
         fprintf(stdout, "  -finline-max=N   Cap the number of inlined CALL sites to N\n");
@@ -122,6 +123,7 @@ int  main (int  argc, char **argv)
             config.opt_peephole_loads           = false;
             config.opt_peephole_immediate_prop  = false;
             config.opt_peephole_jmp_chain       = false;
+            config.opt_cse                      = false;
             config.opt_dce                      = false;
             config.opt_constant_folding         = false;
             config.opt_inline                   = false;
@@ -142,6 +144,7 @@ int  main (int  argc, char **argv)
             config.opt_peephole_loads           = true;
             config.opt_peephole_immediate_prop  = true;
             config.opt_peephole_jmp_chain       = true;
+            config.opt_cse                      = false;
             config.opt_dce                      = false;
             config.opt_constant_folding         = false;
             config.opt_inline                   = false;
@@ -162,6 +165,7 @@ int  main (int  argc, char **argv)
             config.opt_peephole_loads           = true;
             config.opt_peephole_immediate_prop  = true;
             config.opt_peephole_jmp_chain       = true;
+            config.opt_cse                      = true;
             config.opt_dce                      = true;
             config.opt_constant_folding         = true;
             config.opt_inline                   = false;
@@ -182,6 +186,7 @@ int  main (int  argc, char **argv)
             config.opt_peephole_loads           = true;
             config.opt_peephole_immediate_prop  = true;
             config.opt_peephole_jmp_chain       = true;
+            config.opt_cse                      = true;
             config.opt_dce                      = true;
             config.opt_constant_folding         = true;
             config.opt_inline                   = true;
@@ -213,6 +218,8 @@ int  main (int  argc, char **argv)
             config.opt_peephole_immediate_prop  = true;
         } else if (strcmp(argv[i], "-fopt_peephole_jmp_chain") == 0) {
             config.opt_peephole_jmp_chain      = true;
+        } else if (strcmp(argv[i], "-fopt_cse") == 0) {
+            config.opt_cse                      = true;
         } else if (strcmp(argv[i], "-fopt_dce") == 0) {
             config.opt_dce = true;
         } else if (strcmp(argv[i], "-fopt_constant_folding") == 0) {
@@ -249,6 +256,8 @@ int  main (int  argc, char **argv)
             config.opt_peephole_jmp_chain      = false;
         } else if (strcmp(argv[i], "-fno_opt_peephole_movs") == 0) {
             config.opt_peephole_movs = false;
+        } else if (strcmp(argv[i], "-fno_opt_cse") == 0) {
+            config.opt_cse                      = false;
         } else if (strcmp(argv[i], "-fno_opt_dce") == 0) {
             config.opt_dce = false;
         } else if (strcmp(argv[i], "-fno_opt_constant_folding") == 0) {
@@ -358,6 +367,12 @@ int  main (int  argc, char **argv)
     {
         if (config.verbose)
             fprintf(stdout, "  - peephole_jmp_chain\n");
+        opt_count++;
+    }
+    if (config.opt_cse)
+    {
+        if (config.verbose)
+            fprintf(stdout, "  - cse\n");
         opt_count++;
     }
     if (config.opt_dce)
@@ -555,6 +570,11 @@ int  main (int  argc, char **argv)
             opts[OPT_PEEPHOLE_JUMPS]               = peephole_jumps (program_ast);
         }
 
+        if (config.opt_cse)
+        {
+            opts[OPT_CSE]  = cse (program_ast);
+        }
+
         if (config.opt_dce)
         {
             opts[OPT_DCE]  = pass_dead_function_elimination (program_ast);
@@ -631,6 +651,10 @@ int  main (int  argc, char **argv)
 
                         case OPT_PEEPHOLE_SHIFTS:
                             fprintf (stdout, "  - peephole_shifts:         ");
+                            break;
+
+                        case OPT_CSE:
+                            fprintf (stdout, "  - cse:                     ");
                             break;
 
                         case OPT_DCE:
@@ -817,6 +841,10 @@ int  main (int  argc, char **argv)
                             fprintf (stdout, "  - peephole_shifts:         ");
                             break;
 
+                        case OPT_CSE:
+                            fprintf (stdout, "  - cse:                     ");
+                            break;
+
                         case OPT_DCE:
                             fprintf (stdout, "  - dce:                     ");
                             break;
@@ -927,6 +955,10 @@ int  main (int  argc, char **argv)
 
                     case OPT_PEEPHOLE_SHIFTS:
                         fprintf (stdout, "peephole_shifts:");
+                        break;
+
+                    case OPT_CSE:
+                        fprintf (stdout, "cse:");
                         break;
 
                     case OPT_DCE:
