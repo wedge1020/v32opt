@@ -61,12 +61,13 @@ __while_2_exit:
 ; ❌ SCENARIO 5: Loop with CALL (MUST NOT PROMOTE)
 ; ===================================================================
 __for_3_start:
-    CALL some_func     ; Safety check fails
+    CALL _some_func     ; Safety check fails
     MOV [BP-4], R1
     MOV R2, [BP-4]
     JMP __for_3_start
 __for_3_exit:
     RET
+_some_func:
 
 ; ===================================================================
 ; ❌ SCENARIO 6: Loop with BP Usage (MUST NOT PROMOTE)
