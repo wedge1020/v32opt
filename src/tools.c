@@ -22,7 +22,8 @@ const char *opt_type_names[]       = {
     [OPT_PROMOTE_REGS]             = "promote_regs",
     [OPT_PROMOTE_LEAF]             = "promote_leaf",
     [OPT_PROMOTE_LOOPS]            = "promote_loops",
-    [OPT_OMIT_FRAME_POINTERS]      = "omit_frame_pointers"
+    [OPT_OMIT_FRAME_POINTERS]      = "omit_frame_pointers",
+	[OPT_CSE]                      = "cse"
 };
 
 // Helper: remove nodes and insert debug comments

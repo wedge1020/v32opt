@@ -75,4 +75,4 @@ report: $(TEST).v32 $(TEST)Opt.v32
 
 # --- Clean Up ---
 clean:
-	@rm -f *.v32 textures/*.vtex *.vbin *Opt.asm *.debug
+	@rm -f *.v32 textures/*.vtex *.vbin *Opt.asm *.debug *.txt
