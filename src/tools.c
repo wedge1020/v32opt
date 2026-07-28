@@ -133,7 +133,7 @@ void safe_str_copy(char *dest, const char *src, size_t dest_size) {
 //   - str: String to trim (modified in-place)
 // Returns: Pointer to the first non-whitespace character
 // ===================================================================
-char *trim(char *str) {
+char *trim(const char *str) {
     // Skip leading whitespace
     while (isspace((unsigned char)*str)) str++;
     if (*str == 0) return str;  // Empty string

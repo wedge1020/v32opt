@@ -232,14 +232,14 @@ extern       OptConfig  config;
 //
 // general utility function prototypes
 //
-void     remove_with_debug       (AsmNode **, AsmNode *nodes[], int, OptType);
-void     strip_comment_from_line (char *, const char *, size_t);
-void     normalize_whitespace    (char *, const char *, size_t);
-void     insert_debug_comment    (AsmNode *, OptType, const char *);
-void     safe_str_copy           (char       *, const char *, size_t);
-char    *trim                    (char       *);
-bool     str_case_eq             (const char *, const char *);
-int      get_reg_index           (const char *);
+void     remove_with_debug       (AsmNode      **, AsmNode *nodes[], int, OptType);
+void     strip_comment_from_line (char          *, const char *, size_t);
+void     normalize_whitespace    (char          *, const char *, size_t);
+void     insert_debug_comment    (AsmNode       *, OptType, const char *);
+void     safe_str_copy           (char          *, const char *, size_t);
+char    *trim                    (const char    *);
+bool     str_case_eq             (const char    *, const char *);
+int      get_reg_index           (const char    *);
 bool     operands_equal          (const Operand *, const Operand *);
 bool     is_power_of_two         (int);
 int      get_log2                (int);
