@@ -71,10 +71,7 @@ int peephole_immediate_prop(AsmNode *head)
                         continue;
                     }
 
-                    if (modifies_register(scan, def_reg)) {
-                        break;
-                    }
-
+                    // Check for foldable ALU instruction first (before modifies_register check)
                     if ((scan->type == OP_IADD || scan->type == OP_ISUB || scan->type == OP_IMUL) &&
                         scan->dst_op.mode == MODE_REG && str_case_eq(scan->dst_op.reg, def_reg) &&
                         is_numeric_immediate(&scan->src_op) && !scan->src_op.is_float)
@@ -98,6 +95,11 @@ int peephole_immediate_prop(AsmNode *head)
 
                         optimizations++;
                         folded = true;
+                        break;
+                    }
+
+                    // Stop if def_reg is modified by any other instruction
+                    if (modifies_register(scan, def_reg)) {
                         break;
                     }
 
