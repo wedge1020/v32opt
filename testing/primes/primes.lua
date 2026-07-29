@@ -24,23 +24,17 @@ brute_s_1024_time=0.0
 -- Variant 1: Brute force - checks all divisors, no early exit
 function count_brute(n)
     local count = 0
-	local is_prime = true
-    for i = 2, n do
-        is_prime = true
-        for j = 2, i - 1 do
-			-- also likely not working, hence why tally equals upper bound
-            if i % j == 0 then
-                is_prime = false
-            end
-        end
-		-- if statement condition evaluation still not fully working
-		-- neither of these work (although the first works "better" than the other)
-        -- if is_prime then
-        -- if is_prime == true then
-        if is_prime == true then
-            count = count + 1
-        end
-    end
+	for i = 2, n do
+		local is_prime = true  -- Reset for each number
+		for j = 2, i - 1 do
+			if i % j == 0 then
+				is_prime = false
+			end
+		end
+		if is_prime then
+			count = count + 1
+		end
+	end
     return count
 end
 
