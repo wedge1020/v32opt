@@ -1,16 +1,33 @@
 #include "v32opt.h"
 
-// ===================================================================
-// PEEPHOLE: Redundant & Mirror Move Elimination
-//
-// Scans forward within basic blocks to remove redundant MOV instructions:
-//
-// Patterns handled:
-//   - Duplicate moves: MOV r1, X; ... MOV r1, X → remove second MOV (only if dst not modified)
-//   - Mirror moves:    MOV r1, r2; ... MOV r2, r1 → remove second MOV (only if neither modified)
-//
-// Returns: Number of optimizations applied
-// ===================================================================
+// Helper: Check if an operand uses a specific register (direct or indirect base)
+static bool operand_uses_register(Operand *op, const char *reg)
+{
+    if (op->mode == MODE_REG && str_case_eq(op->reg, reg))
+        return true;
+    if (op->mode == MODE_INDIRECT && str_case_eq(op->reg, reg))
+        return true;
+    return false;
+}
+
+// Helper: Check if any register in an operand was modified between two nodes
+static bool operand_registers_modified(AsmNode *start, AsmNode *end, Operand *op)
+{
+    if (op->mode == MODE_IMMEDIATE)
+        return false;
+    if (op->mode == MODE_REG || op->mode == MODE_INDIRECT)
+    {
+        AsmNode *check = start;
+        while (check != end && check != NULL)
+        {
+            if (modifies_register(check, op->reg))
+                return true;
+            check = check->next;
+        }
+    }
+    return false;
+}
+
 int peephole_movs(AsmNode *head)
 {
     int optimizations = 0;
@@ -33,7 +50,8 @@ int peephole_movs(AsmNode *head)
             {
                 AsmNode *next_scan = scan->next;
 
-                if (scan->type != OP_MOV) {
+                if (scan->type != OP_MOV)
+                {
                     scan = next_scan;
                     continue;
                 }
@@ -49,27 +67,26 @@ int peephole_movs(AsmNode *head)
                 bool removed = false;
 
                 // --- Duplicate Move Elimination ---
-                // MOV dst, src; ... MOV dst, src → second MOV is redundant
-                // ONLY if destination register was NOT modified between them
                 if (curr->dst_op.mode == MODE_REG &&
                     scan->dst_op.mode == MODE_REG &&
                     operands_equal(&curr->dst_op, &scan->dst_op) &&
                     operands_equal(&curr->src_op, &scan->src_op))
                 {
-                    // Check if destination register was modified between curr and scan
-                    bool dst_modified = false;
-                    AsmNode *check = curr->next;
-                    while (check != scan && check != NULL)
+                    // GUARD: Self-referential indirect (MOV R1, [R1]; MOV R1, [R1])
+                    // First MOV clobbers R1, so second MOV reads from a different address
+                    if (curr->src_op.mode == MODE_INDIRECT &&
+                        operand_uses_register(&curr->src_op, curr->dst_op.reg))
                     {
-                        if (modifies_register(check, curr->dst_op.reg))
-                        {
-                            dst_modified = true;
-                            break;
-                        }
-                        check = check->next;
+                        scan = next_scan;
+                        continue;
                     }
 
-                    if (!dst_modified)
+                    // GUARD: Indirect source with modified base register
+                    // MOV R1, [R2]; MOV [R5], R6; MOV R1, [R2] → cannot eliminate (alias hazard)
+                    bool dst_modified = operand_registers_modified(curr->next, scan, &curr->dst_op);
+                    bool src_modified = operand_registers_modified(curr->next, scan, &curr->src_op);
+
+                    if (!dst_modified && !src_modified)
                     {
                         AsmNode *nodes[] = {scan};
                         remove_with_debug(&scan->prev->next, nodes, 1, OPT_PEEPHOLE_MOVS);
@@ -78,8 +95,6 @@ int peephole_movs(AsmNode *head)
                     }
                 }
                 // --- Mirror Move Elimination (register-to-register only) ---
-                // MOV r1, r2; ... MOV r2, r1 → second MOV is redundant
-                // ONLY if neither r1 nor r2 were modified between them
                 else if (curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_REG &&
                          scan->dst_op.mode == MODE_REG && scan->src_op.mode == MODE_REG)
                 {
@@ -108,11 +123,7 @@ int peephole_movs(AsmNode *head)
                     }
                 }
 
-                if (removed) {
-                    scan = next_scan;
-                } else {
-                    scan = next_scan;
-                }
+                scan = next_scan;
             }
         }
         curr = curr->next;
