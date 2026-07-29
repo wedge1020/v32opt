@@ -4,26 +4,26 @@
 
 // Map OptType enum to human-readable names
 const char *opt_type_names[]       = {
-    [OPT_PEEPHOLE_PAIRS]           = "peephole_pairs",
     [OPT_PEEPHOLE_ALGEBRA]         = "peephole_algebra",
+    [OPT_PEEPHOLE_DEAD_STORES]     = "peephole_dead_stores",
     [OPT_PEEPHOLE_FORWARDING]      = "peephole_forwarding",
-    [OPT_PEEPHOLE_JUMPS]           = "peephole_jumps",
-    [OPT_PEEPHOLE_MOVS]            = "peephole_movs",
+    [OPT_PEEPHOLE_IMMEDIATE_PROP]  = "peephole_immediate_prop",
     [OPT_PEEPHOLE_IMMEDIATES]      = "peephole_immediates",
+    [OPT_PEEPHOLE_JMP_CHAIN]       = "peephole_jmp_chain",
+    [OPT_PEEPHOLE_JUMPS]           = "peephole_jumps",
+    [OPT_PEEPHOLE_LOADS]           = "peephole_loads",
+    [OPT_PEEPHOLE_MOVS]            = "peephole_movs",
+    [OPT_PEEPHOLE_PAIRS]           = "peephole_pairs",
     [OPT_PEEPHOLE_REDUCE]          = "peephole_reduce",
     [OPT_PEEPHOLE_SHIFTS]          = "peephole_shifts",
-    [OPT_PEEPHOLE_DEAD_STORES]     = "peephole_dead_stores",
-    [OPT_PEEPHOLE_LOADS]           = "peephole_loads",
-    [OPT_PEEPHOLE_IMMEDIATE_PROP]  = "peephole_immediate_prop",
-    [OPT_PEEPHOLE_JMP_CHAIN]       = "peephole_jmp_chain",
-    [OPT_DCE]                      = "dce",
     [OPT_CONSTANT_FOLDING]         = "constant_folding",
+	[OPT_CSE]                      = "cse",
+    [OPT_DCE]                      = "dce",
+    [OPT_OMIT_FRAME_POINTERS]      = "omit_frame_pointers",
     [OPT_INLINE]                   = "inline",
-    [OPT_PROMOTE_REGS]             = "promote_regs",
     [OPT_PROMOTE_LEAF]             = "promote_leaf",
     [OPT_PROMOTE_LOOPS]            = "promote_loops",
-    [OPT_OMIT_FRAME_POINTERS]      = "omit_frame_pointers",
-	[OPT_CSE]                      = "cse"
+    [OPT_PROMOTE_REGS]             = "promote_regs"
 };
 
 // Helper: remove nodes and insert debug comments
@@ -73,8 +73,7 @@ void normalize_whitespace(char *dest, const char *src, size_t dest_size) {
     if (q > dest && *(q-1) == ' ') *(q-1) = '\0';
 }
 
-// Insert debug comment after a given node
-void  insert_debug_comment (AsmNode *after, OptType  opt_type, const char *original_instr)
+void insert_debug_comment(AsmNode *after, OptType opt_type, const char *original_instr)
 {
     if (!config.debug)
     {
@@ -83,26 +82,29 @@ void  insert_debug_comment (AsmNode *after, OptType  opt_type, const char *origi
 
     // Strip any existing comment from the original instruction
     char stripped[8192];
-    strip_comment_from_line (stripped, original_instr, sizeof (stripped));
+    strip_comment_from_line(stripped, original_instr, sizeof(stripped));
 
     char normalized[8192];
     normalize_whitespace(normalized, stripped, sizeof(normalized));
 
-    AsmNode *comment               = calloc (1, sizeof (AsmNode));
-    comment -> type                = OP_OTHER;
-    snprintf (comment -> raw, sizeof (comment -> raw), "; [DEBUG %s] %s",
-              opt_type_names[opt_type], normalized);
+    AsmNode *comment = calloc(1, sizeof(AsmNode));
+    comment->type = OP_OTHER;
+
+    // FIX: Split formatting to avoid % in 'normalized' being interpreted
+    char debug_prefix[128];
+    snprintf(debug_prefix, sizeof(debug_prefix), "; [DEBUG %s] ", opt_type_names[opt_type]);
+    snprintf(comment->raw, sizeof(comment->raw), "%s%s", debug_prefix, normalized);
 
     // Insert after the given node
     if (after)
     {
-        comment -> prev            = after;
-        comment -> next            = after -> next;
-        if (after -> next)
+        comment->prev = after;
+        comment->next = after->next;
+        if (after->next)
         {
-            after -> next -> prev  = comment;
+            after->next->prev = comment;
         }
-        after -> next              = comment;
+        after->next = comment;
     }
 }
 

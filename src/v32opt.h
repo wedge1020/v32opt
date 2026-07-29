@@ -88,26 +88,26 @@ typedef enum
 
 typedef enum
 {
-	OPT_PEEPHOLE_PAIRS,
 	OPT_PEEPHOLE_ALGEBRA,
+	OPT_PEEPHOLE_DEAD_STORES,
 	OPT_PEEPHOLE_FORWARDING,
-	OPT_PEEPHOLE_JUMPS,
-	OPT_PEEPHOLE_MOVS,
+	OPT_PEEPHOLE_IMMEDIATE_PROP,
 	OPT_PEEPHOLE_IMMEDIATES,
+	OPT_PEEPHOLE_JMP_CHAIN,
+	OPT_PEEPHOLE_JUMPS,
+	OPT_PEEPHOLE_LOADS,
+	OPT_PEEPHOLE_MOVS,
+	OPT_PEEPHOLE_PAIRS,
 	OPT_PEEPHOLE_REDUCE,
 	OPT_PEEPHOLE_SHIFTS,
-	OPT_PEEPHOLE_DEAD_STORES,
-	OPT_PEEPHOLE_LOADS,
-	OPT_PEEPHOLE_IMMEDIATE_PROP,
-	OPT_PEEPHOLE_JMP_CHAIN,
+	OPT_CONSTANT_FOLDING,
 	OPT_CSE,
 	OPT_DCE,
-	OPT_CONSTANT_FOLDING,
+	OPT_OMIT_FRAME_POINTERS,
 	OPT_INLINE,
-	OPT_PROMOTE_REGS,
 	OPT_PROMOTE_LEAF,
 	OPT_PROMOTE_LOOPS,
-	OPT_OMIT_FRAME_POINTERS
+	OPT_PROMOTE_REGS
 } OptType;
 
 typedef enum {
@@ -198,28 +198,28 @@ typedef struct {
     bool verbose;
     bool testing;
 	bool debug;
-    bool opt_peephole_pairs;
     bool opt_peephole_algebra;
+    bool opt_peephole_dead_stores;
     bool opt_peephole_forwarding;
-    bool opt_peephole_jumps;
-    bool opt_peephole_movs;
+    bool opt_peephole_immediate_prop;
     bool opt_peephole_immediates;
+    bool opt_peephole_jmp_chain;
+    bool opt_peephole_jumps;
+    bool opt_peephole_loads;
+    bool opt_peephole_movs;
+    bool opt_peephole_pairs;
     bool opt_peephole_reduce;
     bool opt_peephole_shifts;
-    bool opt_peephole_dead_stores;
-    bool opt_peephole_loads;
-    bool opt_peephole_immediate_prop;
-    bool opt_peephole_jmp_chain;
+    bool opt_constant_folding;
     bool opt_cse;
     bool opt_dce;
-    bool opt_constant_folding;
+    bool opt_omit_frame_pointers;
     bool opt_inline;
 	int  opt_inline_call_limit;
 	int  opt_inline_max_body_ins;
-    bool opt_promote_regs;
     bool opt_promote_leaf;
     bool opt_promote_loops;
-    bool opt_omit_frame_pointers;
+    bool opt_promote_regs;
 } OptConfig;
 
 ////////////////////////////////////////////////////////////////////////////////////////
