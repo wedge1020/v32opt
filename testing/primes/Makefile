@@ -6,6 +6,7 @@ ASSEMBLER        = assemble
 TEXTURE_TOOL     = png2vircon
 PACKER           = packrom
 
+COMPILER_FLAGS   = 
 OPT_FLAGS        = -f$(TEST) -t -v
 
 # This variable is empty by default, but is set to -g during a debug build
@@ -30,7 +31,7 @@ asm: $(TEST).asm
 
 $(TEST).asm: $(TEST).lua
 	@echo -n "Compiling  $(TEST).lua    -> $(TEST).asm     ... "
-	@$(COMPILER) $(DEBUG_FLAGS) -o $(TEST).asm $(TEST).lua && echo "OK" || echo "FAIL"
+	@$(COMPILER) $(COMPILER_FLAGS) $(DEBUG_FLAGS) -o $(TEST).asm $(TEST).lua && echo "OK" || echo "FAIL"
 
 opt: $(TEST)Opt.asm
 
@@ -69,4 +70,4 @@ report: $(TEST).v32 $(TEST)Opt.v32
 
 # --- Clean Up ---
 clean:
-	@rm -f *.v32 textures/*.vtex *.vbin *Opt.asm *.debug *.txt
+	@rm -f *.asm *.v32 textures/*.vtex *.vbin *Opt.asm *.debug *.txt

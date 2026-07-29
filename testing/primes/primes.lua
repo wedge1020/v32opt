@@ -97,24 +97,26 @@ end
 -- Main
 --
 function main()
+	ioports.gpu.clear("black")
 	print(0,   0,  "Prime Number Computations")
-	print(0,   20, "============================")
-	print(0,   40, "variant tally cycles time(s)")
-	print(0,   60, "------- ----- ------ -------")
+	print(0,   20, "==================================")
+	print(0,   40, "variant upper tally cycles time(s)")
+	print(0,   60, "------- ----- ----- ------ -------")
 
 	local start            = 0
 	local stop             = 0
 
-
+	print(0,   80, "brute:")
 	start                  = ioports.tim.frames
+	print(90,  80, "1024")
+
 	brute_1024_tally       = count_brute(n)
 	stop                   = ioports.tim.frames
 	brute_1024_cycles      = stop - start
 	brute_1024_cycles      = brute_1024_cycles * 60
 	brute_1024_cycles      = brute_1024_cycles + ioports.tim.cycles
-	print(0,   80, "brute:")
-	print(90,  80, brute_1024_tally)
-	print(160, 80, brute_1024_cycles)
+	print(160, 80, brute_1024_tally)
+	print(220, 80, brute_1024_cycles)
 
 	start                  = ioports.tim.frames
 	brute_b_1024_tally     = count_break(n)
@@ -125,4 +127,7 @@ function main()
 
 	brute_o_1024_tally  = count_odds_only(n)
 	brute_s_1024_tally  = count_sqrt(n)
+
+	-- system.wait()
+	ioports.gpu.sync()
 end
