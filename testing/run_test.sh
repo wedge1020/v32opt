@@ -87,8 +87,8 @@ out
 
 if [ ! "${ASMRESULT2}" = "${OPTRESULT2}" ]; then
 	out "---OPT TRIGGERED ON KEEP--------------------------------"
-	cat ${UNIT}.asm             | grep 'KEEP'         >  asmkeep.tmp
-	cat ${UNIT}Opt.asm          | grep 'KEEP'         >  optkeep.tmp
+	cat ${UNIT}.asm           | grep 'KEEP'         >  asmkeep.tmp
+	cat ${UNIT}Opt.asm        | grep 'KEEP'         >  optkeep.tmp
 	diff asmkeep.tmp optkeep.tmp | grep '<'
 	rm -f asmkeep.tmp optkeep.tmp
 	out "--------------------------------------------------------"
