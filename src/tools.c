@@ -1,7 +1,5 @@
 #include "v32opt.h"
 
-#include "v32opt.h"
-
 // Map OptType enum to human-readable names
 const char *opt_type_names[]       = {
     [OPT_PEEPHOLE_ALGEBRA]         = "peephole_algebra",
