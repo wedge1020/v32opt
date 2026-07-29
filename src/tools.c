@@ -71,14 +71,37 @@ void normalize_whitespace(char *dest, const char *src, size_t dest_size) {
     if (q > dest && *(q-1) == ' ') *(q-1) = '\0';
 }
 
+// In tools.c, change insert_debug_comment to:
 void insert_debug_comment(AsmNode *after, OptType opt_type, const char *original_instr)
 {
-    if (!config.debug)
-    {
-        return;
+    if (!config.debug) return;
+
+    // Validate opt_type is in bounds
+    if (opt_type < 0 || opt_type >= (sizeof(opt_type_names)/sizeof(opt_type_names[0]))) {
+        // Fallback for out-of-bounds - use a safe default
+        opt_type = OPT_PEEPHOLE_MOVS; // or handle error
     }
 
-    // Strip any existing comment from the original instruction
+    const char *pass_name = opt_type_names[opt_type];
+    if (!pass_name) pass_name = "unknown";
+
+    // Ensure pass_name doesn't contain % (defensive)
+    char safe_pass_name[128];
+    size_t i = 0, j = 0;
+    while (pass_name[i] && j < sizeof(safe_pass_name) - 1) {
+        if (pass_name[i] == '%') {
+            // Escape % by doubling it
+            if (j + 1 < sizeof(safe_pass_name)) {
+                safe_pass_name[j++] = '%';
+                safe_pass_name[j++] = '%';
+            }
+            i++;
+        } else {
+            safe_pass_name[j++] = pass_name[i++];
+        }
+    }
+    safe_pass_name[j] = '\0';
+
     char stripped[8192];
     strip_comment_from_line(stripped, original_instr, sizeof(stripped));
 
@@ -88,20 +111,14 @@ void insert_debug_comment(AsmNode *after, OptType opt_type, const char *original
     AsmNode *comment = calloc(1, sizeof(AsmNode));
     comment->type = OP_OTHER;
 
-    // FIX: Split formatting to avoid % in 'normalized' being interpreted
     char debug_prefix[128];
-    snprintf(debug_prefix, sizeof(debug_prefix), "; [DEBUG %s] ", opt_type_names[opt_type]);
+    snprintf(debug_prefix, sizeof(debug_prefix), "; [DEBUG %s] ", safe_pass_name);
     snprintf(comment->raw, sizeof(comment->raw), "%s%s", debug_prefix, normalized);
 
-    // Insert after the given node
-    if (after)
-    {
+    if (after) {
         comment->prev = after;
         comment->next = after->next;
-        if (after->next)
-        {
-            after->next->prev = comment;
-        }
+        if (after->next) after->next->prev = comment;
         after->next = comment;
     }
 }
