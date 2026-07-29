@@ -77,12 +77,7 @@ int  main (int  argc, char **argv)
     char outFile[256] = {0};
     char dotFile[256] = {0};
     int  max_passes   = 1000;
-    OptType tally[MAX_OPTIMIZATION_ALGORITHMS+5]  = { 0 };
-
-    //for (int index  = 0; index <  MAX_OPTIMIZATION_ALGORITHMS; index++)
-//    {
-//        tally[index
-
+    OptType tally[MAX_OPTIMIZATION_ALGORITHMS]  = { 0 };
 
     // -------------------------------------------------------------------
     // Parse Command Line Arguments
@@ -455,7 +450,7 @@ int  main (int  argc, char **argv)
     int pass_count = 0;
     do {
         opts_in_pass = 0;
-        OptType opts[MAX_OPTIMIZATION_ALGORITHMS+5] = { 0 };
+        OptType opts[MAX_OPTIMIZATION_ALGORITHMS] = { 0 };
         pass_count++;
 
         // ----------------------------------------------------------------
@@ -583,7 +578,7 @@ int  main (int  argc, char **argv)
         }
 
         // Calculate total optimizations for this pass
-        for (int index = 0; index < MAX_OPTIMIZATION_ALGORITHMS+5; index++)
+        for (int index = 0; index < MAX_OPTIMIZATION_ALGORITHMS; index++)
         {
             opts_in_pass  = opts_in_pass + opts[index]; // totals for the round
             tally[index]  = tally[index] + opts[index]; // tally each opt
@@ -595,7 +590,7 @@ int  main (int  argc, char **argv)
         // Verbose output for this pass
         if (config.verbose && opts_in_pass > 0) {
             printf("Pass %d applied %d optimizations:\n", passes, opts_in_pass);
-            for (int index = 0; index < MAX_OPTIMIZATION_ALGORITHMS+5; index++)
+            for (int index = 0; index < MAX_OPTIMIZATION_ALGORITHMS; index++)
             {
                 if (opts[index] >  0)
                 {
