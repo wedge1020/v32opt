@@ -32,11 +32,7 @@ int peephole_jumps(AsmNode *head)
     {
         bool did_optimize = false;
 
-        // ----------------------------------------------------------
-        // PATTERN 1: Redundant Jump to Next Label
-        // Eliminates JMP/JT/JF where the target label follows,
-        // possibly with comments/blanks in between.
-        // ----------------------------------------------------------
+        // --- PATTERN 1: Redundant Jump to Next Label ---
         if (!did_optimize && (curr->type == OP_JMP || curr->type == OP_JT || curr->type == OP_JF))
         {
             const char *target_label = (curr->type == OP_JMP)
@@ -45,10 +41,8 @@ int peephole_jumps(AsmNode *head)
 
             if (target_label && target_label[0] != '\0')
             {
-                // Skip OP_OTHER nodes to find the next non-comment node
                 AsmNode *next_non_comment = skip_other_nodes(curr->next);
 
-                // Check if the next non-comment node is the target label
                 if (next_non_comment && next_non_comment->type == OP_LABEL)
                 {
                     char lbl_name[128];
@@ -56,7 +50,7 @@ int peephole_jumps(AsmNode *head)
 
                     if (str_case_eq(lbl_name, target_label))
                     {
-                        insert_debug_comment(curr->prev, OPT_PEEPHOLE_JUMPS, curr->raw);
+                        // Removed redundant debug comment insertion here
                         AsmNode *nodes[] = {curr};
                         remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_JUMPS);
                         optimizations++;
@@ -66,28 +60,17 @@ int peephole_jumps(AsmNode *head)
             }
         }
 
-        // ----------------------------------------------------------
-        // PATTERN 2: Branch Over Jump (Condition Inversion)
-        // Transforms:
-        //     JF R1, __else_label
-        //     JMP __end_label
-        //     __else_label:
-        // Into:
-        //     JT R1, __end_label
-        //     __else_label:
-        // ----------------------------------------------------------
+        // --- PATTERN 2: Branch Over Jump (Condition Inversion) ---
         if (!did_optimize && (curr->type == OP_JT || curr->type == OP_JF))
         {
             const char *branch_target = curr->src_op.raw;
             AsmNode *next_jmp = skip_other_nodes(curr->next);
 
-            // Next non-comment instruction MUST be an unconditional jump
             if (next_jmp && next_jmp->type == OP_JMP)
             {
                 const char *jmp_target = next_jmp->has_dst ? next_jmp->dst_op.raw : next_jmp->src_op.raw;
                 AsmNode *next_lbl = skip_other_nodes(next_jmp->next);
 
-                // The instruction after the JMP MUST be the branch target label
                 if (next_lbl && next_lbl->type == OP_LABEL && jmp_target && jmp_target[0] != '\0')
                 {
                     char lbl_name[128];
@@ -95,10 +78,9 @@ int peephole_jumps(AsmNode *head)
 
                     if (str_case_eq(lbl_name, branch_target))
                     {
-                        // Inject debug comment prior to mutating the instruction
+                        // Keep this comment; curr is being mutated, not removed
                         insert_debug_comment(curr->prev, OPT_PEEPHOLE_JUMPS, curr->raw);
 
-                        // Invert conditional jump mnemonic and node type
                         if (curr->type == OP_JT) {
                             curr->type = OP_JF;
                             strcpy(curr->mnemonic, "JF");
@@ -107,12 +89,10 @@ int peephole_jumps(AsmNode *head)
                             strcpy(curr->mnemonic, "JT");
                         }
 
-                        // Rewrite target operand to point directly to the JMP's destination
                         safe_str_copy(curr->src_op.raw, jmp_target, sizeof(curr->src_op.raw));
                         snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %s",
                                  curr->mnemonic, curr->dst_op.raw, jmp_target);
 
-                        // Remove the redundant unconditional JMP instruction
                         AsmNode *nodes[] = {next_jmp};
                         AsmNode *dummy = next_jmp;
                         remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_JUMPS);
@@ -124,13 +104,7 @@ int peephole_jumps(AsmNode *head)
             }
         }
 
-        // ----------------------------------------------------------
-        // PATTERN 3: Unreachable Code Elimination
-        // After JMP to label: remove code until target label ONLY if no
-        //   other labels are encountered first.
-        // Does NOT apply to JMP Rn or JMP immediate.
-        // Does NOT apply to RET/HLT (prevents cross-scenario removal)
-        // ----------------------------------------------------------
+        // --- PATTERN 3: Unreachable Code Elimination ---
         if (!did_optimize && curr->type == OP_JMP)
         {
             const char *target_label = curr->has_dst ? curr->dst_op.raw : curr->src_op.raw;
@@ -139,7 +113,6 @@ int peephole_jumps(AsmNode *head)
                 continue;
             }
 
-            // Only apply to label targets (not registers or immediates)
             if (!is_register_operand(target_label) && !is_immediate_string(target_label))
             {
                 AsmNode *to_remove[256];
@@ -152,14 +125,8 @@ int peephole_jumps(AsmNode *head)
                     {
                         char lbl_name[128];
                         get_label_name(scan, lbl_name, sizeof(lbl_name));
-                        if (str_case_eq(lbl_name, target_label))
-                        {
-                            break; // Found target, stop here (don't remove target label)
-                        }
-                        else
-                        {
-                            break; // Found DIFFERENT label, stop here (don't remove it)
-                        }
+                        if (str_case_eq(lbl_name, target_label)) break;
+                        else break;
                     }
 
                     to_remove[remove_count++] = scan;
@@ -168,6 +135,7 @@ int peephole_jumps(AsmNode *head)
 
                 if (remove_count > 0)
                 {
+                    // This custom structural comment is fine to keep as a banner
                     insert_debug_comment(curr, OPT_PEEPHOLE_JUMPS, "DEAD CODE ELIMINATED");
                     remove_with_debug(&curr->next, to_remove, remove_count, OPT_PEEPHOLE_JUMPS);
                     optimizations += remove_count;

@@ -32,9 +32,7 @@ int peephole_forwarding(AsmNode *head)
     {
         if (curr->type == OP_MOV)
         {
-            // =========================================================
-            // RULE 1: Store-to-Load Forwarding
-            // =========================================================
+            // --- RULE 1: Store-to-Load Forwarding ---
             if (curr->dst_op.mode == MODE_INDIRECT && curr->src_op.mode == MODE_REG)
             {
                 char *mem_reg = curr->dst_op.reg;
@@ -49,10 +47,8 @@ int peephole_forwarding(AsmNode *head)
                         continue;
                     }
 
-                    // Stop if memory base register or source register is modified
                     if (modifies_register(scan, mem_reg) || modifies_register(scan, src_reg)) break;
 
-                    // Stop on ANY store to memory with same base register
                     if (scan->type == OP_MOV && scan->dst_op.mode == MODE_INDIRECT &&
                         str_case_eq(scan->dst_op.reg, mem_reg)) {
                         break;
@@ -70,21 +66,17 @@ int peephole_forwarding(AsmNode *head)
                         break;
                     }
 
-                    // Evaluate control flow boundaries AFTER checking for optimization
                     if (is_control_flow_boundary(scan)) break;
 
                     scan = scan->next;
                 }
             }
 
-            // =========================================================
-            // RULE 2: Copy Propagation
-            // =========================================================
+            // --- RULE 2: Copy Propagation ---
             if (curr->dst_op.mode == MODE_REG)
             {
                 char *def_reg = curr->dst_op.reg;
 
-                // Don't propagate SP or BP - they have special semantics
                 if (str_case_eq(def_reg, "SP") || str_case_eq(def_reg, "BP")) {
                     curr = curr->next;
                     continue;
@@ -98,7 +90,6 @@ int peephole_forwarding(AsmNode *head)
                         continue;
                     }
 
-                    // Stop if the defined register is modified
                     if (modifies_register(scan, def_reg)) break;
                     if (curr->src_op.mode == MODE_REG && modifies_register(scan, curr->src_op.reg)) {
                         break;
@@ -107,13 +98,11 @@ int peephole_forwarding(AsmNode *head)
                     bool uses_def_reg = false;
                     Operand *target_op = NULL;
 
-                    // Two-operand instructions: check src_op
                     if (scan->has_src && scan->src_op.mode == MODE_REG &&
                         str_case_eq(scan->src_op.reg, def_reg)) {
                         uses_def_reg = true;
                         target_op = &scan->src_op;
                     }
-                    // Single-operand instructions (like JMP) use dst_op
                     else if (str_case_eq(scan->mnemonic, "JMP") && scan->has_dst &&
                              scan->dst_op.mode == MODE_REG &&
                              str_case_eq(scan->dst_op.reg, def_reg)) {
@@ -123,31 +112,25 @@ int peephole_forwarding(AsmNode *head)
 
                     if (uses_def_reg)
                     {
-                        // Guard: Block numeric immediates into JT/JF
+                        // Cleaned up immediate check to use your robust helper function
                         if ((str_case_eq(scan->mnemonic, "JT") || str_case_eq(scan->mnemonic, "JF")) &&
-                            curr->src_op.mode == MODE_IMMEDIATE &&
-                            (isdigit((unsigned char)curr->src_op.raw[0]) ||
-                             (curr->src_op.raw[0] == '-' && isdigit((unsigned char)curr->src_op.raw[1])))) {
+                            is_numeric_immediate(&curr->src_op)) {
                             break;
                         }
 
-                        // Guard: Block POW/ATAN2
                         if (str_case_eq(scan->mnemonic, "POW") || str_case_eq(scan->mnemonic, "ATAN2")) {
                             break;
                         }
 
-                        // Guard: Block illegal immediate stores
                         bool is_illegal_imm_store = (curr->src_op.mode == MODE_IMMEDIATE &&
                                                      scan->has_dst && scan->dst_op.mode != MODE_REG &&
                                                      !str_case_eq(scan->mnemonic, "JMP"));
                         if (is_illegal_imm_store) break;
 
-                        // 🔧 NEW GUARD: Block immediates into JMP (prevents invalid jumps)
                         if (str_case_eq(scan->mnemonic, "JMP") && curr->src_op.mode == MODE_IMMEDIATE) {
                             break;
                         }
 
-                        // 🔧 NEW GUARD: Block immediates into non-register operands
                         if (curr->src_op.mode == MODE_IMMEDIATE && scan->dst_op.mode != MODE_REG) {
                             break;
                         }
@@ -170,7 +153,6 @@ int peephole_forwarding(AsmNode *head)
                         optimizations++;
                     }
 
-                    // Evaluate control flow boundaries AFTER attempting optimization
                     if (is_control_flow_boundary(scan)) break;
 
                     scan = scan->next;

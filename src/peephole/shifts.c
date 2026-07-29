@@ -26,6 +26,81 @@ int peephole_shifts(AsmNode *head)
     {
         AsmNode *next = curr->next;
 
+        // Guard with is_numeric_immediate
+        if (curr->type == OP_SHL &&
+            is_numeric_immediate(&curr->src_op) && !curr->src_op.is_float &&
+            curr->src_op.immediate == 0)
+        {
+            AsmNode *nodes[] = {curr};
+            remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_SHIFTS);
+            optimizations++;
+            continue;
+        }
+
+        // Guard with is_numeric_immediate
+        if (curr->type == OP_SHL &&
+            curr->dst_op.mode == MODE_REG &&
+            is_numeric_immediate(&curr->src_op) && !curr->src_op.is_float &&
+            curr->src_op.immediate == 1)
+        {
+            insert_debug_comment(curr->prev, OPT_PEEPHOLE_SHIFTS, curr->raw);
+            curr->type = OP_IADD;
+            strcpy(curr->mnemonic, "IADD");
+            curr->src_op = curr->dst_op;
+            snprintf(curr->raw, sizeof(curr->raw), "    IADD %s, %s",
+                     curr->dst_op.raw, curr->src_op.raw);
+            optimizations++;
+            curr = next;
+            continue;
+        }
+
+        if (curr->type == OP_SHL)
+        {
+            AsmNode *next_real = skip_other_nodes(curr->next);
+
+            if (next_real && next_real->type == OP_SHL)
+            {
+                // Guard BOTH nodes with is_numeric_immediate
+                if (curr->dst_op.mode == MODE_REG && next_real->dst_op.mode == MODE_REG &&
+                    str_case_eq(curr->dst_op.reg, next_real->dst_op.reg) &&
+                    is_numeric_immediate(&curr->src_op) && is_numeric_immediate(&next_real->src_op) &&
+                    !curr->src_op.is_float && !next_real->src_op.is_float &&
+                    curr->src_op.immediate == -next_real->src_op.immediate &&
+                    curr->src_op.immediate != 0)
+                {
+                    AsmNode *nodes[] = {curr, next_real};
+                    remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_SHIFTS);
+                    optimizations += 2;
+                    continue;
+                }
+            }
+        }
+
+        if (curr->type == OP_SHL &&
+            curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_REG &&
+            str_case_eq(curr->dst_op.reg, curr->src_op.reg))
+        {
+            AsmNode *nodes[] = {curr};
+            remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_SHIFTS);
+            optimizations++;
+            continue;
+        }
+
+        curr = next;
+    }
+
+    return optimizations;
+}
+/*
+int peephole_shifts(AsmNode *head)
+{
+    int optimizations = 0;
+    AsmNode *curr = head ? head->next : NULL;
+
+    while (curr != NULL)
+    {
+        AsmNode *next = curr->next;
+
         // ----------------------------------------------------------
         // PATTERN 1: Shift by 0 (Identity)
         // SHL R1, 0 → remove (shifting by 0 does nothing)
@@ -107,4 +182,4 @@ int peephole_shifts(AsmNode *head)
     }
 
     return optimizations;
-}
+}*/

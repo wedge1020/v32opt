@@ -29,21 +29,18 @@ int peephole_immediates(AsmNode *head)
 
     while (curr)
     {
-        // Only process IADD/ISUB with register destination and immediate source
+        // Guard with is_numeric_immediate to prevent evaluating symbolic defines as 0
         if ((curr->type == OP_IADD || curr->type == OP_ISUB) &&
             curr->dst_op.mode == MODE_REG &&
-            curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float)
+            is_numeric_immediate(&curr->src_op) && !curr->src_op.is_float)
         {
-            // Skip ALL OP_OTHER nodes (comments/blanks)
             AsmNode *n2 = skip_other_nodes(curr->next);
 
-            // Check if n2 is also an IADD/ISUB with same destination and immediate
             if (n2 && (n2->type == OP_IADD || n2->type == OP_ISUB) &&
                 n2->dst_op.mode == MODE_REG &&
-                n2->src_op.mode == MODE_IMMEDIATE && !n2->src_op.is_float &&
+                is_numeric_immediate(&n2->src_op) && !n2->src_op.is_float &&
                 str_case_eq(curr->dst_op.reg, n2->dst_op.reg))
             {
-                // Calculate effective values: IADD adds, ISUB subtracts
                 int val1 = (curr->type == OP_IADD) ? curr->src_op.immediate : -curr->src_op.immediate;
                 int val2 = (n2->type == OP_IADD) ? n2->src_op.immediate : -n2->src_op.immediate;
                 int combined = val1 + val2;
@@ -51,10 +48,7 @@ int peephole_immediates(AsmNode *head)
                 // --- Cancellation Case ---
                 if (combined == 0)
                 {
-                    if (config.debug) {
-                        insert_debug_comment(curr->prev, OPT_PEEPHOLE_IMMEDIATES, curr->raw);
-                        insert_debug_comment(n2->prev, OPT_PEEPHOLE_IMMEDIATES, n2->raw);
-                    }
+                    // Removed redundant debug comment insertions; remove_with_debug handles this
                     AsmNode *nodes[] = {curr, n2};
                     remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_IMMEDIATES);
                     optimizations += 2;
@@ -63,6 +57,7 @@ int peephole_immediates(AsmNode *head)
                 // --- Non-Zero Combination ---
                 else
                 {
+                    // Keep comment for curr (it is mutating), but not for n2 (it is being removed)
                     if (config.debug) {
                         insert_debug_comment(curr->prev, OPT_PEEPHOLE_IMMEDIATES, curr->raw);
                     }
@@ -72,9 +67,7 @@ int peephole_immediates(AsmNode *head)
                     snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%d", abs(combined));
                     snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %d",
                              curr->mnemonic, curr->dst_op.raw, abs(combined));
-                    if (config.debug) {
-                        insert_debug_comment(n2->prev, OPT_PEEPHOLE_IMMEDIATES, n2->raw);
-                    }
+
                     AsmNode *nodes[] = {n2};
                     remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_IMMEDIATES);
                     optimizations++;

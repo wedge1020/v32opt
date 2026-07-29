@@ -20,17 +20,11 @@ int peephole_immediate_prop(AsmNode *head)
     {
         AsmNode *next = curr->next;
 
-        // ----------------------------------------------------------
-        // PATTERN 1: MOV with Immediate Value Propagation
-        // MOV R1, 42; ... OP R2, R1 → OP R2, 42
-        // ----------------------------------------------------------
+        // Use is_numeric_immediate to protect symbolic defines from being propagated as '0'
         if (curr->type == OP_MOV && curr->dst_op.mode == MODE_REG &&
-            curr->src_op.mode == MODE_IMMEDIATE)
+            is_numeric_immediate(&curr->src_op))
         {
             char *def_reg = curr->dst_op.reg;
-            long immediate_val = curr->src_op.immediate;
-            char imm_str[64];
-            snprintf(imm_str, sizeof(imm_str), "%ld", immediate_val);
 
             // Skip special registers
             if (str_case_eq(def_reg, "SP") || str_case_eq(def_reg, "BP"))
@@ -41,10 +35,10 @@ int peephole_immediate_prop(AsmNode *head)
 
             // Scan forward for uses of def_reg
             AsmNode *scan = curr->next;
-            while (scan && !is_control_flow_boundary(scan))
+            while (scan)
             {
-                // Skip OP_OTHER nodes
-                if (scan->type == OP_OTHER)
+                // Skip OP_OTHER nodes (comments, blank lines) safely
+                if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';'))
                 {
                     scan = scan->next;
                     continue;
@@ -56,76 +50,83 @@ int peephole_immediate_prop(AsmNode *head)
                     break;
                 }
 
-                // Check if this instruction uses def_reg as a source operand
                 bool uses_def_reg = false;
                 Operand *target_op = NULL;
 
-                // Two-operand instructions: check src_op
-                if (scan->has_src && scan->src_op.mode == MODE_REG &&
-                    str_case_eq(scan->src_op.reg, def_reg))
+                // Check source operand directly by mode/register (bypassing unreliable has_src flags)
+                if (scan->src_op.mode == MODE_REG && str_case_eq(scan->src_op.reg, def_reg))
                 {
                     uses_def_reg = true;
                     target_op = &scan->src_op;
                 }
-                // For single-operand instructions that use dst_op as source
-                else if (scan->type != OP_MOV && scan->has_dst &&
+                // Check destination operand for single-operand instructions that read it
+                else if ((str_case_eq(scan->mnemonic, "JMP") ||
+                          str_case_eq(scan->mnemonic, "PUSH") ||
+                          str_case_eq(scan->mnemonic, "POP")) &&
                          scan->dst_op.mode == MODE_REG &&
                          str_case_eq(scan->dst_op.reg, def_reg))
                 {
-                    // This is tricky - dst_op is usually the destination
-                    // But for some instructions like NOT, it might be the only operand
-                    // We'll skip these cases to be safe
-                    scan = scan->next;
-                    continue;
+                    uses_def_reg = true;
+                    target_op = &scan->dst_op;
                 }
 
                 if (uses_def_reg && target_op)
                 {
+                    bool skip_substitution = false;
+
                     // Guard: Don't propagate into JT/JF with numeric immediates
                     if ((str_case_eq(scan->mnemonic, "JT") || str_case_eq(scan->mnemonic, "JF")) &&
-                        isdigit((unsigned char)imm_str[0]))
+                        is_numeric_immediate(&curr->src_op))
                     {
-                        break;
+                        skip_substitution = true;
                     }
 
                     // Guard: Don't propagate into instructions that don't accept immediates
                     if (str_case_eq(scan->mnemonic, "POW") || str_case_eq(scan->mnemonic, "ATAN2"))
                     {
-                        break;
+                        skip_substitution = true;
                     }
 
                     // Guard: Don't propagate into stores with non-register destinations
                     if (scan->type == OP_MOV && scan->dst_op.mode != MODE_REG)
                     {
-                        break;
+                        skip_substitution = true;
                     }
 
-                    // Perform the propagation
-                    insert_debug_comment(scan->prev, OPT_PEEPHOLE_IMMEDIATE_PROP, scan->raw);
-
-                    // Update the operand
-                    target_op->mode = MODE_IMMEDIATE;
-                    target_op->immediate = immediate_val;
-                    target_op->is_float = false;
-                    snprintf(target_op->raw, sizeof(target_op->raw), "%ld", immediate_val);
-
-                    // Update the instruction raw text
-                    if (scan->has_dst && scan->has_src)
+                    // Perform the propagation if no guards were triggered
+                    if (!skip_substitution)
                     {
-                        snprintf(scan->raw, sizeof(scan->raw), "    %s %s, %s",
-                                 scan->mnemonic, scan->dst_op.raw, target_op->raw);
-                    }
-                    else if (scan->has_dst)
-                    {
-                        snprintf(scan->raw, sizeof(scan->raw), "    %s %s",
-                                 scan->mnemonic, scan->dst_op.raw);
-                    }
+                        insert_debug_comment(scan->prev, OPT_PEEPHOLE_IMMEDIATE_PROP, scan->raw);
 
-                    optimizations++;
-                    // Continue scanning for more uses
+                        // Direct operand struct copy ensures floats, modes, and raw strings are safely cloned
+                        *target_op = curr->src_op;
+
+                        // Update the instruction raw text dynamically based on available operands
+                        if (str_case_eq(scan->mnemonic, "JMP"))
+                        {
+                            snprintf(scan->raw, sizeof(scan->raw), "    JMP %s", target_op->raw);
+                        }
+                        else if (scan->dst_op.mode != MODE_NONE && scan->src_op.mode != MODE_NONE)
+                        {
+                            snprintf(scan->raw, sizeof(scan->raw), "    %s %s, %s",
+                                     scan->mnemonic, scan->dst_op.raw, scan->src_op.raw);
+                        }
+                        else if (scan->dst_op.mode != MODE_NONE)
+                        {
+                            snprintf(scan->raw, sizeof(scan->raw), "    %s %s",
+                                     scan->mnemonic, scan->dst_op.raw);
+                        }
+                        else if (scan->src_op.mode != MODE_NONE)
+                        {
+                            snprintf(scan->raw, sizeof(scan->raw), "    %s %s",
+                                     scan->mnemonic, scan->src_op.raw);
+                        }
+
+                        optimizations++;
+                    }
                 }
 
-                // Stop at control flow boundaries
+                // Stop at control flow boundaries AFTER analyzing them
                 if (is_control_flow_boundary(scan))
                 {
                     break;
@@ -140,3 +141,144 @@ int peephole_immediate_prop(AsmNode *head)
 
     return optimizations;
 }
+/*
+#include "v32opt.h"
+
+int peephole_immediate_prop(AsmNode *head)
+{
+    int optimizations = 0;
+    AsmNode *curr = head ? head->next : NULL;
+
+    while (curr != NULL)
+    {
+        AsmNode *next = curr->next;
+
+        // ----------------------------------------------------------
+        // PATTERN 1: MOV with Immediate Value Propagation
+        // MOV R1, 42; ... OP R2, R1 → OP R2, 42
+        // ----------------------------------------------------------
+
+        // Use is_numeric_immediate to protect symbolic defines from being propagated as '0'
+        if (curr->type == OP_MOV && curr->dst_op.mode == MODE_REG &&
+            is_numeric_immediate(&curr->src_op))
+        {
+            char *def_reg = curr->dst_op.reg;
+
+            // Skip special registers
+            if (str_case_eq(def_reg, "SP") || str_case_eq(def_reg, "BP"))
+            {
+                curr = next;
+                continue;
+            }
+
+            // Scan forward for uses of def_reg
+            AsmNode *scan = curr->next;
+            while (scan)
+            {
+                // Skip OP_OTHER nodes (comments, blank lines) safely
+                if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';'))
+                {
+                    scan = scan->next;
+                    continue;
+                }
+
+                // Stop if def_reg is modified
+                if (modifies_register(scan, def_reg))
+                {
+                    break;
+                }
+
+                // Check if this instruction uses def_reg
+                bool uses_def_reg = false;
+                Operand *target_op = NULL;
+
+                // Two-operand instructions or general source uses
+                if (scan->has_src && scan->src_op.mode == MODE_REG &&
+                    str_case_eq(scan->src_op.reg, def_reg))
+                {
+                    uses_def_reg = true;
+                    target_op = &scan->src_op;
+                }
+                // Handle single-operand instructions where the operand is in dst_op
+                else if ((str_case_eq(scan->mnemonic, "JMP") ||
+                          str_case_eq(scan->mnemonic, "PUSH") ||
+                          str_case_eq(scan->mnemonic, "POP")) &&
+                         scan->has_dst && scan->dst_op.mode == MODE_REG &&
+                         str_case_eq(scan->dst_op.reg, def_reg))
+                {
+                    uses_def_reg = true;
+                    target_op = &scan->dst_op;
+                }
+
+                if (uses_def_reg && target_op)
+                {
+                    bool skip_substitution = false;
+
+                    // Guard: Don't propagate into JT/JF with numeric immediates
+                    if ((str_case_eq(scan->mnemonic, "JT") || str_case_eq(scan->mnemonic, "JF")) &&
+                        is_numeric_immediate(&curr->src_op))
+                    {
+                        skip_substitution = true;
+                    }
+
+                    // Guard: Don't propagate into instructions that don't accept immediates
+                    if (str_case_eq(scan->mnemonic, "POW") || str_case_eq(scan->mnemonic, "ATAN2"))
+                    {
+                        skip_substitution = true;
+                    }
+
+                    // Guard: Don't propagate into stores with non-register destinations
+                    if (scan->type == OP_MOV && scan->dst_op.mode != MODE_REG)
+                    {
+                        skip_substitution = true;
+                    }
+
+                    // Perform the propagation if no guards were triggered
+                    if (!skip_substitution)
+                    {
+                        insert_debug_comment(scan->prev, OPT_PEEPHOLE_IMMEDIATE_PROP, scan->raw);
+
+                        // Direct operand struct copy ensures floats, modes, and raw strings are safely cloned
+                        *target_op = curr->src_op;
+
+                        // Update the instruction raw text dynamically based on available operands
+                        if (str_case_eq(scan->mnemonic, "JMP"))
+                        {
+                            snprintf(scan->raw, sizeof(scan->raw), "    JMP %s", target_op->raw);
+                        }
+                        else if (scan->has_dst && scan->has_src)
+                        {
+                            snprintf(scan->raw, sizeof(scan->raw), "    %s %s, %s",
+                                     scan->mnemonic, scan->dst_op.raw, scan->src_op.raw);
+                        }
+                        else if (scan->has_dst)
+                        {
+                            snprintf(scan->raw, sizeof(scan->raw), "    %s %s",
+                                     scan->mnemonic, scan->dst_op.raw);
+                        }
+                        else if (scan->has_src)
+                        {
+                            snprintf(scan->raw, sizeof(scan->raw), "    %s %s",
+                                     scan->mnemonic, scan->src_op.raw);
+                        }
+
+                        optimizations++;
+                    }
+                }
+
+                // Stop at control flow boundaries AFTER analyzing them
+                if (is_control_flow_boundary(scan))
+                {
+                    break;
+                }
+
+                scan = scan->next;
+            }
+        }
+
+        curr = next;
+    }
+
+    return optimizations;
+}
+*/

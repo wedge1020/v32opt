@@ -110,6 +110,7 @@ function main()
 	start                  = ioports.tim.frames
 	print(90,  80, "1024")
 
+	n                      = 1024
 	brute_1024_tally       = count_brute(n)
 	stop                   = ioports.tim.frames
 	brute_1024_cycles      = stop - start

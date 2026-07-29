@@ -33,12 +33,11 @@ int peephole_algebra(AsmNode *head)
         AsmNode *next = curr->next;
 
         // --- MOV r, r (Self-Move Elimination) ---
-        // Copying a register to itself is a no-op
         if (curr->type == OP_MOV &&
             curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_REG &&
             str_case_eq(curr->dst_op.reg, curr->src_op.reg))
         {
-            insert_debug_comment(curr->prev, OPT_PEEPHOLE_ALGEBRA, curr->raw);
+            // remove_with_debug handles the debug comment
             AsmNode *nodes[] = {curr};
             remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_ALGEBRA);
             optimizations++;
@@ -46,12 +45,11 @@ int peephole_algebra(AsmNode *head)
         }
 
         // --- IADD/ISUB with Immediate 0 ---
-        // Adding or subtracting 0 leaves the register unchanged
         if ((curr->type == OP_IADD || curr->type == OP_ISUB) &&
-            curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float &&
+            is_numeric_immediate(&curr->src_op) &&
             curr->src_op.immediate == 0)
         {
-            insert_debug_comment(curr->prev, OPT_PEEPHOLE_ALGEBRA, curr->raw);
+            // remove_with_debug handles the debug comment
             AsmNode *nodes[] = {curr};
             remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_ALGEBRA);
             optimizations++;
@@ -59,12 +57,12 @@ int peephole_algebra(AsmNode *head)
         }
 
         // --- IMUL by 2 Strength Reduction ---
-        // IMUL r, 2 → IADD r, r (cost-neutral on Vircon32, but more idiomatic)
         if (curr->type == OP_IMUL &&
             curr->dst_op.mode == MODE_REG &&
-            curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float &&
+            is_numeric_immediate(&curr->src_op) &&
             curr->src_op.immediate == 2)
         {
+            // Keep this debug comment, as we are mutating, not removing
             insert_debug_comment(curr->prev, OPT_PEEPHOLE_ALGEBRA, curr->raw);
             curr->type = OP_IADD;
             strcpy(curr->mnemonic, "IADD");
@@ -77,9 +75,10 @@ int peephole_algebra(AsmNode *head)
         // --- IMUL by 0 → MOV r, 0 ---
         if (curr->type == OP_IMUL &&
             curr->dst_op.mode == MODE_REG &&
-            curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float &&
+            is_numeric_immediate(&curr->src_op) &&
             curr->src_op.immediate == 0)
         {
+            // Keep this debug comment, as we are mutating, not removing
             insert_debug_comment(curr->prev, OPT_PEEPHOLE_ALGEBRA, curr->raw);
             curr->type = OP_MOV;
             strcpy(curr->mnemonic, "MOV");
@@ -92,10 +91,10 @@ int peephole_algebra(AsmNode *head)
         // --- IMUL by 1 → Remove (identity) ---
         if (curr->type == OP_IMUL &&
             curr->dst_op.mode == MODE_REG &&
-            curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float &&
+            is_numeric_immediate(&curr->src_op) &&
             curr->src_op.immediate == 1)
         {
-            insert_debug_comment(curr->prev, OPT_PEEPHOLE_ALGEBRA, curr->raw);
+            // remove_with_debug handles the debug comment
             AsmNode *nodes[] = {curr};
             remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_ALGEBRA);
             optimizations++;
@@ -105,10 +104,10 @@ int peephole_algebra(AsmNode *head)
         // --- IDIV by 1 → Remove (identity) ---
         if (curr->type == OP_IDIV &&
             curr->dst_op.mode == MODE_REG &&
-            curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float &&
+            is_numeric_immediate(&curr->src_op) &&
             curr->src_op.immediate == 1)
         {
-            insert_debug_comment(curr->prev, OPT_PEEPHOLE_ALGEBRA, curr->raw);
+            // remove_with_debug handles the debug comment
             AsmNode *nodes[] = {curr};
             remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_ALGEBRA);
             optimizations++;

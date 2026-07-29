@@ -29,6 +29,75 @@ int peephole_reduce(AsmNode *head)
 
     while (curr)
     {
+        // Guard with is_numeric_immediate
+        if (curr->type == OP_IMUL && curr->dst_op.mode == MODE_REG &&
+            is_numeric_immediate(&curr->src_op) && !curr->src_op.is_float)
+        {
+            int val = curr->src_op.immediate;
+
+            if (val == 0)
+            {
+                insert_debug_comment(curr->prev, OPT_PEEPHOLE_REDUCE, curr->raw);
+                curr->type = OP_MOV;
+                strcpy(curr->mnemonic, "MOV");
+                snprintf(curr->raw, sizeof(curr->raw), "    MOV %s, 0", curr->dst_op.raw);
+                optimizations++;
+                curr = curr->next;
+                continue;
+            }
+
+            if (val == 1)
+            {
+                // Removed redundant debug comment
+                AsmNode *nodes[] = {curr};
+                remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_REDUCE);
+                optimizations++;
+                continue;
+            }
+
+            if (val == 2)
+            {
+                insert_debug_comment(curr->prev, OPT_PEEPHOLE_REDUCE, curr->raw);
+                curr->type = OP_IADD;
+                strcpy(curr->mnemonic, "IADD");
+                curr->src_op.mode = MODE_REG;
+                safe_str_copy(curr->src_op.reg, curr->dst_op.reg, sizeof(curr->src_op.reg));
+                safe_str_copy(curr->src_op.raw, curr->dst_op.raw, sizeof(curr->src_op.raw));
+                snprintf(curr->raw, sizeof(curr->raw), "    IADD %s, %s",
+                         curr->dst_op.raw, curr->dst_op.raw);
+                optimizations++;
+                curr = curr->next;
+                continue;
+            }
+        }
+
+        // Guard with is_numeric_immediate
+        if (curr->type == OP_IDIV && curr->dst_op.mode == MODE_REG &&
+            is_numeric_immediate(&curr->src_op) && !curr->src_op.is_float)
+        {
+            if (curr->src_op.immediate == 1)
+            {
+                // Removed redundant debug comment
+                AsmNode *nodes[] = {curr};
+                remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_REDUCE);
+                optimizations++;
+                continue;
+            }
+        }
+
+        curr = curr->next;
+    }
+
+    return optimizations;
+}
+/*
+int peephole_reduce(AsmNode *head)
+{
+    int optimizations = 0;
+    AsmNode *curr = head ? head->next : NULL;
+
+    while (curr)
+    {
         // --- IMUL Strength Reduction ---
         if (curr->type == OP_IMUL && curr->dst_op.mode == MODE_REG &&
             curr->src_op.mode == MODE_IMMEDIATE && !curr->src_op.is_float)
@@ -94,3 +163,4 @@ int peephole_reduce(AsmNode *head)
 
     return optimizations;
 }
+*/
