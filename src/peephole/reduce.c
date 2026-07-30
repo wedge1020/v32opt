@@ -93,14 +93,14 @@ int peephole_reduce(AsmNode *head) {
         if (curr->type == OP_FMUL && curr->dst_op.mode == MODE_REG &&
             is_numeric_immediate(&curr->src_op) && curr->src_op.is_float) {
             
-            float imm = curr->src_op.float_val;
+            float imm = curr->src_op.float_value;
             
             if (imm == 0.0f) {
                 // FMUL R, 0.0 → MOV R, 0.0
                 insert_debug_comment(curr->prev, OPT_PEEPHOLE_REDUCE, curr->raw);
                 curr->type = OP_MOV;
                 strcpy(curr->mnemonic, "MOV");
-                curr->src_op.float_val = 0.0f;
+                curr->src_op.float_value = 0.0f;
                 snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "0.0");
                 snprintf(curr->raw, sizeof(curr->raw), "    MOV %s, 0.0", curr->dst_op.raw);
                 optimizations++;
@@ -117,7 +117,7 @@ int peephole_reduce(AsmNode *head) {
         if (curr->type == OP_FDIV && curr->dst_op.mode == MODE_REG &&
             is_numeric_immediate(&curr->src_op) && curr->src_op.is_float) {
             
-            float imm = curr->src_op.float_val;
+            float imm = curr->src_op.float_value;
             
             if (imm == 1.0f) {
                 // FDIV R, 1.0 → REMOVE

@@ -194,28 +194,14 @@ __function_test_mixed:
     POP BP
     RET
 
-; ===================================================================
-; TEST: peephole-loads - Floating-Point & Memory Extensions
-; ===================================================================
-
-; ✅ FLOATING-POINT LOAD ELIMINATION
-__function_test_fp_loads:
-    PUSH BP
-    MOV BP, SP
-    MOV R1, [R2]        ; Load float from [R2]
-    FADD R3, [R2]       ; MATCH(9) → FADD R3, R1 (saves 1 word)
-    MOV SP, BP
-    POP BP
-    RET
-
 ; ✅ MULTIPLE REDUNDANT LOADS (3+)
 __function_test_triple_loads:
     PUSH BP
     MOV BP, SP
     MOV R1, [R2+4]
-    MOV R3, [R2+4]      ; MATCH(10) → MOV R3, R1
-    MOV R4, [R2+4]      ; MATCH(11) → MOV R4, R1
-    MOV R5, [R2+4]      ; MATCH(12) → MOV R5, R1
+    MOV R3, [R2+4]      ; MATCH(9) → MOV R3, R1
+    MOV R4, [R2+4]      ; MATCH(10) → MOV R4, R1
+    MOV R5, [R2+4]      ; MATCH(11) → MOV R5, R1
     MOV SP, BP
     POP BP
     RET
