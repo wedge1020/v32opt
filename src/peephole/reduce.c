@@ -1,5 +1,3 @@
-#include "v32opt.h"
-
 // ===================================================================
 // PEEPHOLE: Strength Reduction (Vircon32-Optimized)
 // //
@@ -17,6 +15,13 @@
 // ===================================================================
 #include "v32opt.h"
 
+// Helper: Check if operand is a numeric immediate (not a label)
+static bool is_numeric_immediate_only(Operand *op) {
+    if (!is_numeric_immediate(op)) return false;
+    if (op->raw[0] == '_') return false; // Label
+    return true;
+}
+
 int peephole_reduce(AsmNode *head) {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;
@@ -26,7 +31,9 @@ int peephole_reduce(AsmNode *head) {
 
         // --- INTEGER MULTIPLICATION ---
         if (curr->type == OP_IMUL && curr->dst_op.mode == MODE_REG &&
-            is_numeric_immediate(&curr->src_op) && !curr->src_op.is_float) {
+            curr->src_op.mode == MODE_IMMEDIATE &&
+            !curr->src_op.is_float &&
+            is_numeric_immediate_only(&curr->src_op)) {
             
             long imm = curr->src_op.immediate;
 
@@ -56,7 +63,9 @@ int peephole_reduce(AsmNode *head) {
 
         // --- INTEGER DIVISION ---
         if (curr->type == OP_IDIV && curr->dst_op.mode == MODE_REG &&
-            is_numeric_immediate(&curr->src_op) && !curr->src_op.is_float) {
+            curr->src_op.mode == MODE_IMMEDIATE &&
+            !curr->src_op.is_float &&
+            is_numeric_immediate_only(&curr->src_op)) {
             
             long imm = curr->src_op.immediate;
             if (imm == 1) {
@@ -69,7 +78,9 @@ int peephole_reduce(AsmNode *head) {
 
         // --- INTEGER MODULUS ---
         if (curr->type == OP_IMOD && curr->dst_op.mode == MODE_REG &&
-            is_numeric_immediate(&curr->src_op) && !curr->src_op.is_float) {
+            curr->src_op.mode == MODE_IMMEDIATE &&
+            !curr->src_op.is_float &&
+            is_numeric_immediate_only(&curr->src_op)) {
             
             long imm = curr->src_op.immediate;
             if (imm == 1) {
@@ -83,9 +94,11 @@ int peephole_reduce(AsmNode *head) {
             }
         }
 
-        // --- FLOATING-POINT MULTIPLICATION (FIXED) ---
+        // --- FLOATING-POINT MULTIPLICATION ---
         if (curr->type == OP_FMUL && curr->dst_op.mode == MODE_REG &&
-            curr->src_op.mode == MODE_IMMEDIATE && curr->src_op.is_float) {
+            curr->src_op.mode == MODE_IMMEDIATE &&
+            curr->src_op.is_float &&
+            is_numeric_immediate_only(&curr->src_op)) {
             
             float imm = curr->src_op.float_value;
 
@@ -105,9 +118,11 @@ int peephole_reduce(AsmNode *head) {
             }
         }
 
-        // --- FLOATING-POINT DIVISION (FIXED) ---
+        // --- FLOATING-POINT DIVISION ---
         if (curr->type == OP_FDIV && curr->dst_op.mode == MODE_REG &&
-            curr->src_op.mode == MODE_IMMEDIATE && curr->src_op.is_float) {
+            curr->src_op.mode == MODE_IMMEDIATE &&
+            curr->src_op.is_float &&
+            is_numeric_immediate_only(&curr->src_op)) {
             
             float imm = curr->src_op.float_value;
             if (imm == 1.0f) {

@@ -1,5 +1,3 @@
-#include "v32opt.h"
-
 // ===================================================================
 // PEEPHOLE: Immediate Math Combining (Vircon32-Optimized)
 // //
@@ -15,9 +13,11 @@
 // ===================================================================
 #include "v32opt.h"
 
-// Helper: Check if operand is a numeric immediate (not a label)
-static bool is_numeric_immediate_only(Operand *op) {
+// Helper: Check if immediate is a non-zero numeric (not label, not zero)
+static bool is_nonzero_numeric_immediate(Operand *op) {
     if (!is_numeric_immediate(op)) return false;
+    if (op->is_float && op->float_value == 0.0f) return false;
+    if (!op->is_float && op->immediate == 0) return false;
     if (op->raw[0] == '_' || op->raw[0] == '.') return false; // Label or directive
     return true;
 }
@@ -27,15 +27,19 @@ int peephole_immediates(AsmNode *head) {
     AsmNode *curr = head ? head->next : NULL;
 
     while (curr) {
-        // --- INTEGER OPERATIONS ---
+        // --- INTEGER OPERATIONS (Non-Zero Only) ---
         if ((curr->type == OP_IADD || curr->type == OP_ISUB) &&
             curr->dst_op.mode == MODE_REG &&
-            is_numeric_immediate_only(&curr->src_op) && !curr->src_op.is_float) {
+            curr->src_op.mode == MODE_IMMEDIATE &&
+            !curr->src_op.is_float &&
+            is_nonzero_numeric_immediate(&curr->src_op)) {
             
             AsmNode *next_real = skip_other_nodes(curr->next);
             if (next_real && (next_real->type == OP_IADD || next_real->type == OP_ISUB) &&
                 next_real->dst_op.mode == MODE_REG &&
-                is_numeric_immediate_only(&next_real->src_op) && !next_real->src_op.is_float &&
+                next_real->src_op.mode == MODE_IMMEDIATE &&
+                !next_real->src_op.is_float &&
+                is_nonzero_numeric_immediate(&next_real->src_op) &&
                 str_case_eq(curr->dst_op.reg, next_real->dst_op.reg)) {
                 
                 int val1 = (curr->type == OP_IADD) ? curr->src_op.immediate : -curr->src_op.immediate;
@@ -67,15 +71,19 @@ int peephole_immediates(AsmNode *head) {
             }
         }
 
-        // --- FLOATING-POINT OPERATIONS (FIXED) ---
+        // --- FLOATING-POINT OPERATIONS (Non-Zero Only) ---
         if ((curr->type == OP_FADD || curr->type == OP_FSUB) &&
             curr->dst_op.mode == MODE_REG &&
-            curr->src_op.mode == MODE_IMMEDIATE && curr->src_op.is_float) {
+            curr->src_op.mode == MODE_IMMEDIATE &&
+            curr->src_op.is_float &&
+            is_nonzero_numeric_immediate(&curr->src_op)) {
             
             AsmNode *next_real = skip_other_nodes(curr->next);
             if (next_real && (next_real->type == OP_FADD || next_real->type == OP_FSUB) &&
                 next_real->dst_op.mode == MODE_REG &&
-                next_real->src_op.mode == MODE_IMMEDIATE && next_real->src_op.is_float &&
+                next_real->src_op.mode == MODE_IMMEDIATE &&
+                next_real->src_op.is_float &&
+                is_nonzero_numeric_immediate(&next_real->src_op) &&
                 str_case_eq(curr->dst_op.reg, next_real->dst_op.reg)) {
                 
                 float val1 = (curr->type == OP_FADD) ? curr->src_op.float_value : -curr->src_op.float_value;
