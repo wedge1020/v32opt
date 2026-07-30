@@ -54,6 +54,7 @@ int main(int argc, char **argv) {
         fprintf(stdout, "  --dot <cfg.dot>  Export Control Flow Graph to DOT format\n");
         fprintf(stdout, "  -o <file>        Specify output assembly file name\n");
         fprintf(stdout, "  -O0              Disable all optimizations [default]\n");
+        fprintf(stdout, "  -Os              Enables space-saving optimizations\n");
         fprintf(stdout, "  -O1              Enables first level optimizations\n");
         fprintf(stdout, "  -O2              Enables second level optimizations\n");
         fprintf(stdout, "  -O3              Enables aggressive optimizations (could break):\n");

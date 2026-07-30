@@ -28,6 +28,10 @@ static void set_opt_level(OptConfig *cfg, int level) {
 
     // -O3: add inlining
     cfg->opt_inline = true;
+
+    if (level == 3) return;
+    cfg->opt_inline = false;
+	cfg->opt_peephole_immediate_prop = false;
 }
 
 // --- Handle -f<name> / -fno-<name> ----------------------------------------
@@ -99,6 +103,7 @@ void process_args(int argc, char **argv, OptConfig *cfg,
     optind = 1; // Reset getopt state
     opterr = 0; // Suppress default errors
 
+/*
     // Pre-scan for -O* (not easily handled by getopt)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-O0") == 0) { set_opt_level(cfg, 0); }
@@ -106,6 +111,7 @@ void process_args(int argc, char **argv, OptConfig *cfg,
         else if (strcmp(argv[i], "-O2") == 0) { set_opt_level(cfg, 2); }
         else if (strcmp(argv[i], "-O3") == 0) { set_opt_level(cfg, 3); }
     }
+	*/
 
     // Long options
     static struct option long_opts[] = {
@@ -114,12 +120,42 @@ void process_args(int argc, char **argv, OptConfig *cfg,
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "vdto:f:", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "vdto:O:f:", long_opts, NULL)) != -1) {
         switch (opt) {
             case 'v': cfg->verbose = true; break;
             case 'd': cfg->debug = true; break;
             case 't': cfg->testing = true; break;
             case 'o': safe_str_copy(out_file, optarg, out_size); break;
+			case 'O':
+				switch (optarg[0])
+				{
+					case '0':
+						set_opt_level (cfg, 0);
+						break;
+
+					case '1':
+						set_opt_level (cfg, 1);
+						break;
+
+					case '2':
+						set_opt_level (cfg, 2);
+						break;
+
+					case '3':
+						set_opt_level (cfg, 3);
+						break;
+
+					case 's':
+						set_opt_level (cfg, 4);
+						break;
+
+					default:
+						fprintf (stderr, "ERROR: unrecognized optimization level '%s'\n", optarg);
+						exit (1);
+						break;
+				}
+				break;
+
             case 'D': safe_str_copy(dot_file, optarg, dot_size); break;
             case 'f':
                 if (!handle_f_arg(optarg, cfg, max_passes)) {
