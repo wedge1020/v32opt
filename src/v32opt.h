@@ -119,19 +119,19 @@ typedef enum {
 
 typedef struct {
     AddressingMode mode;
-    char reg[32];     
-    int offset;       
-    int immediate;    
-    char raw[128];    
+    char reg[32];
+    int offset;
+    int immediate;
+    char raw[128];
     bool is_float;
 	float float_value;
 } Operand;
 
 typedef struct AsmNode {
     OpType type;
-    char raw[8192];      
-    char mnemonic[32];  
-    
+    char raw[8192];
+    char mnemonic[32];
+
     Operand dst_op;
     Operand src_op;
     bool has_dst;
@@ -157,7 +157,7 @@ typedef struct BasicBlock BasicBlock;
 
 struct BasicBlock {
     int id;
-    char labels[8][128]; 
+    char labels[8][128];
     int num_labels;
 
     AsmNode *first_ins;
@@ -171,8 +171,8 @@ struct BasicBlock {
     int num_succs;
     int cap_succs;
 
-    BlockState in_state;   
-    BlockState out_state;  
+    BlockState in_state;
+    BlockState out_state;
 };
 
 typedef struct {
@@ -182,15 +182,15 @@ typedef struct {
 } ControlFlowGraph;
 
 typedef struct {
-    char name[128]; 
+    char name[128];
     AsmNode *body_nodes[MAX_BODY_INS];
     int body_count;
 } InlineCandidate;
 
 typedef struct {
-    char name[128]; 
-    AsmNode *start_node; 
-    AsmNode *end_node;   
+    char name[128];
+    AsmNode *start_node;
+    AsmNode *end_node;
     bool reachable;
 } FunctionDef;
 
@@ -223,7 +223,6 @@ typedef struct {
 } OptConfig;
 
 ////////////////////////////////////////////////////////////////////////////////////////
-//
 // global variables
 //
 extern       int        g_inline_call_limit;
@@ -233,7 +232,6 @@ extern const char      *opt_type_names[];
 extern       OptConfig  config;
 
 ////////////////////////////////////////////////////////////////////////////////////////
-//
 // general utility function prototypes
 //
 void     remove_with_debug       (AsmNode      **, AsmNode *nodes[], int, OptType);
@@ -241,7 +239,7 @@ void     strip_comment_from_line (char          *, const char *, size_t);
 void     normalize_whitespace    (char          *, const char *, size_t);
 void     insert_debug_comment    (AsmNode       *, OptType, const char *);
 void     safe_str_copy           (char          *, const char *, size_t);
-char    *trim                    (const char    *);
+char    *trim                    (char          *);
 bool     str_case_eq             (const char    *, const char *);
 int      get_reg_index           (const char    *);
 bool     operands_equal          (const Operand *, const Operand *);
@@ -265,18 +263,16 @@ bool     is_numeric_immediate     (const Operand *);
 void     get_label_name           (const AsmNode *, char       *, size_t);
 
 // parsing / writing functions
-//
 AsmNode *parse_vircon32_asm (const char *);
 void     write_vircon32_asm (const char *, AsmNode *);
 
-// peephole, algebraic, forwarding, jump_next, redundant_movs,
-// combine_immediates, strength_reduction, inline, dce,
-// constant_folding, promote_regs, promote_leaf, promote_loops
+// Argument processing
+void     process_args            (int argc, char **argv, OptConfig *cfg,
+                                   char *out_file, size_t out_size,
+                                   char *dot_file, size_t dot_size,
+                                   int *max_passes);
 
-//////////////////////////////////////////////////////////////////////////////
-//
-// peephole optimizations (in individual files under peephole/)
-//
+// peephole optimizations
 int      peephole_pairs           (AsmNode *);
 int      peephole_algebra         (AsmNode *);
 int      peephole_forwarding      (AsmNode *);
@@ -290,10 +286,7 @@ int      peephole_loads           (AsmNode *);
 int      peephole_immediate_prop  (AsmNode *);
 int      peephole_jmp_chain       (AsmNode *);
 
-//////////////////////////////////////////////////////////////////////////////
-//
-// helper functions (helpers.c)
-//
+// helper functions
 AsmNode *skip_other_nodes         (AsmNode       *);
 AsmNode *skip_comments_and_blanks (AsmNode       *);
 AsmNode *next_non_other           (AsmNode       *);
@@ -309,46 +302,31 @@ bool     operands_equal           (const Operand *, const Operand *);
 void     get_label_name           (const AsmNode *, char          *, size_t);
 
 // stack optimizations
-//
-int      omit_frame_pointers      (AsmNode *); // -O2
-
-// stack helpers
-//
-bool     is_reg_op                (AsmNode *, const char *);
-bool     references_bp            (AsmNode *);
+int      omit_frame_pointers      (AsmNode *);
 
 // inline optimization
-//
 int      inline_trivial_functions (AsmNode *);
 
 // common subexpression elimination
-//
 int      opt_cse                  (AsmNode *);
 
-// dead function elimination
-//
+// dead code elimination
 int      opt_dce                  (AsmNode *);
 
-// Add to "control flow graph" section:
+// control flow graph
 BasicBlock* find_block_by_label(ControlFlowGraph *, const char *);
 ControlFlowGraph* build_cfg(AsmNode *);
 void export_cfg_to_dot(const char *, ControlFlowGraph *);
 void free_cfg(ControlFlowGraph *);
+void add_edge(BasicBlock *, BasicBlock *);
 
-// Add to a new "global data-flow analysis" section:
+// global data-flow analysis
 RegState merge_reg(RegState, RegState);
 bool apply_transfer_function(BasicBlock *);
 void propagate_constants_cfg(ControlFlowGraph *);
 int fold_constants_cfg(ControlFlowGraph *);
 
-// control flow graph
-//
-void     add_edge (BasicBlock *, BasicBlock *);
-
-////////////////////////////////////////////////////////////////////////////////////////
-//
-// promote.c function prototypes for register promotion optimizations
-//
+// promote.c prototypes
 void  promote_operand_to_reg      (Operand    *, const char *);
 bool  is_inside_loop              (const char *, AsmNode    *,    AsmNode *);
 int   pass_promote_stack_slots    (AsmNode    *);

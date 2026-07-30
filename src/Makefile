@@ -13,7 +13,7 @@ TARGET = ../v32opt
 # --- Object Files ---
 
 # Core sources
-CORE_SRCS = main.c tools.c cfg.c stack.c dce.c cse.c inline.c promote.c helpers.c
+CORE_SRCS = main.c args.c tools.c cfg.c stack.c dce.c cse.c inline.c promote.c helpers.c
 
 # Peephole modules - automatically include all .c files in peephole/
 PEEPHOLE_DIR = peephole

@@ -2,26 +2,26 @@
 
 // Map OptType enum to human-readable names
 const char *opt_type_names[]       = {
-    [OPT_PEEPHOLE_ALGEBRA]         = "peephole_algebra",
-    [OPT_PEEPHOLE_DEAD_STORES]     = "peephole_dead_stores",
-    [OPT_PEEPHOLE_FORWARDING]      = "peephole_forwarding",
-    [OPT_PEEPHOLE_IMMEDIATE_PROP]  = "peephole_immediate_prop",
-    [OPT_PEEPHOLE_IMMEDIATES]      = "peephole_immediates",
-    [OPT_PEEPHOLE_JMP_CHAIN]       = "peephole_jmp_chain",
-    [OPT_PEEPHOLE_JUMPS]           = "peephole_jumps",
-    [OPT_PEEPHOLE_LOADS]           = "peephole_loads",
-    [OPT_PEEPHOLE_MOVS]            = "peephole_movs",
-    [OPT_PEEPHOLE_PAIRS]           = "peephole_pairs",
-    [OPT_PEEPHOLE_REDUCE]          = "peephole_reduce",
-    [OPT_PEEPHOLE_SHIFTS]          = "peephole_shifts",
-    [OPT_CONSTANT_FOLDING]         = "constant_folding",
+    [OPT_PEEPHOLE_ALGEBRA]         = "peephole-algebra",
+    [OPT_PEEPHOLE_DEAD_STORES]     = "peephole-dead-stores",
+    [OPT_PEEPHOLE_FORWARDING]      = "peephole-forwarding",
+    [OPT_PEEPHOLE_IMMEDIATE_PROP]  = "peephole-immediate-prop",
+    [OPT_PEEPHOLE_IMMEDIATES]      = "peephole-immediates",
+    [OPT_PEEPHOLE_JMP_CHAIN]       = "peephole-jmp-chain",
+    [OPT_PEEPHOLE_JUMPS]           = "peephole-jumps",
+    [OPT_PEEPHOLE_LOADS]           = "peephole-loads",
+    [OPT_PEEPHOLE_MOVS]            = "peephole-movs",
+    [OPT_PEEPHOLE_PAIRS]           = "peephole-pairs",
+    [OPT_PEEPHOLE_REDUCE]          = "peephole-reduce",
+    [OPT_PEEPHOLE_SHIFTS]          = "peephole-shifts",
+    [OPT_CONSTANT_FOLDING]         = "constant-folding",
 	[OPT_CSE]                      = "cse",
     [OPT_DCE]                      = "dce",
-    [OPT_OMIT_FRAME_POINTERS]      = "omit_frame_pointers",
+    [OPT_OMIT_FRAME_POINTERS]      = "omit-frame-pointers",
     [OPT_INLINE]                   = "inline",
-    [OPT_PROMOTE_LEAF]             = "promote_leaf",
-    [OPT_PROMOTE_LOOPS]            = "promote_loops",
-    [OPT_PROMOTE_REGS]             = "promote_regs"
+    [OPT_PROMOTE_LEAF]             = "promote-leaf",
+    [OPT_PROMOTE_LOOPS]            = "promote-loops",
+    [OPT_PROMOTE_REGS]             = "promote-regs"
 };
 
 // Helper: remove nodes and insert debug comments
@@ -71,26 +71,20 @@ void normalize_whitespace(char *dest, const char *src, size_t dest_size) {
     if (q > dest && *(q-1) == ' ') *(q-1) = '\0';
 }
 
-// In tools.c, change insert_debug_comment to:
-void insert_debug_comment(AsmNode *after, OptType opt_type, const char *original_instr)
-{
+void insert_debug_comment(AsmNode *after, OptType opt_type, const char *original_instr) {
     if (!config.debug) return;
 
     // Validate opt_type is in bounds
-    if (opt_type < 0 || opt_type >= (sizeof(opt_type_names)/sizeof(opt_type_names[0]))) {
-        // Fallback for out-of-bounds - use a safe default
-        opt_type = OPT_PEEPHOLE_MOVS; // or handle error
+    const char *pass_name = "unknown";
+    if (opt_type >= 0 && opt_type < MAX_OPTIMIZATION_ALGORITHMS) {
+        pass_name = opt_type_names[opt_type];
     }
-
-    const char *pass_name = opt_type_names[opt_type];
-    if (!pass_name) pass_name = "unknown";
 
     // Ensure pass_name doesn't contain % (defensive)
     char safe_pass_name[128];
     size_t i = 0, j = 0;
     while (pass_name[i] && j < sizeof(safe_pass_name) - 1) {
         if (pass_name[i] == '%') {
-            // Escape % by doubling it
             if (j + 1 < sizeof(safe_pass_name)) {
                 safe_pass_name[j++] = '%';
                 safe_pass_name[j++] = '%';
@@ -151,7 +145,7 @@ void safe_str_copy(char *dest, const char *src, size_t dest_size) {
 //   - str: String to trim (modified in-place)
 // Returns: Pointer to the first non-whitespace character
 // ===================================================================
-char *trim(const char *str) {
+char *trim(char *str) {
     // Skip leading whitespace
     while (isspace((unsigned char)*str)) str++;
     if (*str == 0) return str;  // Empty string

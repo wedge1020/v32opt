@@ -45,7 +45,7 @@ int peephole_jmp_chain(AsmNode *head)
                 get_label_name(target, lbl_name, sizeof(lbl_name));
 
                 // Verify the JMP targets this specific label
-                const char *jmp_target = curr->has_dst ? curr->dst_op.raw : curr->src_op.raw;
+                char *jmp_target = curr->has_dst ? curr->dst_op.raw : curr->src_op.raw;
                 if (!str_case_eq(trim(jmp_target), lbl_name))
                 {
                     curr = curr->next;
@@ -58,7 +58,7 @@ int peephole_jmp_chain(AsmNode *head)
                 if (next_after_label && str_case_eq(next_after_label->mnemonic, "JMP"))
                 {
                     // Check if the second JMP targets a label
-                    const char *final_target = next_after_label->has_dst ?
+                    char *final_target = next_after_label->has_dst ?
                         next_after_label->dst_op.raw : next_after_label->src_op.raw;
 
                     // Only chain if the second JMP targets a label (not a register or immediate)

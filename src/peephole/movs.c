@@ -70,8 +70,6 @@ int peephole_movs(AsmNode *head) {
                     continue;
                 }
 
-                bool removed = false;
-
                 // --- Duplicate Move Elimination ---
                 if (curr->dst_op.mode == MODE_REG &&
                     scan->dst_op.mode == MODE_REG &&
@@ -100,7 +98,6 @@ int peephole_movs(AsmNode *head) {
                         AsmNode *nodes[] = {scan};
                         remove_with_debug(&scan->prev->next, nodes, 1, OPT_PEEPHOLE_MOVS);
                         optimizations++;
-                        removed = true;
                     }
                 }
                 // --- Mirror Move Elimination (register-to-register only) ---
@@ -124,7 +121,6 @@ int peephole_movs(AsmNode *head) {
                             AsmNode *nodes[] = {scan};
                             remove_with_debug(&scan->prev->next, nodes, 1, OPT_PEEPHOLE_MOVS);
                             optimizations++;
-                            removed = true;
                         }
                     }
                 }
