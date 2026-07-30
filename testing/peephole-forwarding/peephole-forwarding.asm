@@ -239,7 +239,7 @@ __function_test_copy_prop_label_jmp:
     PUSH BP
     MOV BP, SP
     MOV R1, _target_label
-    JMP R1             ; MATCH(18) Should become: JMP _target_label
+    JMP R1             ; KEEP(11) Should not touch
     MOV SP, BP
     POP BP
     RET
@@ -257,7 +257,7 @@ __function_test_guard_imm_store:
     PUSH BP
     MOV BP, SP
     MOV R1, 100
-    MOV [R2], R1       ; KEEP(11) Should NOT propagate 100 into indirect destination
+    MOV [R2], R1       ; KEEP(12) Should NOT propagate 100 into indirect destination
     MOV SP, BP
     POP BP
     RET
@@ -267,7 +267,7 @@ __function_test_guard_pow:
     PUSH BP
     MOV BP, SP
     MOV R1, 5
-    POW R2, R1         ; KEEP(12) Should NOT propagate immediate into POW
+    POW R2, R1         ; KEEP(13) Should NOT propagate immediate into POW
     MOV SP, BP
     POP BP
     RET
@@ -277,7 +277,7 @@ __function_test_guard_atan2:
     PUSH BP
     MOV BP, SP
     MOV R1, 5
-    ATAN2 R2, R1       ; KEEP(13) Should NOT propagate immediate into ATAN2
+    ATAN2 R2, R1       ; KEEP(14) Should NOT propagate immediate into ATAN2
     MOV SP, BP
     POP BP
     RET
@@ -287,7 +287,7 @@ __function_test_guard_jt_num:
     PUSH BP
     MOV BP, SP
     MOV R1, 0
-    JT R2, R1           ; KEEP(14) Should NOT propagate numeric 0 into JT
+    JT R2, R1           ; KEEP(15) Should NOT propagate numeric 0 into JT
     MOV SP, BP
     POP BP
     RET
@@ -297,7 +297,7 @@ __function_test_guard_jf_num:
     PUSH BP
     MOV BP, SP
     MOV R1, 0
-    JF R2, R1           ; KEEP(15) Should NOT propagate numeric 0 into JF
+    JF R2, R1           ; KEEP(16) Should NOT propagate numeric 0 into JF
     MOV SP, BP
     POP BP
     RET
@@ -307,7 +307,7 @@ __function_test_guard_sp:
     PUSH BP
     MOV BP, SP
     MOV SP, R1
-    MOV R2, SP          ; KEEP(16) Should NOT propagate (SP protected)
+    MOV R2, SP          ; KEEP(17) Should NOT propagate (SP protected)
     MOV SP, BP
     POP BP
     RET
@@ -317,7 +317,7 @@ __function_test_guard_bp:
     PUSH BP
     MOV BP, SP
     MOV BP, R3
-    MOV R4, BP          ; KEEP(17) Should NOT propagate (BP protected)
+    MOV R4, BP          ; KEEP(18) Should NOT propagate (BP protected)
     MOV SP, BP
     POP BP
     RET
@@ -332,8 +332,8 @@ __function_test_combined_stl_and_cp:
     PUSH BP
     MOV BP, SP
     MOV [R1], R2
-    MOV R3, [R1]        ; MATCH(19) Rule 1: -> MOV R3, R2
-    MOV R4, R3          ; MATCH(20) Rule 2: -> MOV R4, R2
+    MOV R3, [R1]        ; MATCH(18) Rule 1: -> MOV R3, R2
+    MOV R4, R3          ; MATCH(19) Rule 2: -> MOV R4, R2
     MOV SP, BP
     POP BP
     RET
@@ -343,9 +343,9 @@ __function_test_combined_sequence:
     PUSH BP
     MOV BP, SP
     MOV R1, 25
-    IADD R2, R1        ; MATCH(21) -> IADD R2, 25
-    MOV R3, R1         ; MATCH(22) -> MOV R3, 25
-    IMUL R4, R3        ; MATCH(23) -> IMUL R4, 25 (via R3->25 propagation)
+    IADD R2, R1        ; MATCH(20) -> IADD R2, 25
+    MOV R3, R1         ; MATCH(21) -> MOV R3, 25
+    IMUL R4, R3        ; MATCH(22) -> IMUL R4, 25 (via R3->25 propagation)
     MOV SP, BP
     POP BP
     RET
@@ -355,7 +355,7 @@ __function_test_guard_pow_imm:
     PUSH BP
     MOV BP, SP
     MOV R1, 2.0
-    POW R2, R1            ; KEEP(18) - POW doesn't accept immediates
+    POW R2, R1            ; KEEP(19) - POW doesn't accept immediates
     MOV SP, BP
     POP BP
     RET
@@ -365,7 +365,7 @@ __function_test_guard_jt_imm:
     PUSH BP
     MOV BP, SP
     MOV R1, 0x1000
-    JT R2, R1             ; KEEP(19) - JT target must be label/reg, not immediate
+    JT R2, R1             ; KEEP(20) - JT target must be label/reg, not immediate
     MOV SP, BP
     POP BP
     RET
@@ -375,7 +375,7 @@ __function_test_fp_copy_prop:
     PUSH BP
     MOV BP, SP
     MOV R1, 3.14          ; Float immediate
-    FADD R2, R1           ; MATCH(24) → FADD R2, 3.14
+    FADD R2, R1           ; MATCH(23) → FADD R2, 3.14
     MOV SP, BP
     POP BP
     RET

@@ -15,6 +15,8 @@
 //   - Register operands: IMUL R1, R2 → KEEP (not a constant)
 //   - Non-reducible: IMUL R1, 3 → KEEP
 // ===================================================================
+#include "v32opt.h"
+
 int peephole_reduce(AsmNode *head) {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;
@@ -22,14 +24,13 @@ int peephole_reduce(AsmNode *head) {
     while (curr) {
         AsmNode *next = curr->next;
 
-        // --- INTEGER MULTIPLICATION REDUCTION ---
+        // --- INTEGER MULTIPLICATION ---
         if (curr->type == OP_IMUL && curr->dst_op.mode == MODE_REG &&
             is_numeric_immediate(&curr->src_op) && !curr->src_op.is_float) {
             
             long imm = curr->src_op.immediate;
-            
+
             if (imm == 0) {
-                // IMUL R, 0 → MOV R, 0
                 insert_debug_comment(curr->prev, OPT_PEEPHOLE_REDUCE, curr->raw);
                 curr->type = OP_MOV;
                 strcpy(curr->mnemonic, "MOV");
@@ -38,32 +39,27 @@ int peephole_reduce(AsmNode *head) {
                 snprintf(curr->raw, sizeof(curr->raw), "    MOV %s, 0", curr->dst_op.raw);
                 optimizations++;
             } else if (imm == 1) {
-                // IMUL R, 1 → REMOVE
                 AsmNode *nodes[] = {curr};
                 remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_REDUCE);
                 optimizations++;
                 continue;
             } else if (imm == 2) {
-                // IMUL R, 2 → IADD R, R
                 insert_debug_comment(curr->prev, OPT_PEEPHOLE_REDUCE, curr->raw);
                 curr->type = OP_IADD;
                 strcpy(curr->mnemonic, "IADD");
-                curr->src_op = curr->dst_op; // src = dst
+                curr->src_op = curr->dst_op;
                 snprintf(curr->raw, sizeof(curr->raw), "    IADD %s, %s",
                          curr->dst_op.raw, curr->src_op.raw);
                 optimizations++;
             }
-            // Note: IMUL R, -1 could be handled as ISGN R, but requires 2 ops
         }
 
-        // --- INTEGER DIVISION REDUCTION ---
+        // --- INTEGER DIVISION ---
         if (curr->type == OP_IDIV && curr->dst_op.mode == MODE_REG &&
             is_numeric_immediate(&curr->src_op) && !curr->src_op.is_float) {
             
             long imm = curr->src_op.immediate;
-            
             if (imm == 1) {
-                // IDIV R, 1 → REMOVE
                 AsmNode *nodes[] = {curr};
                 remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_REDUCE);
                 optimizations++;
@@ -71,14 +67,12 @@ int peephole_reduce(AsmNode *head) {
             }
         }
 
-        // --- INTEGER MODULUS REDUCTION ---
+        // --- INTEGER MODULUS ---
         if (curr->type == OP_IMOD && curr->dst_op.mode == MODE_REG &&
             is_numeric_immediate(&curr->src_op) && !curr->src_op.is_float) {
             
             long imm = curr->src_op.immediate;
-            
             if (imm == 1) {
-                // IMOD R, 1 → MOV R, 0 (always 0)
                 insert_debug_comment(curr->prev, OPT_PEEPHOLE_REDUCE, curr->raw);
                 curr->type = OP_MOV;
                 strcpy(curr->mnemonic, "MOV");
@@ -89,14 +83,13 @@ int peephole_reduce(AsmNode *head) {
             }
         }
 
-        // --- FLOATING-POINT MULTIPLICATION REDUCTION (NEW) ---
+        // --- FLOATING-POINT MULTIPLICATION (FIXED) ---
         if (curr->type == OP_FMUL && curr->dst_op.mode == MODE_REG &&
-            is_numeric_immediate(&curr->src_op) && curr->src_op.is_float) {
+            curr->src_op.mode == MODE_IMMEDIATE && curr->src_op.is_float) {
             
             float imm = curr->src_op.float_value;
-            
+
             if (imm == 0.0f) {
-                // FMUL R, 0.0 → MOV R, 0.0
                 insert_debug_comment(curr->prev, OPT_PEEPHOLE_REDUCE, curr->raw);
                 curr->type = OP_MOV;
                 strcpy(curr->mnemonic, "MOV");
@@ -105,7 +98,6 @@ int peephole_reduce(AsmNode *head) {
                 snprintf(curr->raw, sizeof(curr->raw), "    MOV %s, 0.0", curr->dst_op.raw);
                 optimizations++;
             } else if (imm == 1.0f) {
-                // FMUL R, 1.0 → REMOVE
                 AsmNode *nodes[] = {curr};
                 remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_REDUCE);
                 optimizations++;
@@ -113,14 +105,12 @@ int peephole_reduce(AsmNode *head) {
             }
         }
 
-        // --- FLOATING-POINT DIVISION REDUCTION (NEW) ---
+        // --- FLOATING-POINT DIVISION (FIXED) ---
         if (curr->type == OP_FDIV && curr->dst_op.mode == MODE_REG &&
-            is_numeric_immediate(&curr->src_op) && curr->src_op.is_float) {
+            curr->src_op.mode == MODE_IMMEDIATE && curr->src_op.is_float) {
             
             float imm = curr->src_op.float_value;
-            
             if (imm == 1.0f) {
-                // FDIV R, 1.0 → REMOVE
                 AsmNode *nodes[] = {curr};
                 remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_REDUCE);
                 optimizations++;
