@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <ctype.h>
+#include <math.h>
 
 #define  MAX_OPTIMIZATION_ALGORITHMS 20
 #define  MAX_INLINE_CANDIDATES 64

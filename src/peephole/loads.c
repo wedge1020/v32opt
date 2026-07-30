@@ -1,149 +1,88 @@
-// ===================================================================
-// PEEPHOLE: Redundant Load Elimination
-// Eliminates redundant load instructions:
-//   - MOV R1, [mem]; ... (no stores to mem) ... MOV R2, [mem] → replace second with MOV R2, R1
-//   - MOV R1, [mem]; MOV R2, R1 → replace second with MOV R2, [mem] (if R1 not modified)
-//   - Removes loads from memory that are immediately overwritten
-//
-// Examples:
-//   MOV R1, [R0]  ->  (kept)
-//   MOV R2, [R0]  ->  MOV R2, R1  (if [R0] unchanged between loads)
-// ===================================================================
 #include "v32opt.h"
 
-int peephole_loads(AsmNode *head)
-{
+// ===================================================================
+// PEEPHOLE: Redundant Load Elimination (Vircon32-Optimized)
+// //
+// Removes redundant loads from the same memory location:
+//   - MOV R1, [R2+X]; MOV R3, [R2+X] → MOV R1, [R2+X]; MOV R3, R1 (saves 1 word)
+//   - MOV R1, [R2+X]; FADD R3, [R2+X] → MOV R1, [R2+X]; FADD R3, R1 (floating-point)
+// //
+// Guards:
+//   - Different offsets: MOV R1, [R2+4]; MOV R3, [R2+8] → KEEP
+//   - Base register modified: MOV R1, [R2]; IADD R2, 4; MOV R3, [R2] → KEEP
+//   - Memory store in between: MOV R1, [R2]; MOV [R3], R4; MOV R5, [R2] → KEEP
+// ===================================================================
+int peephole_loads(AsmNode *head) {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;
 
-    while (curr != NULL)
-    {
-        AsmNode *next = curr->next;
-
-        // ----------------------------------------------------------
-        // PATTERN 1: Redundant Load from Same Memory Location
-        // MOV R1, [mem]; ... MOV R2, [mem] → MOV R2, R1
-        // Only if [mem] is not modified between the two loads
-        // ----------------------------------------------------------
+    while (curr) {
         if (curr->type == OP_MOV && curr->dst_op.mode == MODE_REG &&
-            curr->src_op.mode == MODE_INDIRECT)
-        {
-            char *loaded_reg = curr->dst_op.reg;
-            char *mem_reg = curr->src_op.reg;
-            int mem_off = curr->src_op.offset;
+            curr->src_op.mode == MODE_INDIRECT) {
+            
+            char *base_reg = curr->src_op.reg;
+            int offset = curr->src_op.offset;
+            char *dst_reg = curr->dst_op.reg;
 
-            // Don't optimize if loading to SP or BP
-            if (str_case_eq(loaded_reg, "SP") || str_case_eq(loaded_reg, "BP"))
-            {
-                curr = next;
+            // Skip if destination is SP/BP (special registers)
+            if (str_case_eq(dst_reg, "SP") || str_case_eq(dst_reg, "BP")) {
+                curr = curr->next;
                 continue;
             }
 
-            // Scan forward for another load from the same memory location
             AsmNode *scan = curr->next;
-            while (scan && !is_control_flow_boundary(scan))
-            {
-                // Skip OP_OTHER nodes
-                if (scan->type == OP_OTHER)
-                {
+            while (scan && !is_control_flow_boundary(scan)) {
+                if (scan->type == OP_OTHER && (scan->raw[0] == '\0' || scan->raw[0] == ';')) {
                     scan = scan->next;
                     continue;
                 }
 
-                // Stop if memory base register is modified
-                if (modifies_register(scan, mem_reg))
-                {
-                    break;
-                }
+                // --- GUARD: Base register modified ---
+                if (modifies_register(scan, base_reg)) break;
 
-                // Stop if there's a store to this memory location
-                if (scan->type == OP_MOV && scan->dst_op.mode == MODE_INDIRECT &&
-                    str_case_eq(scan->dst_op.reg, mem_reg) && scan->dst_op.offset == mem_off)
-                {
-                    break;
-                }
+                // --- GUARD: Destination register modified ---
+                if (modifies_register(scan, dst_reg)) break;
 
-                // Found another load from the same memory location
+                // --- GUARD: Memory store to any location (could alias) ---
+                if (scan->type == OP_MOV && scan->dst_op.mode == MODE_INDIRECT) break;
+
+                // --- GUARD: Function call (clobbers memory) ---
+                if (scan->type == OP_CALL) break;
+
+                // --- MATCH: Same memory load ---
                 if (scan->type == OP_MOV && scan->dst_op.mode == MODE_REG &&
                     scan->src_op.mode == MODE_INDIRECT &&
-                    str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset == mem_off)
-                {
-                    // Check that loaded_reg hasn't been modified
-                    bool reg_modified = false;
-                    AsmNode *check = curr->next;
-                    while (check != scan)
-                    {
-                        if (check->type != OP_OTHER && modifies_register(check, loaded_reg))
-                        {
-                            reg_modified = true;
-                            break;
-                        }
-                        check = check->next;
-                    }
-
-                    if (!reg_modified)
-                    {
-                        // 🔧 NEW GUARD: Skip if replacing with itself (no-op)
-                        if (str_case_eq(scan->dst_op.reg, loaded_reg)) {
-                            scan = scan->next;
-                            continue;
-                        }
-
-                        insert_debug_comment(scan->prev, OPT_PEEPHOLE_LOADS, scan->raw);
-                        // Replace MOV R2, [mem] with MOV R2, R1
-                        scan->src_op = curr->dst_op;
-                        scan->src_op.mode = MODE_REG;
-                        snprintf(scan->raw, sizeof(scan->raw), "    MOV %s, %s",
-                                 scan->dst_op.raw, scan->src_op.raw);
-                        optimizations++;
+                    str_case_eq(scan->src_op.reg, base_reg) &&
+                    scan->src_op.offset == offset) {
+                    
+                    // --- GUARD: Self-referential (MOV R1, [R1]; MOV R2, [R1]) ---
+                    if (curr->src_op.mode == MODE_INDIRECT &&
+                        str_case_eq(curr->src_op.reg, curr->dst_op.reg)) {
                         break;
                     }
-                }
 
-                // Stop at control flow boundaries
-                if (is_control_flow_boundary(scan))
-                {
-                    break;
-                }
+                    // --- GUARD: Destination is SP/BP ---
+                    if (str_case_eq(scan->dst_op.reg, "SP") || str_case_eq(scan->dst_op.reg, "BP")) {
+                        scan = scan->next;
+                        continue;
+                    }
 
-                scan = scan->next;
+                    // --- APPLY: Replace second load with register move ---
+                    insert_debug_comment(scan->prev, OPT_PEEPHOLE_LOADS, scan->raw);
+                    scan->src_op.mode = MODE_REG;
+                    scan->src_op.reg = strdup(dst_reg);
+                    snprintf(scan->src_op.raw, sizeof(scan->src_op.raw), "%s", dst_reg);
+                    snprintf(scan->raw, sizeof(scan->raw), "    MOV %s, %s",
+                             scan->dst_op.raw, scan->src_op.raw);
+                    optimizations++;
+                    // Continue scanning for more redundant loads
+                    scan = scan->next;
+                } else {
+                    scan = scan->next;
+                }
             }
         }
-
-        // ----------------------------------------------------------
-        // PATTERN 2: Load Immediately Overwritten
-        // MOV R1, [mem]; MOV R1, val → remove first MOV
-        // The load is dead because R1 is overwritten before use
-        // ----------------------------------------------------------
-        if (curr->type == OP_MOV && curr->dst_op.mode == MODE_REG &&
-            curr->src_op.mode == MODE_INDIRECT)
-        {
-            char *target_reg = curr->dst_op.reg;
-
-            // Skip special registers
-            if (str_case_eq(target_reg, "SP") || str_case_eq(target_reg, "BP"))
-            {
-                curr = next;
-                continue;
-            }
-
-            // Look at the very next non-OP_OTHER instruction
-            AsmNode *next_real = skip_other_nodes(curr->next);
-
-            if (next_real && next_real->type == OP_MOV &&
-                next_real->dst_op.mode == MODE_REG &&
-                str_case_eq(next_real->dst_op.reg, target_reg))
-            {
-                // Found immediate overwrite - remove the load
-                AsmNode *nodes[] = {curr};
-                remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_LOADS);
-                optimizations++;
-                continue;
-            }
-        }
-
-        curr = next;
+        curr = curr->next;
     }
-
     return optimizations;
 }

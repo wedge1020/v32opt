@@ -349,3 +349,53 @@ __function_test_combined_sequence:
     MOV SP, BP
     POP BP
     RET
+
+; ✅ FLOATING-POINT STORE-TO-LOAD FORWARDING
+__function_test_fp_forwarding:
+    PUSH BP
+    MOV BP, SP
+    MOV [R1], R2          ; R2 holds a float
+    FADD R3, [R1]         ; MATCH(24) → FADD R3, R2
+    MOV SP, BP
+    POP BP
+    RET
+
+; ✅ MEMORY-TO-MEMORY FORWARDING
+__function_test_mem_to_mem:
+    PUSH BP
+    MOV BP, SP
+    MOV [R1], [R2]        ; Copy from [R2] to [R1]
+    MOV R3, [R1]          ; MATCH(25) → MOV R3, [R2]
+    MOV SP, BP
+    POP BP
+    RET
+
+; ❌ GUARD: Immediate into POW (unsupported)
+__function_test_guard_pow_imm:
+    PUSH BP
+    MOV BP, SP
+    MOV R1, 2.0
+    POW R2, R1            ; KEEP(18) - POW doesn't accept immediates
+    MOV SP, BP
+    POP BP
+    RET
+
+; ❌ GUARD: Immediate into JT (numeric branch target)
+__function_test_guard_jt_imm:
+    PUSH BP
+    MOV BP, SP
+    MOV R1, 0x1000
+    JT R2, R1             ; KEEP(19) - JT target must be label/reg, not immediate
+    MOV SP, BP
+    POP BP
+    RET
+
+; ✅ COPY PROPAGATION WITH FLOATING-POINT
+__function_test_fp_copy_prop:
+    PUSH BP
+    MOV BP, SP
+    MOV R1, 3.14          ; Float immediate
+    FADD R2, R1           ; MATCH(26) → FADD R2, 3.14
+    MOV SP, BP
+    POP BP
+    RET

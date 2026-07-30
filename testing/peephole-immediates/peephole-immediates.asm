@@ -200,8 +200,8 @@ __function_test_indirect_src:
 __function_test_zero:
     PUSH BP
     MOV BP, SP
-    IADD R1, 0          ; This is handled by peephole_algebra, not here
-    ISUB R1, 5
+    IADD R1, 0          ; KEEP(10) This is handled by peephole_algebra, not here
+    ISUB R1, 5          ; KEEP(11)
     MOV SP, BP
     POP BP
     RET
@@ -220,6 +220,46 @@ __function_test_complex:
     IADD R2, -2         ; MATCH(30) Should become: IADD R2, 3
     ISUB R3, 8          ; MATCH(31)
     ISUB R3, 3          ; MATCH(32) Should become: ISUB R3, 11
+    MOV SP, BP
+    POP BP
+    RET
+
+; ✅ FLOATING-POINT CANCELLATION
+__function_test_fp_cancel:
+    PUSH BP
+    MOV BP, SP
+    FADD R1, 2.5        ; MATCH(33)
+    FSUB R1, 2.5        ; MATCH(34) - Both removed (cancels to 0)
+    MOV SP, BP
+    POP BP
+    RET
+
+; ✅ FLOATING-POINT COMBINING
+__function_test_fp_combine:
+    PUSH BP
+    MOV BP, SP
+    FADD R1, 1.5        ; MATCH(35)
+    FADD R1, 2.5        ; MATCH(36) → FADD R1, 4.0
+    MOV SP, BP
+    POP BP
+    RET
+
+; ✅ NEGATIVE FLOATING-POINT
+__function_test_fp_negative:
+    PUSH BP
+    MOV BP, SP
+    FADD R1, 3.0        ; MATCH(37)
+    FSUB R1, 5.0        ; MATCH(38) → FSUB R1, 2.0
+    MOV SP, BP
+    POP BP
+    RET
+
+; ❌ GUARD: Different floating-point registers
+__function_test_fp_diff_reg:
+    PUSH BP
+    MOV BP, SP
+    FADD R1, 1.0        ; KEEP(12)
+    FADD R2, 2.0        ; KEEP(13) - Different registers
     MOV SP, BP
     POP BP
     RET

@@ -1,63 +1,47 @@
 #include "v32opt.h"
 
 // ===================================================================
-// PEEPHOLE: Immediate Math Combining
-//
-// Combines consecutive arithmetic operations with immediate operands:
-//
-// Patterns handled:
-//   - IADD r, 5; ISUB r, 3 → IADD r, 2
-//   - IADD r, 5; ISUB r, 5 → remove both (cancels out)
-//   - IADD r, -3; IADD r, 5 → IADD r, 2
-//   - ISUB r, 3; ISUB r, 2 → ISUB r, 5
-//
-// Example:
-//   Input:  IADD R1, 10
-//           ISUB R1, 3
-//   Output: IADD R1, 7
-//
-//   Input:  IADD R1, 5
-//           ISUB R1, 5
-//   Output: (both removed)
-//
-// Returns: Number of optimizations applied
+// PEEPHOLE: Immediate Math Combining (Vircon32-Optimized)
+// //
+// Combines consecutive arithmetic ops with immediate operands on the same register:
+//   - IADD R1, 5; ISUB R1, 3 → IADD R1, 2 (saves 1 word)
+//   - FADD R1, 1.5; FSUB R1, 0.5 → FADD R1, 1.0 (floating-point)
+//   - IADD R1, 5; ISUB R1, 5 → REMOVE BOTH (cancels to 0)
+// //
+// Guards:
+//   - Different registers: IADD R1, 5; IADD R2, 3 → KEEP
+//   - Non-consecutive: IADD R1, 5; MOV R2, 10; IADD R1, 3 → KEEP
+//   - Non-immediate: IADD R1, R2; IADD R1, 5 → KEEP
 // ===================================================================
-int peephole_immediates(AsmNode *head)
-{
+int peephole_immediates(AsmNode *head) {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;
 
-    while (curr)
-    {
-        // Guard with is_numeric_immediate to prevent evaluating symbolic defines as 0
+    while (curr) {
+        // --- INTEGER OPERATIONS ---
         if ((curr->type == OP_IADD || curr->type == OP_ISUB) &&
             curr->dst_op.mode == MODE_REG &&
-            is_numeric_immediate(&curr->src_op) && !curr->src_op.is_float)
-        {
-            AsmNode *n2 = skip_other_nodes(curr->next);
-
-            if (n2 && (n2->type == OP_IADD || n2->type == OP_ISUB) &&
-                n2->dst_op.mode == MODE_REG &&
-                is_numeric_immediate(&n2->src_op) && !n2->src_op.is_float &&
-                str_case_eq(curr->dst_op.reg, n2->dst_op.reg))
-            {
+            is_numeric_immediate(&curr->src_op) && !curr->src_op.is_float) {
+            
+            AsmNode *next_real = skip_other_nodes(curr->next);
+            if (next_real && (next_real->type == OP_IADD || next_real->type == OP_ISUB) &&
+                next_real->dst_op.mode == MODE_REG &&
+                is_numeric_immediate(&next_real->src_op) && !next_real->src_op.is_float &&
+                str_case_eq(curr->dst_op.reg, next_real->dst_op.reg)) {
+                
+                // Calculate combined value
                 int val1 = (curr->type == OP_IADD) ? curr->src_op.immediate : -curr->src_op.immediate;
-                int val2 = (n2->type == OP_IADD) ? n2->src_op.immediate : -n2->src_op.immediate;
+                int val2 = (next_real->type == OP_IADD) ? next_real->src_op.immediate : -next_real->src_op.immediate;
                 int combined = val1 + val2;
 
-                // --- Cancellation Case ---
-                if (combined == 0)
-                {
-                    // Removed redundant debug comment insertions; remove_with_debug handles this
-                    AsmNode *nodes[] = {curr, n2};
+                if (combined == 0) {
+                    // Complete cancellation: remove both
+                    AsmNode *nodes[] = {curr, next_real};
                     remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_IMMEDIATES);
                     optimizations += 2;
                     continue;
-                }
-                // --- Non-Zero Combination ---
-                else
-                {
-                    // Keep comment for curr (it is mutating), but not for n2 (it is being removed)
+                } else {
+                    // Partial combination: replace first, remove second
                     if (config.debug) {
                         insert_debug_comment(curr->prev, OPT_PEEPHOLE_IMMEDIATES, curr->raw);
                     }
@@ -68,13 +52,59 @@ int peephole_immediates(AsmNode *head)
                     snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %d",
                              curr->mnemonic, curr->dst_op.raw, abs(combined));
 
-                    AsmNode *nodes[] = {n2};
-                    remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_IMMEDIATES);
+                    AsmNode *nodes[] = {next_real};
+                    AsmNode *dummy = next_real;
+                    remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_IMMEDIATES);
                     optimizations++;
                     continue;
                 }
             }
         }
+
+        // --- FLOATING-POINT OPERATIONS (NEW) ---
+        if ((curr->type == OP_FADD || curr->type == OP_FSUB) &&
+            curr->dst_op.mode == MODE_REG &&
+            is_numeric_immediate(&curr->src_op) && curr->src_op.is_float) {
+            
+            AsmNode *next_real = skip_other_nodes(curr->next);
+            if (next_real && (next_real->type == OP_FADD || next_real->type == OP_FSUB) &&
+                next_real->dst_op.mode == MODE_REG &&
+                is_numeric_immediate(&next_real->src_op) && next_real->src_op.is_float &&
+                str_case_eq(curr->dst_op.reg, next_real->dst_op.reg)) {
+                
+                // Calculate combined value (floating-point)
+                float val1 = (curr->type == OP_FADD) ? curr->src_op.float_value : -curr->src_op.float_value;
+                float val2 = (next_real->type == OP_FADD) ? next_real->src_op.float_value : -next_real->src_op.float_value;
+                float combined = val1 + val2;
+
+                if (combined == 0.0f) {
+                    // Complete cancellation: remove both
+                    AsmNode *nodes[] = {curr, next_real};
+                    remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_IMMEDIATES);
+                    optimizations += 2;
+                    continue;
+                } else {
+                    // Partial combination: replace first, remove second
+                    if (config.debug) {
+                        insert_debug_comment(curr->prev, OPT_PEEPHOLE_IMMEDIATES, curr->raw);
+                    }
+                    curr->type = (combined > 0) ? OP_FADD : OP_FSUB;
+                    strcpy(curr->mnemonic, (combined > 0) ? "FADD" : "FSUB");
+                    curr->src_op.float_value = fabs(combined);
+                    curr->src_op.immediate = 0; // Clear integer value
+                    snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%.6f", fabs(combined));
+                    snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %.6f",
+                             curr->mnemonic, curr->dst_op.raw, fabs(combined));
+
+                    AsmNode *nodes[] = {next_real};
+                    AsmNode *dummy = next_real;
+                    remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_IMMEDIATES);
+                    optimizations++;
+                    continue;
+                }
+            }
+        }
+
         curr = curr->next;
     }
     return optimizations;

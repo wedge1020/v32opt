@@ -124,3 +124,42 @@ __function_test_reduce_mixed:
     MOV SP, BP
     POP BP
     RET
+
+; ===================================================================
+; TEST: peephole-reduce - Floating-Point & Modulus Extensions
+; ===================================================================
+
+; ✅ FLOATING-POINT MULTIPLY BY ZERO
+__function_test_fmul_zero:
+    PUSH BP
+    MOV BP, SP
+    FMUL R1, 0.0         ; MATCH(13) → MOV R1, 0.0
+    MOV SP, BP
+    POP BP
+    RET
+
+; ✅ FLOATING-POINT MULTIPLY BY ONE
+__function_test_fmul_one:
+    PUSH BP
+    MOV BP, SP
+    FMUL R1, 1.0         ; MATCH(14) - Removed
+    MOV SP, BP
+    POP BP
+    RET
+
+; ✅ FLOATING-POINT DIVIDE BY ONE
+__function_test_fdiv_one:
+    PUSH BP
+    MOV BP, SP
+    FDIV R1, 1.0         ; MATCH(15) - Removed
+    MOV SP, BP
+    POP BP
+    RET
+
+; ✅ INTEGER MODULUS BY ONE
+__function_test_imod_one:
+    PUSH BP
+    MOV BP, SP
+    IMOD R1, 1           ; MATCH(16) → MOV R1, 0
+    MOV SP, BP
+    POP BP
