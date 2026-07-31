@@ -43,7 +43,7 @@ int peephole_compiler_myopia(AsmNode *head)
                     scan->src_op.offset == mem_off)
                 {
                     // Optionally log debug comment before removing
-                    insert_debug_comment(scan->prev, OPT_PEEPHOLE_MOVS, scan->raw);
+                    insert_debug_comment(scan->prev, OPT_PEEPHOLE_COMPILER_MYOPIA, scan->raw);
 
                     AsmNode *to_remove = scan;
                     scan = scan->next;
