@@ -4,7 +4,7 @@
 // --- Optimization Level Presets ------------------------------------------
 static void set_opt_level(OptConfig *cfg, int level) {
     // Disable all
-	cfg->opt_peephole_compiler_myopia =
+    cfg->opt_peephole_compiler_myopia =
     cfg->opt_peephole_pairs = cfg->opt_peephole_algebra = cfg->opt_peephole_forwarding =
     cfg->opt_peephole_jumps = cfg->opt_peephole_movs = cfg->opt_peephole_immediates =
     cfg->opt_peephole_reduce = cfg->opt_peephole_shifts = cfg->opt_peephole_dead_stores =
@@ -16,7 +16,7 @@ static void set_opt_level(OptConfig *cfg, int level) {
     if (level == 0) return; // -O0: all off
 
     // -O1
-	cfg->opt_peephole_compiler_myopia =
+    cfg->opt_peephole_compiler_myopia =
     cfg->opt_peephole_pairs = cfg->opt_peephole_algebra = cfg->opt_peephole_jumps =
     cfg->opt_peephole_jmp_chain = cfg->opt_peephole_immediates = cfg->opt_peephole_reduce =
     cfg->opt_peephole_shifts = cfg->opt_peephole_immediate_prop = true;
@@ -33,7 +33,7 @@ static void set_opt_level(OptConfig *cfg, int level) {
 
     if (level == 3) return;
     cfg->opt_inline = false;
-	cfg->opt_peephole_immediate_prop = false;
+    cfg->opt_peephole_immediate_prop = false;
 }
 
 // --- Handle -f<name> / -fno-<name> ----------------------------------------
@@ -75,7 +75,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
     // Enable
     if (strcmp(arg, "peephole-pairs") == 0) cfg->opt_peephole_pairs = true;
     else if (strcmp(arg, "peephole-algebra") == 0) cfg->opt_peephole_algebra = true;
-	else if (strcmp(arg, "peephole-compiler-myopia") == 0) cfg->opt_peephole_compiler_myopia = true;
+    else if (strcmp(arg, "peephole-compiler-myopia") == 0) cfg->opt_peephole_compiler_myopia = true;
     else if (strcmp(arg, "peephole-forwarding") == 0) cfg->opt_peephole_forwarding = true;
     else if (strcmp(arg, "peephole-jumps") == 0) cfg->opt_peephole_jumps = true;
     else if (strcmp(arg, "peephole-movs") == 0) cfg->opt_peephole_movs = true;
@@ -101,21 +101,12 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
 
 // --- Main Argument Processor ----------------------------------------------
 void process_args(int argc, char **argv, OptConfig *cfg,
+                 char *in_file, size_t in_size,
                  char *out_file, size_t out_size,
                  char *dot_file, size_t dot_size,
                  int *max_passes) {
     optind = 1; // Reset getopt state
     opterr = 0; // Suppress default errors
-
-/*
-    // Pre-scan for -O* (not easily handled by getopt)
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-O0") == 0) { set_opt_level(cfg, 0); }
-        else if (strcmp(argv[i], "-O1") == 0) { set_opt_level(cfg, 1); }
-        else if (strcmp(argv[i], "-O2") == 0) { set_opt_level(cfg, 2); }
-        else if (strcmp(argv[i], "-O3") == 0) { set_opt_level(cfg, 3); }
-    }
-	*/
 
     // Long options
     static struct option long_opts[] = {
@@ -130,35 +121,35 @@ void process_args(int argc, char **argv, OptConfig *cfg,
             case 'd': cfg->debug = true; break;
             case 't': cfg->testing = true; break;
             case 'o': safe_str_copy(out_file, optarg, out_size); break;
-			case 'O':
-				switch (optarg[0])
-				{
-					case '0':
-						set_opt_level (cfg, 0);
-						break;
+            case 'O':
+                switch (optarg[0])
+                {
+                    case '0':
+                        set_opt_level (cfg, 0);
+                        break;
 
-					case '1':
-						set_opt_level (cfg, 1);
-						break;
+                    case '1':
+                        set_opt_level (cfg, 1);
+                        break;
 
-					case '2':
-						set_opt_level (cfg, 2);
-						break;
+                    case '2':
+                        set_opt_level (cfg, 2);
+                        break;
 
-					case '3':
-						set_opt_level (cfg, 3);
-						break;
+                    case '3':
+                        set_opt_level (cfg, 3);
+                        break;
 
-					case 's':
-						set_opt_level (cfg, 4);
-						break;
+                    case 's':
+                        set_opt_level (cfg, 4);
+                        break;
 
-					default:
-						fprintf (stderr, "ERROR: unrecognized optimization level '%s'\n", optarg);
-						exit (1);
-						break;
-				}
-				break;
+                    default:
+                        fprintf (stderr, "ERROR: unrecognized optimization level '%s'\n", optarg);
+                        exit (1);
+                        break;
+                }
+                break;
 
             case 'D': safe_str_copy(dot_file, optarg, dot_size); break;
             case 'f':
@@ -172,8 +163,12 @@ void process_args(int argc, char **argv, OptConfig *cfg,
         }
     }
 
-    // Positional arg as output file if not set
-    if (out_file[0] == '\0' && optind < argc) {
-        safe_str_copy(out_file, argv[optind], out_size);
+    // ADD THIS NEW LOGIC:
+    // Positional arg is our input file
+    if (optind < argc) {
+        safe_str_copy(in_file, argv[optind], in_size);
+    } else {
+        fprintf(stderr, "ERROR: No input assembly file specified.\n");
+        exit(1);
     }
 }

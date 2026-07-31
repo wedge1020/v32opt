@@ -10,32 +10,32 @@ char  g_inline_exclude_name[1024]  = {0};
 // Optimization Configuration
 // -------------------------------------------------------------------
 OptConfig config = {
-	.verbose                      = false,
-	.testing                      = false,
-	.debug                        = false,
-	.opt_peephole_algebra         = false,
-	.opt_peephole_compiler_myopia = false,
-	.opt_peephole_dead_stores     = false,
-	.opt_peephole_forwarding      = false,
-	.opt_peephole_immediate_prop  = false,
-	.opt_peephole_immediates      = false,
-	.opt_peephole_jmp_chain       = false,
-	.opt_peephole_loads           = false,
-	.opt_peephole_jumps           = false,
-	.opt_peephole_movs            = false,
-	.opt_peephole_pairs           = false,
-	.opt_peephole_reduce          = false,
-	.opt_peephole_shifts          = false,
-	.opt_constant_folding         = false,
-	.opt_cse                      = false,
-	.opt_dce                      = false,
-	.opt_omit_frame_pointers      = false,
-	.opt_inline                   = false,
-	.opt_inline_call_limit        = -1,
-	.opt_inline_max_body_ins      = 8,
-	.opt_promote_leaf             = false,
-	.opt_promote_loops            = false,
-	.opt_promote_regs             = false
+    .verbose                      = false,
+    .testing                      = false,
+    .debug                        = false,
+    .opt_peephole_algebra         = false,
+    .opt_peephole_compiler_myopia = false,
+    .opt_peephole_dead_stores     = false,
+    .opt_peephole_forwarding      = false,
+    .opt_peephole_immediate_prop  = false,
+    .opt_peephole_immediates      = false,
+    .opt_peephole_jmp_chain       = false,
+    .opt_peephole_loads           = false,
+    .opt_peephole_jumps           = false,
+    .opt_peephole_movs            = false,
+    .opt_peephole_pairs           = false,
+    .opt_peephole_reduce          = false,
+    .opt_peephole_shifts          = false,
+    .opt_constant_folding         = false,
+    .opt_cse                      = false,
+    .opt_dce                      = false,
+    .opt_omit_frame_pointers      = false,
+    .opt_inline                   = false,
+    .opt_inline_call_limit        = -1,
+    .opt_inline_max_body_ins      = 8,
+    .opt_promote_leaf             = false,
+    .opt_promote_loops            = false,
+    .opt_promote_regs             = false
 };
 
 // Helper macro for aligned optimization output
@@ -79,14 +79,17 @@ int main(int argc, char **argv) {
     }
 
     // --- Initialize defaults ---
-    char *inFile = argv[1];
-    char outFile[256] = {0};
-    char dotFile[256] = {0};
-    int max_passes = 1000;
-    OptType tally[MAX_OPTIMIZATION_ALGORITHMS] = {0};
+    char     inFile[256]                         = {0};
+    char     outFile[256]                        = {0};
+    char     dotFile[256]                        = {0};
+    int      max_passes                          = 1000;
+    OptType  tally[MAX_OPTIMIZATION_ALGORITHMS]  = { 0 };
 
     // --- Process command-line arguments ---
-    process_args(argc, argv, &config, outFile, sizeof(outFile),
+    // Update the call to include inFile and sizeof(inFile)
+    process_args(argc, argv, &config,
+                 inFile, sizeof(inFile),
+                 outFile, sizeof(outFile),
                  dotFile, sizeof(dotFile), &max_passes);
 
     // --- Tally up and display enabled optimizations (verbose mode) ---

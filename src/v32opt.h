@@ -270,10 +270,11 @@ AsmNode *parse_vircon32_asm (const char *);
 void     write_vircon32_asm (const char *, AsmNode *);
 
 // Argument processing
-void     process_args            (int argc, char **argv, OptConfig *cfg,
-                                   char *out_file, size_t out_size,
-                                   char *dot_file, size_t dot_size,
-                                   int *max_passes);
+void     process_args (int,         char **,
+                       OptConfig *, char  *,
+					   size_t,      char  *,
+					   size_t,      char  *,
+					   size_t,      int   *);
 
 // peephole optimizations
 int      peephole_pairs           (AsmNode *);
