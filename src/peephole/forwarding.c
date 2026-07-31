@@ -7,7 +7,7 @@
 //   1. Store-to-Load Forwarding:
 //      - MOV [mem], R1; ... MOV R2, [mem] → MOV R2, R1 (saves 1 word)
 //      - MOV [mem], R1; ... FADD R2, [mem] → FADD R2, R1 (floating-point)
-//      - MOV [R1], [R2]; ... MOV R3, [R1] → MOV R3, [R2] (memory-to-memory)
+// illeg;l:      - MOV [R1], [R2]; ... MOV R3, [R1] → MOV R3, [R2] (memory-to-memory)
 //   2. Copy Propagation:
 //      - MOV R1, val; ... OP R2, R1 → OP R2, val (ONLY if OP accepts immediates)
 //      - MOV R1, 42; ... IADD R2, R1 → IADD R2, 42 (safe: IADD accepts immediates)
@@ -69,6 +69,7 @@ int peephole_forwarding(AsmNode *head) {
                     }
 
                     // --- CASE 3: Memory-to-Memory Forwarding (NEW) ---
+					// SHOULD NEVER HAPPEN, IS ILLEGAL MOV VARIANT
                     // E.g., MOV [R1], [R2]; MOV R3, [R1] → MOV R3, [R2]
                     if (curr->src_op.mode == MODE_INDIRECT && scan->type == OP_MOV &&
                         scan->dst_op.mode == MODE_REG && scan->src_op.mode == MODE_INDIRECT &&

@@ -8,7 +8,7 @@
 #include <ctype.h>
 #include <math.h>
 
-#define  MAX_OPTIMIZATION_ALGORITHMS 20
+#define  MAX_OPTIMIZATION_ALGORITHMS 21
 #define  MAX_INLINE_CANDIDATES 64
 #define  MAX_BODY_INS 8
 #define  MAX_FUNCTIONS 4096
@@ -90,6 +90,7 @@ typedef enum
 typedef enum
 {
 	OPT_PEEPHOLE_ALGEBRA,
+	OPT_PEEPHOLE_COMPILER_MYOPIA,
 	OPT_PEEPHOLE_DEAD_STORES,
 	OPT_PEEPHOLE_FORWARDING,
 	OPT_PEEPHOLE_IMMEDIATE_PROP,
@@ -200,6 +201,7 @@ typedef struct {
     bool testing;
 	bool debug;
     bool opt_peephole_algebra;
+    bool opt_peephole_compiler_myopia;
     bool opt_peephole_dead_stores;
     bool opt_peephole_forwarding;
     bool opt_peephole_immediate_prop;
@@ -276,6 +278,7 @@ void     process_args            (int argc, char **argv, OptConfig *cfg,
 // peephole optimizations
 int      peephole_pairs           (AsmNode *);
 int      peephole_algebra         (AsmNode *);
+int      peephole_compiler_myopia (AsmNode *);
 int      peephole_forwarding      (AsmNode *);
 int      peephole_jumps           (AsmNode *);
 int      peephole_movs            (AsmNode *);

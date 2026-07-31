@@ -3,6 +3,7 @@
 // Map OptType enum to human-readable names
 const char *opt_type_names[]       = {
     [OPT_PEEPHOLE_ALGEBRA]         = "peephole-algebra",
+    [OPT_PEEPHOLE_COMPILER_MYOPIA] = "peephole-compiler-myopia",
     [OPT_PEEPHOLE_DEAD_STORES]     = "peephole-dead-stores",
     [OPT_PEEPHOLE_FORWARDING]      = "peephole-forwarding",
     [OPT_PEEPHOLE_IMMEDIATE_PROP]  = "peephole-immediate-prop",

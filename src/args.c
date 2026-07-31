@@ -4,6 +4,7 @@
 // --- Optimization Level Presets ------------------------------------------
 static void set_opt_level(OptConfig *cfg, int level) {
     // Disable all
+	cfg->opt_peephole_compiler_myopia =
     cfg->opt_peephole_pairs = cfg->opt_peephole_algebra = cfg->opt_peephole_forwarding =
     cfg->opt_peephole_jumps = cfg->opt_peephole_movs = cfg->opt_peephole_immediates =
     cfg->opt_peephole_reduce = cfg->opt_peephole_shifts = cfg->opt_peephole_dead_stores =
@@ -15,6 +16,7 @@ static void set_opt_level(OptConfig *cfg, int level) {
     if (level == 0) return; // -O0: all off
 
     // -O1
+	cfg->opt_peephole_compiler_myopia =
     cfg->opt_peephole_pairs = cfg->opt_peephole_algebra = cfg->opt_peephole_jumps =
     cfg->opt_peephole_jmp_chain = cfg->opt_peephole_immediates = cfg->opt_peephole_reduce =
     cfg->opt_peephole_shifts = cfg->opt_peephole_immediate_prop = true;
@@ -41,6 +43,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
         const char *name = arg + 3;
         if (strcmp(name, "peephole-pairs") == 0) cfg->opt_peephole_pairs = false;
         else if (strcmp(name, "peephole-algebra") == 0) cfg->opt_peephole_algebra = false;
+        else if (strcmp(name, "peephole-compiler-myopia") == 0) cfg->opt_peephole_compiler_myopia = false;
         else if (strcmp(name, "peephole-forwarding") == 0) cfg->opt_peephole_forwarding = false;
         else if (strcmp(name, "peephole-jumps") == 0) cfg->opt_peephole_jumps = false;
         else if (strcmp(name, "peephole-movs") == 0) cfg->opt_peephole_movs = false;
@@ -72,6 +75,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
     // Enable
     if (strcmp(arg, "peephole-pairs") == 0) cfg->opt_peephole_pairs = true;
     else if (strcmp(arg, "peephole-algebra") == 0) cfg->opt_peephole_algebra = true;
+	else if (strcmp(arg, "peephole-compiler-myopia") == 0) cfg->opt_peephole_compiler_myopia = true;
     else if (strcmp(arg, "peephole-forwarding") == 0) cfg->opt_peephole_forwarding = true;
     else if (strcmp(arg, "peephole-jumps") == 0) cfg->opt_peephole_jumps = true;
     else if (strcmp(arg, "peephole-movs") == 0) cfg->opt_peephole_movs = true;

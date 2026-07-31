@@ -13,28 +13,29 @@ OptConfig config = {
 	.verbose                      = false,
 	.testing                      = false,
 	.debug                        = false,
-	.opt_peephole_pairs           = false,
 	.opt_peephole_algebra         = false,
+	.opt_peephole_compiler_myopia = false,
+	.opt_peephole_dead_stores     = false,
 	.opt_peephole_forwarding      = false,
+	.opt_peephole_immediate_prop  = false,
+	.opt_peephole_immediates      = false,
+	.opt_peephole_jmp_chain       = false,
+	.opt_peephole_loads           = false,
 	.opt_peephole_jumps           = false,
 	.opt_peephole_movs            = false,
-	.opt_peephole_immediates      = false,
+	.opt_peephole_pairs           = false,
 	.opt_peephole_reduce          = false,
 	.opt_peephole_shifts          = false,
-	.opt_peephole_dead_stores     = false,
-	.opt_peephole_loads           = false,
-	.opt_peephole_immediate_prop  = false,
-	.opt_peephole_jmp_chain       = false,
+	.opt_constant_folding         = false,
 	.opt_cse                      = false,
 	.opt_dce                      = false,
-	.opt_constant_folding         = false,
+	.opt_omit_frame_pointers      = false,
 	.opt_inline                   = false,
 	.opt_inline_call_limit        = -1,
 	.opt_inline_max_body_ins      = 8,
-	.opt_promote_regs             = false,
 	.opt_promote_leaf             = false,
 	.opt_promote_loops            = false,
-	.opt_omit_frame_pointers      = false
+	.opt_promote_regs             = false
 };
 
 // Helper macro for aligned optimization output
@@ -67,7 +68,7 @@ int main(int argc, char **argv) {
         fprintf(stdout, "  peephole-reduce, peephole-shifts, peephole-dead-stores,\n");
         fprintf(stdout, "  peephole-loads, peephole-immediate-prop, peephole-jmp-chain,\n");
         fprintf(stdout, "  inline, cse, dce, constant-folding, promote-regs, promote-leaf,\n");
-        fprintf(stdout, "  promote-loops, omit-frame-pointers\n\n");
+        fprintf(stdout, "  promote-loops, omit-frame-pointers, peephole-compiler-myopia\n\n");
         fprintf(stdout, "Diagnostic Flags:\n");
         fprintf(stdout, "  -finline-max=N   Cap the number of inlined CALL sites to N\n");
         fprintf(stdout, "  -fmax-passes=N   Cap the maximum iterative optimization passes to N\n\n");
@@ -97,6 +98,7 @@ int main(int argc, char **argv) {
         bool opt_states[MAX_OPTIMIZATION_ALGORITHMS] = {
             [OPT_PEEPHOLE_PAIRS]           = config.opt_peephole_pairs,
             [OPT_PEEPHOLE_ALGEBRA]         = config.opt_peephole_algebra,
+            [OPT_PEEPHOLE_COMPILER_MYOPIA] = config.opt_peephole_compiler_myopia,
             [OPT_PEEPHOLE_FORWARDING]      = config.opt_peephole_forwarding,
             [OPT_PEEPHOLE_JUMPS]           = config.opt_peephole_jumps,
             [OPT_PEEPHOLE_MOVS]            = config.opt_peephole_movs,
@@ -175,6 +177,10 @@ int main(int argc, char **argv) {
             opts[OPT_PROMOTE_LOOPS] = pass_promote_loop_registers(program_ast);
         }
 
+        // compiler myopia
+        if (config.opt_peephole_compiler_myopia) {
+            opts[OPT_PEEPHOLE_COMPILER_MYOPIA] = peephole_compiler_myopia(program_ast);
+        }
         // 3. Data-Flow Forwarding & Immediate Folding
         if (config.opt_peephole_forwarding) {
             opts[OPT_PEEPHOLE_FORWARDING] = peephole_forwarding(program_ast);
@@ -276,6 +282,10 @@ int main(int argc, char **argv) {
         cleanup_opts = 0;
         OptType opts[MAX_OPTIMIZATION_ALGORITHMS] = {0};
 
+        // compiler myopia
+        if (config.opt_peephole_compiler_myopia) {
+            opts[OPT_PEEPHOLE_COMPILER_MYOPIA] = peephole_compiler_myopia(program_ast);
+        }
         if (config.opt_peephole_immediates) {
             opts[OPT_PEEPHOLE_IMMEDIATES] = peephole_immediates(program_ast);
         }
