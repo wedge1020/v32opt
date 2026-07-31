@@ -33,9 +33,10 @@ ASMPCT=$(echo  "${OPTASMSIZE}/${REGASMSIZE}" | bc -lq)
 ASMPCT=$(echo  "${ASMPCT}*100"               | bc -lq)
 ASMPCT=$(echo  "scale=3; ${ASMPCT} / 1"      | bc -lq)
 ASMPCT=$(echo  "100.000-${ASMPCT}"           | bc -lq)
-ASMPCT=$(echo  "${ASMPCT}" | sed 's/^\./0./')
+ASMPCT=$(echo  "${ASMPCT}" | sed 's/^\./0./' | sed 's/^-\./-0./')
 DECASMPCT=$(echo "${ASMPCT}" | cut -d'.' -f1)
 [ -z "${DECASMPCT}" ] && DECASMPCT=0
+[ "${DECASMPCT}" = '-' ] && QUAL="loss"
 [ "${DECASMPCT}" -lt 0 ] && QUAL="loss" || QUAL="savings"
 printf "%-9s %5s bytes\n" "ASM:"    "${REGASMSIZE}"
 printf "%-9s %5s bytes (%s%% %s)\n" "OPTASM:" "${OPTASMSIZE}" "${ASMPCT}" "${QUAL}"
@@ -48,9 +49,10 @@ VBINPCT=$(echo  "${OPTVBINSIZE}/${REGVBINSIZE}" | bc -lq)
 VBINPCT=$(echo  "${VBINPCT}*100"               | bc -lq)
 VBINPCT=$(echo  "scale=3; ${VBINPCT} / 1"      | bc -lq)
 VBINPCT=$(echo  "100.000-${VBINPCT}"           | bc -lq)
-VBINPCT=$(echo  "${VBINPCT}" | sed 's/^\./0./')
+VBINPCT=$(echo  "${VBINPCT}" | sed 's/^\./0./' | sed 's/^-\./-0./')
 DECVBINPCT=$(echo "${VBINPCT}" | cut -d'.' -f1)
 [ -z "${DECVBINPCT}" ] && DECVBINPCT=0
+[ "${DECVBINPCT}" = '-' ] && DECVBINPCT=-1
 [ "${DECVBINPCT}" -lt 0 ] && QUAL="loss" || QUAL="savings"
 printf "%-9s %5s bytes\n" "VBIN:"    "${REGVBINSIZE}"
 printf "%-9s %5s bytes (%s%% %s)\n" "OPTVBIN:" "${OPTVBINSIZE}" "${VBINPCT}" "${QUAL}"
