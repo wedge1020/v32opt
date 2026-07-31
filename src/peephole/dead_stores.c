@@ -1,240 +1,119 @@
 #include "v32opt.h"
 
-// ===================================================================
-// PEEPHOLE: Dead Store Elimination
-// Removes MOV instructions that store values which are never read:
-//   - MOV R1, val; MOV R1, val2 → remove first (overwritten before use)
-//   - MOV [mem], R1; MOV [mem], R2 → remove first (overwritten before use)
-//   - MOV R1, val; ... (no reads of R1) ... MOV R1, val2 → remove first
-//
-// On Vircon32: All instructions are 1 cycle, but immediates and dereferencing
-// add extra words to the instruction payload. This optimization reduces
-// code size by eliminating redundant stores.
-//
-// Returns: Number of optimizations applied
-// ===================================================================
 int peephole_dead_stores(AsmNode *head)
 {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;
 
-    while (curr != NULL)
+    while (curr)
     {
-        AsmNode *next = curr->next;
-
-        // ----------------------------------------------------------
-        // PATTERN 1: Consecutive Stores to Same Register
-        // MOV R1, 10; MOV R1, 20 → remove first MOV
-        // Only if the first value is not read between the two MOVs
-        // ----------------------------------------------------------
-        if (curr->type == OP_MOV && curr->dst_op.mode == MODE_REG)
+        // Target: MOV instruction that writes to a destination (register or memory)
+        if (curr->type == OP_MOV && curr->has_dst)
         {
-            char *target_reg = curr->dst_op.reg;
-
-            // Skip special registers that shouldn't be optimized
-            if (str_case_eq(target_reg, "SP") || str_case_eq(target_reg, "BP"))
-            {
-                curr = next;
-                continue;
-            }
-
-            // Look ahead for another MOV to the same register
+            bool is_dead = false;
             AsmNode *scan = curr->next;
-            bool found_dead_store = false;
 
-            while (scan && !is_control_flow_boundary(scan))
+            while (scan)
             {
-                // Skip OP_OTHER nodes (comments, blanks)
-                if (scan->type == OP_OTHER)
-                {
+                // Stop scanning at control flow boundaries (labels, branches, rets)
+                if (is_control_flow_boundary(scan)) {
+                    break;
+                }
+
+                // Skip pure comments and blank lines natively
+                if (scan->type == OP_OTHER) {
                     scan = scan->next;
                     continue;
                 }
 
-                // If we find a read of target_reg before the next store, stop
-                if (is_register_read(scan, target_reg))
+                // =================================================================
+                // CASE 1: Tracking a Dead Register Store (e.g., MOV R1, 5)
+                // =================================================================
+                if (curr->dst_op.mode == MODE_REG)
                 {
-                    break;
-                }
+                    char *dst_reg = curr->dst_op.reg;
 
-                // Found another MOV to the same register
-                if (scan->type == OP_MOV && scan->dst_op.mode == MODE_REG &&
-                    str_case_eq(scan->dst_op.reg, target_reg))
+                    // If the register is READ before being overwritten, it's NOT a dead store.
+                    if (is_register_read(scan, dst_reg)) {
+                        break;
+                    }
+
+                    // If the register is OVERWRITTEN without being read, the original store is DEAD.
+                    // modifies_register safely catches direct writes and CALL clobbers.
+                    if (modifies_register(scan, dst_reg)) {
+                        is_dead = true;
+                        break;
+                    }
+                }
+                
+                // =================================================================
+                // CASE 2: Tracking a Dead Memory Store (e.g., MOV [BP-4], R1)
+                // =================================================================
+                else if (curr->dst_op.mode == MODE_INDIRECT)
                 {
-                    found_dead_store = true;
-                    break;
+                    char *mem_reg = curr->dst_op.reg;
+                    int mem_off   = curr->dst_op.offset;
+
+                    // Did we find an EXACT overwrite of the tracked memory address?
+                    if (scan->has_dst && scan->dst_op.mode == MODE_INDIRECT &&
+                        str_case_eq(scan->dst_op.reg, mem_reg) && scan->dst_op.offset == mem_off)
+                    {
+                        is_dead = true;
+                        break;
+                    }
+
+                    // Otherwise, verify this intervening instruction doesn't clobber state:
+                    bool clobbers = false;
+
+                    // A. Modifies our base address register (we lose track of where memory points)
+                    if (modifies_register(scan, mem_reg)) clobbers = true;
+
+                    // B. Reads from memory (Anti-Aliasing Check)
+                    if (scan->has_src && scan->src_op.mode == MODE_INDIRECT) {
+                        // The ONLY safe read is one sharing the same base register but a DIFFERENT offset.
+                        // Any other read (exact match, or alien base register) might alias.
+                        if (!(str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset != mem_off)) {
+                            clobbers = true; 
+                        }
+                    }
+
+                    // C. Writes to memory (Anti-Aliasing Check)
+                    if (scan->has_dst && scan->dst_op.mode == MODE_INDIRECT) {
+                        // We already caught the exact overwrite above.
+                        // Any write using a DIFFERENT base register might alias our location.
+                        if (!str_case_eq(scan->dst_op.reg, mem_reg)) {
+                            clobbers = true;
+                        }
+                    }
+
+                    // D. Broad Memory Modifiers
+                    if (scan->type == OP_PUSH || scan->type == OP_POP || scan->type == OP_CALL) {
+                        clobbers = true;
+                    }
+
+                    if (clobbers) {
+                        break;
+                    }
                 }
 
                 scan = scan->next;
             }
 
-            if (found_dead_store)
+            // Remove the dead store and advance curr properly
+            if (is_dead)
             {
                 insert_debug_comment(curr->prev, OPT_PEEPHOLE_DEAD_STORES, curr->raw);
-                AsmNode *nodes[] = {curr};
-                remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_DEAD_STORES);
+                AsmNode *to_remove = curr;
+                
+                // Advance curr BEFORE destroying its memory
+                curr = curr->next; 
+                remove_node(to_remove);
                 optimizations++;
-                continue;
+                continue; 
             }
         }
-
-        // ----------------------------------------------------------
-        // PATTERN 2: Consecutive Stores to Same Memory Location
-        // MOV [R0], R1; MOV [R0], R2 → remove first MOV
-        // ----------------------------------------------------------
-        if (curr->type == OP_MOV && curr->dst_op.mode == MODE_INDIRECT)
-        {
-            char *mem_reg = curr->dst_op.reg;
-            int mem_off = curr->dst_op.offset;
-
-            // Look ahead for another store to the same memory location
-            AsmNode *scan = curr->next;
-            bool found_dead_store = false;
-
-            while (scan && !is_control_flow_boundary(scan))
-            {
-                // Skip OP_OTHER nodes
-                if (scan->type == OP_OTHER)
-                {
-                    scan = scan->next;
-                    continue;
-                }
-
-                // If we find a load from this memory location, stop
-                if (scan->type == OP_MOV && scan->src_op.mode == MODE_INDIRECT &&
-                    str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset == mem_off)
-                {
-                    break;
-                }
-
-                // Found another store to the same memory location
-                if (scan->type == OP_MOV && scan->dst_op.mode == MODE_INDIRECT &&
-                    str_case_eq(scan->dst_op.reg, mem_reg) && scan->dst_op.offset == mem_off)
-                {
-                    found_dead_store = true;
-                    break;
-                }
-
-                // Stop if memory base register is modified
-                if (modifies_register(scan, mem_reg))
-                {
-                    break;
-                }
-
-                scan = scan->next;
-            }
-
-            if (found_dead_store)
-            {
-                insert_debug_comment(curr->prev, OPT_PEEPHOLE_DEAD_STORES, curr->raw);
-                AsmNode *nodes[] = {curr};
-                remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_DEAD_STORES);
-                optimizations++;
-                continue;
-            }
-        }
-
-        // ----------------------------------------------------------
-        // PATTERN 3: Store followed by store to same location with no reads
-        // Extended version: handles cases where there are non-reading
-        // instructions between the stores
-        // ----------------------------------------------------------
-        if (curr->type == OP_MOV)
-        {
-            bool is_reg_store = (curr->dst_op.mode == MODE_REG);
-            bool is_mem_store = (curr->dst_op.mode == MODE_INDIRECT);
-
-            if (is_reg_store || is_mem_store)
-            {
-                char *target = is_reg_store ? curr->dst_op.reg : curr->dst_op.reg;
-                int offset = is_mem_store ? curr->dst_op.offset : 0;
-                //bool is_memory = is_mem_store;
-
-                // Skip special registers
-                if (is_reg_store && (str_case_eq(target, "SP") || str_case_eq(target, "BP")))
-                {
-                    curr = next;
-                    continue;
-                }
-
-                // Look ahead more aggressively for overwriting store
-                AsmNode *scan = curr->next;
-                bool found_dead_store = false;
-
-                while (scan && !is_control_flow_boundary(scan))
-                {
-                    // Skip OP_OTHER nodes
-                    if (scan->type == OP_OTHER)
-                    {
-                        scan = scan->next;
-                        continue;
-                    }
-
-                    // Check if this instruction reads our stored value
-                    bool reads_target = false;
-
-                    if (is_reg_store)
-                    {
-                        reads_target = is_register_read(scan, target);
-                    }
-                    else if (is_mem_store)
-                    {
-                        // Check for loads from this memory location
-                        if (scan->type == OP_MOV && scan->src_op.mode == MODE_INDIRECT &&
-                            str_case_eq(scan->src_op.reg, target) && scan->src_op.offset == offset)
-                        {
-                            reads_target = true;
-                        }
-                        // Check if base register is modified (would change the address)
-                        else if (modifies_register(scan, target))
-                        {
-                            break;
-                        }
-                    }
-
-                    if (reads_target)
-                    {
-                        break;
-                    }
-
-                    // Check if this is an overwriting store
-                    bool is_overwriting_store = false;
-
-                    if (is_reg_store && scan->type == OP_MOV &&
-                        scan->dst_op.mode == MODE_REG &&
-                        str_case_eq(scan->dst_op.reg, target))
-                    {
-                        is_overwriting_store = true;
-                    }
-                    else if (is_mem_store && scan->type == OP_MOV &&
-                             scan->dst_op.mode == MODE_INDIRECT &&
-                             str_case_eq(scan->dst_op.reg, target) &&
-                             scan->dst_op.offset == offset)
-                    {
-                        is_overwriting_store = true;
-                    }
-
-                    if (is_overwriting_store)
-                    {
-                        found_dead_store = true;
-                        break;
-                    }
-
-                    scan = scan->next;
-                }
-
-                if (found_dead_store)
-                {
-                    insert_debug_comment(curr->prev, OPT_PEEPHOLE_DEAD_STORES, curr->raw);
-                    AsmNode *nodes[] = {curr};
-                    remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_DEAD_STORES);
-                    optimizations++;
-                    continue;
-                }
-            }
-        }
-
-        curr = next;
+        
+        curr = curr->next;
     }
 
     return optimizations;
