@@ -214,7 +214,7 @@ __function_test_intervening_too_large_gap:
 	MOV  R5, R3    ; Safe intervening
 	IMUL R5, 3     ; Safe intervening
 
-    MOV R2, [R1]   ; KEEP(6) Redundant load - remove
+    MOV R2, [R1]   ; MATCH(8) Redundant load - remove
     MOV SP, BP
     POP BP
     RET
