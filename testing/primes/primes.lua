@@ -109,12 +109,12 @@ function main()
 	print(0,   80, " brute:")
 	start                  = ioports.tim.frames
 	
-	local n                = 64
+	local n                = 128
 --	print(500,200, n)
 --	print(500,220, 128)
-	__rawasm__("_frameload:")
 	print(90,  80, n)
 
+	__rawasm__("_frameload:")
 	brute_1024_tally       = count_brute(n)
 	stop                   = system.frames
 --	stop                   = ioports.tim.frames
