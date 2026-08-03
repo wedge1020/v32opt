@@ -7,7 +7,7 @@ TEXTURE_TOOL     = png2vircon
 PACKER           = packrom
 
 COMPILER_FLAGS   = 
-OPT_FLAGS        = -f$(TEST) -t -v
+OPT_FLAGS        = -O3 -t -v
 
 # This variable is empty by default, but is set to -g during a debug build
 DEBUG_FLAGS      =

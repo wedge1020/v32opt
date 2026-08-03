@@ -1,3 +1,4 @@
+--#title "v32lua prime number performance benchmark"
 --
 -- primes.lua: a CPU cycle evaluation attempt for v32opt validation
 --
@@ -8,38 +9,30 @@
 --
 -- global variables
 --
-brute_1024_tally=0
-brute_1024_cycles=0
-brute_1024_time=0.0
-brute_b_1024_tally=0
-brute_b_1024_cycles=0
-brute_b_1024_time=0.0
-brute_o_1024_tally=0
-brute_o_1024_cycles=0
-brute_o_1024_time=0.0
-brute_s_1024_tally=0
-brute_s_1024_cycles=0
-brute_s_1024_time=0.0
+qty    = { }
+cycle  = { }
+time   = { }
+flag   = { }
 
 -- Variant 1: Brute force - checks all divisors, no early exit
-function count_brute(n)
+function brute(n)
     local count = 0
-	for i = 2, n do
-		local is_prime = true  -- Reset for each number
-		for j = 2, i - 1 do
-			if i % j == 0 then
-				is_prime = false
-			end
-		end
-		if is_prime then
-			count = count + 1
-		end
-	end
+    for i = 2, n do
+        local is_prime = true  -- Reset for each number
+        for j = 2, i - 1 do
+            if i % j == 0 then
+                is_prime = false
+            end
+        end
+        if is_prime then
+            count = count + 1
+        end
+    end
     return count
 end
 
 -- Variant 2: Break on composite - exits inner loop on first divisor found
-function count_break(n)
+function brute_b(n)
     local count = 0
     for i = 2, n do
         local is_prime = true
@@ -57,7 +50,7 @@ function count_break(n)
 end
 
 -- Variant 3: Odds-only - assumes 2 is prime, checks only odd numbers in both loops
-function count_odds_only(n)
+function brute_o(n)
     if n < 2 then return 0 end
     local count = 1  -- 2 is prime
     for i = 3, n, 2 do
@@ -74,8 +67,45 @@ function count_odds_only(n)
     return count
 end
 
--- Variant 4: Square root cap - only checks divisors up to sqrt(i)
-function count_sqrt(n)
+-- Variant: Square root cap - only checks divisors up to sqrt(i)
+function brute_s(n)
+    local count = 0
+    for i = 2, n do
+        local is_prime = true
+        local limit = math.floor(math.sqrt(i))
+        for j = 2, limit do
+            if i % j == 0 then
+                is_prime = false
+            end
+        end
+        if is_prime then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+-- Variant: break + odds - assumes 2 is prime, checks only odd numbers in both loops
+function brute_bo(n)
+    if n < 2 then return 0 end
+    local count = 1  -- 2 is prime
+    for i = 3, n, 2 do
+        local is_prime = true
+        for j = 3, i - 1, 2 do
+            if i % j == 0 then
+                is_prime = false
+                break
+            end
+        end
+        if is_prime then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+-- Variant: break on composite + Square root cap - only checks divisors up to sqrt(i)
+function brute_bs(n)
     local count = 0
     for i = 2, n do
         local is_prime = true
@@ -93,77 +123,235 @@ function count_sqrt(n)
     return count
 end
 
+-- Variant: odds + square root - assumes 2 is prime, checks only odd numbers in both loops, applies square root trick
+function brute_os(n)
+    if n < 2 then return 0 end
+    local count = 1  -- 2 is prime
+    for i = 3, n, 2 do
+        local is_prime = true
+        local limit = math.floor(math.sqrt(i))
+        for j = 3, limit, 2 do
+            if i % j == 0 then
+                is_prime = false
+            end
+        end
+        if is_prime then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+-- Variant: brute + break + odds + sqrt
+function brute_bos(n)
+    if n < 2 then return 0 end
+    local count = 1  -- 2 is prime
+    for i = 3, n, 2 do
+        local is_prime = true
+        local limit     = math.floor(math.sqrt(i))
+        for j = 3, limit, 2 do
+            if i % j == 0 then
+                is_prime = false
+				break
+            end
+        end
+        if is_prime then
+            count = count + 1
+        end
+    end
+    return count
+end
+
 --
 -- Main
 --
 function main()
-	ioports.gpu.clear("black")
-	print(0,   0,  "Prime Number Computations")
-	print(0,   20, "==================================")
-	print(0,   40, "variant upper tally cycles time(s)")
-	print(0,   60, "------- ----- ----- ------ -------")
 
-	local start            = 0
-	local stop             = 0
+    flag[0]                     = true
+    flag[1]                     = true
+    flag[2]                     = true
+    flag[3]                     = true
+    flag[4]                     = true
+    flag[5]                     = true
+    flag[6]                     = true
+    flag[7]                     = true
 
-	print(0,   80, " brute:")
-	start                  = ioports.tim.frames
-	
-	local n                = 128
---	print(500,200, n)
---	print(500,220, 128)
-	print(90,  80, n)
+    ioports.gpu.clear("black")
+    print(0,    0,  "Prime Number Computations (lua)")
+    print(0,    6,  "_________________________________")
+    print(0,    8,  "_________________________________")
+    print(0,    24, "        qty  cycles     time(s)")
+    print(0,    36, "------- ---- --------- --------")
+    print(0,   184, "        qty  cycles     time(s)")
+    print(0,   196, "------- ---- --------- --------")
+    print(330,   6, "_________________________________")
+    print(330,   8, "_________________________________")
+    print(330,  24, "        qty  cycles     time(s)")
+    print(330,  36, "------- ---- --------- --------")
+    print(330, 184, "        qty  cycles     time(s)")
+    print(330, 196, "------- ---- --------- --------")
 
-	__rawasm__("_frameload:")
-	brute_1024_tally       = count_brute(n)
-	stop                   = system.frames
---	stop                   = ioports.tim.frames
-	brute_1024_cycles      = stop - start
-	brute_1024_cycles      = brute_1024_cycles * 60
-	--brute_1024_cycles      = brute_1024_cycles + ioports.tim.cycles
-	print(150, 80, brute_1024_tally)
-	print(210, 80, brute_1024_cycles)
-	brute_1024_time        = brute_1024_cycles / 250000 / 60
-	print(310, 80, brute_1024_time)
+    local start                 = 0
+    local stop                  = 0
+    local x                     = 0
+    local xreset                = 0
+    local y                     = 58
+    local yreset                = 58
+    
+    local index                 = 1024
+    while index                <= 8192 do
 
-	print(0,   100, "+b    :")
-	start                  = ioports.tim.frames
-	print(90,  100, "1024")
-	brute_b_1024_tally       = count_break(n)
-	stop                   = ioports.tim.frames
-	brute_b_1024_cycles      = stop - start
-	brute_b_1024_cycles      = brute_b_1024_cycles * 60
-	--brute_1024_cycles      = brute_1024_cycles + ioports.tim.cycles
-	print(150, 100, brute_b_1024_tally)
-	print(210, 100, brute_b_1024_cycles)
-	brute_b_1024_time        = brute_b_1024_cycles / 250000 / 60
-	print(310, 100, brute_b_1024_time)
+        --
+        -- based on workload, determine x and y starting positions
+        --
+        if index               == 1024 then
+            xreset              = 0
+            yreset              = 48
+        elseif index           == 2048 then
+            xreset              = 0
+            yreset              = 208
+        elseif index           == 4096 then
+            xreset              = 330
+            yreset              = 48
+        elseif index           == 8192 then
+            xreset              = 330
+            yreset              = 208
+        end
 
-	print(0,   120, "  +o  :")
-	start                  = ioports.tim.frames
-	print(90,  120, "1024")
-	brute_o_1024_tally       = count_odds_only(n)
-	stop                   = ioports.tim.frames
-	brute_o_1024_cycles      = stop - start
-	brute_o_1024_cycles      = brute_o_1024_cycles * 60
-	--brute_1024_cycles      = brute_1024_cycles + ioports.tim.cycles
-	print(150, 120, brute_o_1024_tally)
-	print(210, 120, brute_o_1024_cycles)
-	brute_o_1024_time        = brute_o_1024_cycles / 250000 / 60
-	print(310, 120, brute_o_1024_time)
+        --
+        -- display upper bound (workload)
+        --
+        x                       = x + 80
+        print(xreset, yreset-22, index)
 
---[[
-	start                  = ioports.tim.frames
-	brute_b_1024_tally     = count_break(n)
-	stop                   = ioports.tim.frames
-	brute_b_1024_cycles    = stop - start
-	brute_b_1024_cycles    = brute_1024_cycles * 60
-	brute_b_1024_cycles    = brute_1024_cycles + ioports.tim.cycles
+        --
+        -- for each algorithm we are performing
+        --
+        y                       = yreset
+        for alg                 = 0, 7 do
 
-	brute_o_1024_tally  = count_odds_only(n)
-	brute_s_1024_tally  = count_sqrt(n)
+            --
+            -- reset x, y for current line
+            --
+            x                   = xreset
 
---]]
-	-- system.wait()
-	ioports.gpu.sync()
+            --
+            -- display algorithm header
+            --
+            if alg             == 0 then
+                print(x, y, " brute:")
+            elseif alg         == 1 then
+                print(x, y, "+b    :")
+            elseif alg         == 2 then
+                print(x, y, "  +o  :")
+            elseif alg         == 3 then
+                print(x, y, "    +s:")
+            elseif alg         == 4 then
+                print(x, y, "+b  +s:")
+            elseif alg         == 5 then
+                print(x, y, "+b+o  :")
+            elseif alg         == 6 then
+                print(x, y, "  +o+s:")
+            elseif alg         == 7 then
+				__rawasm__("__strdebug:")
+                print(x, y, "+b+o+s:")
+            end
+
+            --
+            -- conditionally perform the computation
+            -- sample the frames elapsed
+            --
+            if flag[alg]       == true then
+                if alg         == 0 then
+                    start       = ioports.tim.frames
+                    qty[alg]    = brute(index)
+                    stop        = system.frames
+                elseif alg     == 1 then
+                    start       = ioports.tim.frames
+                    qty[alg]    = brute_b(index)
+                    stop        = system.frames
+                elseif alg     == 2 then
+                    start       = ioports.tim.frames
+                    qty[alg]    = brute_o(index)
+                    stop        = system.frames
+                elseif alg     == 3 then
+                    start       = ioports.tim.frames
+                    qty[alg]    = brute_s(index)
+                    stop        = system.frames
+                elseif alg     == 4 then
+                    start       = ioports.tim.frames
+                    qty[alg]    = brute_bs(index)
+                    stop        = system.frames
+                elseif alg     == 5 then
+                    start       = ioports.tim.frames
+                    qty[alg]    = brute_bo(index)
+                    stop        = system.frames
+                elseif alg     == 6 then
+                    start       = ioports.tim.frames
+                    qty[alg]    = brute_os(index)
+                    stop        = system.frames
+                elseif alg     == 7 then
+                    start       = ioports.tim.frames
+                    qty[alg]    = brute_bos(index)
+                    stop        = system.frames
+                end
+            else
+                print(x, y, "                         n/a")
+                qty[alg]        = -1
+                cycle[alg]      = -1
+                time[alg]       = -1
+            end
+
+            --
+            -- display qty of primes found in range
+            --
+            if flag[alg]       == true then
+                x               = x + 80
+				__rawasm__("__debug:")
+                print(x, y, qty[alg])
+            end
+
+            --
+            -- calculate cycles from frames transpired
+            --
+            if flag[alg]       == true then
+                cycle[alg]      = stop - start
+                cycle[alg]      = cycle[alg] * 250000
+                x               = x + 50
+            end
+
+            --
+            -- add in cycles in current frame, then print
+            --
+            if flag[alg]       == true then
+                cycle[alg]      = cycle[alg] + ioports.tim.cycles
+                print(x, y, cycle[alg])
+            end
+
+            --
+            -- calculate and display total time for run
+            --
+            if flag[alg]       == true then
+                time[alg]       = cycle[alg] / 250000.0 / 60.0
+                x               = x + 100
+                print(x, y, time[alg])
+
+                if time[alg]   >  6.0 then
+                    flag[alg]   = false
+                end
+            end
+
+            --
+            -- adjust y for next row of display
+            --
+            y                   = y + 16
+
+            --
+            -- sync and advance to next frame
+            --
+            ioports.gpu.sync()
+        end
+        print(xreset,  (y-4), "-------------------------------")
+        index                   = index * 2
+    end
 end
