@@ -9,10 +9,14 @@
 --
 -- global variables
 --
-qty    = { }
-cycle  = { }
-time   = { }
-flag   = { }
+qty    = { [0] = -1,   [1] = -1,   [2] = -1,   [3] = -1,
+           [4] = -1,   [5] = -1,   [6] = -1,   [7] = -1    }
+cycle  = { [0] = -1,   [1] = -1,   [2] = -1,   [3] = -1,
+           [4] = -1,   [5] = -1,   [6] = -1,   [7] = -1    }
+time   = { [0] = -1,   [1] = -1,   [2] = -1,   [3] = -1,
+           [4] = -1,   [5] = -1,   [6] = -1,   [7] = -1    }
+flag   = { [0] = true, [1] = true, [2] = true, [3] = true,
+           [4] = true, [5] = true, [6] = true, [7] = true  }
 
 -- Variant 1: Brute force - checks all divisors, no early exit
 function brute(n)
@@ -166,15 +170,6 @@ end
 -- Main
 --
 function main()
-
-    flag[0]                     = true
-    flag[1]                     = true
-    flag[2]                     = true
-    flag[3]                     = true
-    flag[4]                     = true
-    flag[5]                     = true
-    flag[6]                     = true
-    flag[7]                     = true
 
     ioports.gpu.clear("black")
     print(0,    0,  "Prime Number Computations (lua)")

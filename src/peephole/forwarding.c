@@ -19,7 +19,7 @@ int peephole_forwarding(AsmNode *head) {
 
     while (curr) {
         if (curr->type == OP_MOV) {
-            // --- RULE 1: Store-to-Load Forwarding (Register → Indirect) ---
+            // --- RULE 1: Store-to-Load Forwarding (Register -> Indirect) ---
             if (curr->dst_op.mode == MODE_INDIRECT && curr->src_op.mode == MODE_REG) {
                 char *mem_reg = curr->dst_op.reg;
                 int mem_off = curr->dst_op.offset;
@@ -54,43 +54,22 @@ int peephole_forwarding(AsmNode *head) {
                         break;
                     }
 
-                    // --- CASE 2: ALU Op with Memory Operand (NEW: Floating-Point Support) ---
-                    // E.g., MOV [R1], R2; FADD R3, [R1] → FADD R3, R2
-                    if ((scan->type == OP_IADD || scan->type == OP_ISUB || scan->type == OP_IMUL ||
-                         scan->type == OP_FADD || scan->type == OP_FSUB || scan->type == OP_FMUL) &&
-                        scan->src_op.mode == MODE_INDIRECT &&
-                        str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset == mem_off) {
-                        insert_debug_comment(scan->prev, OPT_PEEPHOLE_FORWARDING, scan->raw);
-                        scan->src_op = curr->src_op;
-                        snprintf(scan->raw, sizeof(scan->raw), "    %s %s, %s",
-                                 scan->mnemonic, scan->dst_op.raw, scan->src_op.raw);
-                        optimizations++;
-                        break;
-                    }
-
-                    // --- CASE 3: Memory-to-Memory Forwarding (NEW) ---
-					// SHOULD NEVER HAPPEN, IS ILLEGAL MOV VARIANT
-                    // E.g., MOV [R1], [R2]; MOV R3, [R1] → MOV R3, [R2]
-                    if (curr->src_op.mode == MODE_INDIRECT && scan->type == OP_MOV &&
-                        scan->dst_op.mode == MODE_REG && scan->src_op.mode == MODE_INDIRECT &&
-                        str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset == mem_off) {
-                        insert_debug_comment(scan->prev, OPT_PEEPHOLE_FORWARDING, scan->raw);
-                        scan->src_op = curr->src_op; // Replace [R1] with [R2]
-                        snprintf(scan->raw, sizeof(scan->raw), "    MOV %s, %s",
-                                 scan->dst_op.raw, scan->src_op.raw);
-                        optimizations++;
-                        break;
-                    }
-
                     if (is_control_flow_boundary(scan)) break;
                     scan = scan->next;
                 }
             }
 
-            // --- RULE 2: Copy Propagation (Immediate/Register) ---
+            // --- RULE 2: Copy Propagation (Register-to-Register ONLY) ---
             if (curr->dst_op.mode == MODE_REG) {
                 char *def_reg = curr->dst_op.reg;
                 if (str_case_eq(def_reg, "SP") || str_case_eq(def_reg, "BP")) {
+                    curr = curr->next;
+                    continue;
+                }
+
+                // --- GUARD 0: Only propagate register values (optimize for size) ---
+                // On Vircon32, register operands are most compact; never replace reg with imm/mem
+                if (curr->src_op.mode != MODE_REG) {
                     curr = curr->next;
                     continue;
                 }
@@ -103,7 +82,7 @@ int peephole_forwarding(AsmNode *head) {
                     }
 
                     if (modifies_register(scan, def_reg)) break;
-                    if (curr->src_op.mode == MODE_REG && modifies_register(scan, curr->src_op.reg)) break;
+                    if (modifies_register(scan, curr->src_op.reg)) break;
 
                     bool uses_def_reg = false;
                     Operand *target_op = NULL;
@@ -119,14 +98,13 @@ int peephole_forwarding(AsmNode *head) {
                     }
 
                     if (uses_def_reg && target_op) {
-                        // --- GUARD 1: Don't propagate immediates into JT/JF ---
-                        if ((str_case_eq(scan->mnemonic, "JT") || str_case_eq(scan->mnemonic, "JF")) &&
-                            curr->src_op.mode == MODE_IMMEDIATE) {
+                        // --- GUARD 1: Don't propagate into JT/JF ---
+                        if ((str_case_eq(scan->mnemonic, "JT") || str_case_eq(scan->mnemonic, "JF"))) {
                             break;
                         }
 
                         // --- GUARD 2: Don't propagate into instructions that reject immediates ---
-                        // POW, ATAN2, IN, OUT, etc. cannot take immediate operands
+                        // Note: Since we only propagate registers (GUARD 0), this only checks instruction types
                         if (str_case_eq(scan->mnemonic, "POW") ||
                             str_case_eq(scan->mnemonic, "ATAN2") ||
                             str_case_eq(scan->mnemonic, "IN") ||
@@ -134,21 +112,18 @@ int peephole_forwarding(AsmNode *head) {
                             break;
                         }
 
-                        // --- GUARD 3: Don't propagate immediates into indirect destinations ---
-                        // Vircon32 MOV requires at least one register; MOV [R1], #42 is invalid
-                        if (curr->src_op.mode == MODE_IMMEDIATE &&
-                            scan->dst_op.mode == MODE_INDIRECT &&
+                        // --- GUARD 3: Don't propagate into indirect destinations ---
+                        if (scan->dst_op.mode == MODE_INDIRECT &&
                             !str_case_eq(scan->mnemonic, "JMP")) {
                             break;
                         }
 
-                        // --- GUARD 4: Don't propagate into JMP with immediate ---
-                        // JMP #address is valid, but JMP R1 where R1=#address is not equivalent
-                        if (str_case_eq(scan->mnemonic, "JMP") && curr->src_op.mode == MODE_IMMEDIATE) {
+                        // --- GUARD 4: Don't propagate into JMP ---
+                        if (str_case_eq(scan->mnemonic, "JMP")) {
                             break;
                         }
 
-                        // --- APPLY: Safe to propagate ---
+                        // --- APPLY: Safe register-to-register propagation ---
                         insert_debug_comment(scan->prev, OPT_PEEPHOLE_FORWARDING, scan->raw);
                         *target_op = curr->src_op;
 

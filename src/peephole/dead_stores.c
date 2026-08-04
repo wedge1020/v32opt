@@ -1,5 +1,7 @@
 #include "v32opt.h"
 
+#include "v32opt.h"
+
 int peephole_dead_stores(AsmNode *head)
 {
     int optimizations = 0;
@@ -11,7 +13,24 @@ int peephole_dead_stores(AsmNode *head)
         if (curr->type == OP_MOV && curr->has_dst)
         {
             bool is_dead = false;
+            bool has_call_in_block = false;
             AsmNode *scan = curr->next;
+
+            // --- PRE-SCAN: Check if there's a CALL in this basic block ---
+            // If so, be conservative - don't eliminate stores that might feed function arguments
+            AsmNode *pre_scan = scan;
+            while (pre_scan) {
+                if (is_control_flow_boundary(pre_scan)) break;
+                if (pre_scan->type == OP_OTHER) {
+                    pre_scan = pre_scan->next;
+                    continue;
+                }
+                if (pre_scan->type == OP_CALL) {
+                    has_call_in_block = true;
+                    break;
+                }
+                pre_scan = pre_scan->next;
+            }
 
             while (scan)
             {
@@ -33,6 +52,18 @@ int peephole_dead_stores(AsmNode *head)
                 {
                     char *dst_reg = curr->dst_op.reg;
 
+                    // --- GUARD: Never eliminate SP or BP stores (stack frame critical) ---
+                    if (str_case_eq(dst_reg, "SP") || str_case_eq(dst_reg, "BP")) {
+                        break;
+                    }
+
+                    // --- GUARD: If there's a CALL in this block, don't eliminate stores
+                    // that might feed function arguments (R0-R3 typically used for args) ---
+                    if (has_call_in_block) {
+                        // Conservative: don't eliminate any register store before a CALL
+                        break;
+                    }
+
                     // If the register is READ before being overwritten, it's NOT a dead store.
                     if (is_register_read(scan, dst_reg)) {
                         break;
@@ -45,7 +76,7 @@ int peephole_dead_stores(AsmNode *head)
                         break;
                     }
                 }
-                
+
                 // =================================================================
                 // CASE 2: Tracking a Dead Memory Store (e.g., MOV [BP-4], R1)
                 // =================================================================
@@ -73,7 +104,7 @@ int peephole_dead_stores(AsmNode *head)
                         // The ONLY safe read is one sharing the same base register but a DIFFERENT offset.
                         // Any other read (exact match, or alien base register) might alias.
                         if (!(str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset != mem_off)) {
-                            clobbers = true; 
+                            clobbers = true;
                         }
                     }
 
@@ -104,15 +135,15 @@ int peephole_dead_stores(AsmNode *head)
             {
                 insert_debug_comment(curr->prev, OPT_PEEPHOLE_DEAD_STORES, curr->raw);
                 AsmNode *to_remove = curr;
-                
+
                 // Advance curr BEFORE destroying its memory
-                curr = curr->next; 
+                curr = curr->next;
                 remove_node(to_remove);
                 optimizations++;
-                continue; 
+                continue;
             }
         }
-        
+
         curr = curr->next;
     }
 
