@@ -24,7 +24,7 @@ static void set_opt_level(OptConfig *cfg, int level) {
     if (level == 1) return;
 
     // -O2: add CSE, DCE, constant folding, omit-frame-pointers
-    cfg->opt_cse = cfg->opt_dce = cfg->opt_constant_folding = cfg->opt_omit_frame_pointers = true;
+    cfg->opt_cse = cfg->opt_constant_folding = cfg->opt_omit_frame_pointers = true;
 
     if (level == 2) return;
 
