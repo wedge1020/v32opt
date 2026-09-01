@@ -1,19 +1,5 @@
 // ===================================================================
 // CSE: Common Subexpression Elimination (Vircon32-Specific)
-// Eliminates redundant computations by reusing previous results within basic blocks:
-//   - Pattern: MOV Rx, A; OP Rx, B; ... MOV Ry, A; OP Ry, B -> replace OP Ry,B with MOV Ry, Rx
-//   - On Vircon32: 2-operand format (IADD R1, R2 means R1 = R1 + R2)
-//   - ALL instructions are 1 cycle, so we optimize for SPACE (word count)
-//   - Only eliminates when: (1) same operation, (2) same source operands,
-//     (3) destination registers have same initial value (via MOV from same source)
-// ===================================================================
-// ===================================================================
-// CSE: Common Subexpression Elimination (Vircon32-Specific)
-// Fixed version: Strict operation matching + comprehensive control flow detection
-// ===================================================================
-// ===================================================================
-// CSE: Common Subexpression Elimination (Vircon32-Specific)
-// FIXED: Uses OpType enum for control flow + strict operation matching
 // ===================================================================
 #include "v32opt.h"
 
@@ -21,10 +7,8 @@
 static bool is_cf_boundary(AsmNode *node) {
     if (!node) return true;
     if (node->type == OP_LABEL) return true;
-    // Check OpType enum FIRST (most reliable)
     if (node->type == OP_JMP || node->type == OP_JT || node->type == OP_JF ||
         node->type == OP_CALL || node->type == OP_RET || node->type == OP_HLT) return true;
-    // Fallback: check mnemonic for edge cases
     if (str_case_eq(node->mnemonic, "JMP") || str_case_eq(node->mnemonic, "JT") ||
         str_case_eq(node->mnemonic, "JF") || str_case_eq(node->mnemonic, "CALL") ||
         str_case_eq(node->mnemonic, "RET") || str_case_eq(node->mnemonic, "HLT")) return true;
@@ -42,6 +26,12 @@ static bool is_computable_expression(AsmNode *node) {
     if (node->type == OP_JMP || node->type == OP_JT || node->type == OP_JF ||
         node->type == OP_CALL || node->type == OP_RET || node->type == OP_HLT) return false;
     if (node->type == OP_MOV || node->type == OP_PUSH || node->type == OP_POP) return false;
+
+    // === LUA MODE FIX: Skip OR with BOXED_* immediates ===
+    if (is_lua_mode() && node->type == OP_OR && is_boxed_type_operand(&node->src_op)) {
+        return false;
+    }
+
     return true;
 }
 
@@ -62,23 +52,18 @@ int opt_cse(AsmNode *head) {
                 op_rx->dst_op.mode == MODE_REG &&
                 str_case_eq(op_rx->dst_op.reg, rx)) {
 
-                // Stop if op_rx itself is at a boundary (e.g., after a label)
                 if (is_cf_boundary(op_rx)) { curr = next; continue; }
 
                 AsmNode *scan = op_rx->next;
                 while (scan != NULL) {
-                    // Stop at ANY control flow boundary
                     if (is_cf_boundary(scan)) break;
-
                     if (scan->type == OP_OTHER) { scan = scan->next; continue; }
-
-                    // Stop if Rx is modified
                     if (modifies_register(scan, rx)) break;
 
                     if (scan->type == OP_MOV && scan->dst_op.mode == MODE_REG) {
                         char *ry = scan->dst_op.reg;
                         if (str_case_eq(ry, "SP") || str_case_eq(ry, "BP")) { scan = scan->next; continue; }
-                        if (str_case_eq(rx, ry)) { scan = scan->next; continue; } // Ry != Rx
+                        if (str_case_eq(rx, ry)) { scan = scan->next; continue; }
 
                         if (operands_equal(&scan->src_op, &curr->src_op)) {
                             AsmNode *op_ry = skip_other_nodes(scan->next);
@@ -87,8 +72,14 @@ int opt_cse(AsmNode *head) {
                             if (is_computable_expression(op_ry) &&
                                 op_ry->dst_op.mode == MODE_REG &&
                                 str_case_eq(op_ry->dst_op.reg, ry) &&
-                                ops_match(op_ry, op_rx) &&  // <-- FIX #2: Type + mnemonic
+                                ops_match(op_ry, op_rx) &&
                                 operands_equal(&op_ry->src_op, &op_rx->src_op)) {
+
+                                // === LUA MODE FIX: Never optimize away boxed type tagging ===
+                                if (is_lua_mode() && is_boxed_tagging(op_ry)) {
+                                    scan = op_ry->next;
+                                    continue;
+                                }
 
                                 insert_debug_comment(op_ry->prev, OPT_CSE, op_ry->raw);
                                 op_ry->type = OP_MOV;

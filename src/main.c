@@ -52,6 +52,8 @@ int main(int argc, char **argv) {
         fprintf(stdout, "  -v               Verbose output (show pass statistics)\n");
         fprintf(stdout, "  -d               In-code debugging (mark the hits)\n");
         fprintf(stdout, "  -t               Testing mode: just display opt:hits\n");
+        fprintf(stdout, "  -L <mode>        Language mode: 'C' (default) or 'lua'\n");
+        fprintf(stdout, "                   Lua mode enables boxed-type awareness\n\n");
         fprintf(stdout, "  --dot <cfg.dot>  Export Control Flow Graph to DOT format\n");
         fprintf(stdout, "  -o <file>        Specify output assembly file name\n");
         fprintf(stdout, "  -O0              Disable all optimizations [default]\n");

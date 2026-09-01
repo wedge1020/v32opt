@@ -17,6 +17,13 @@
 // Enums & Data Structures
 // -------------------------------------------------------------------
 
+// Add at the top with other enums
+typedef enum {
+    LANG_C,      // Default: current v32opt behavior
+    LANG_LUA,    // Lua mode: aware of boxed type system
+    LANG_MAX
+} LangMode;
+
 typedef enum
 {
     OP_HLT   = 0,
@@ -83,33 +90,33 @@ typedef enum
     OP_ATAN2,
     OP_LOG,
     OP_POW,
-	OP_OTHER,
-	OP_LABEL
+    OP_OTHER,
+    OP_LABEL
 } OpType;
 
 typedef enum
 {
-	OPT_PEEPHOLE_ALGEBRA,
-	OPT_PEEPHOLE_COMPILER_MYOPIA,
-	OPT_PEEPHOLE_DEAD_STORES,
-	OPT_PEEPHOLE_FORWARDING,
-	OPT_PEEPHOLE_IMMEDIATE_PROP,
-	OPT_PEEPHOLE_IMMEDIATES,
-	OPT_PEEPHOLE_JMP_CHAIN,
-	OPT_PEEPHOLE_JUMPS,
-	OPT_PEEPHOLE_LOADS,
-	OPT_PEEPHOLE_MOVS,
-	OPT_PEEPHOLE_PAIRS,
-	OPT_PEEPHOLE_REDUCE,
-	OPT_PEEPHOLE_SHIFTS,
-	OPT_CONSTANT_FOLDING,
-	OPT_CSE,
-	OPT_DCE,
-	OPT_OMIT_FRAME_POINTERS,
-	OPT_INLINE,
-	OPT_PROMOTE_LEAF,
-	OPT_PROMOTE_LOOPS,
-	OPT_PROMOTE_REGS
+    OPT_PEEPHOLE_ALGEBRA,
+    OPT_PEEPHOLE_COMPILER_MYOPIA,
+    OPT_PEEPHOLE_DEAD_STORES,
+    OPT_PEEPHOLE_FORWARDING,
+    OPT_PEEPHOLE_IMMEDIATE_PROP,
+    OPT_PEEPHOLE_IMMEDIATES,
+    OPT_PEEPHOLE_JMP_CHAIN,
+    OPT_PEEPHOLE_JUMPS,
+    OPT_PEEPHOLE_LOADS,
+    OPT_PEEPHOLE_MOVS,
+    OPT_PEEPHOLE_PAIRS,
+    OPT_PEEPHOLE_REDUCE,
+    OPT_PEEPHOLE_SHIFTS,
+    OPT_CONSTANT_FOLDING,
+    OPT_CSE,
+    OPT_DCE,
+    OPT_OMIT_FRAME_POINTERS,
+    OPT_INLINE,
+    OPT_PROMOTE_LEAF,
+    OPT_PROMOTE_LOOPS,
+    OPT_PROMOTE_REGS
 } OptType;
 
 typedef enum {
@@ -126,7 +133,7 @@ typedef struct {
     int immediate;
     char raw[128];
     bool is_float;
-	float float_value;
+    float float_value;
 } Operand;
 
 typedef struct AsmNode {
@@ -197,32 +204,33 @@ typedef struct {
 } FunctionDef;
 
 typedef struct {
-    bool verbose;
-    bool testing;
-	bool debug;
-    bool opt_peephole_algebra;
-    bool opt_peephole_compiler_myopia;
-    bool opt_peephole_dead_stores;
-    bool opt_peephole_forwarding;
-    bool opt_peephole_immediate_prop;
-    bool opt_peephole_immediates;
-    bool opt_peephole_jmp_chain;
-    bool opt_peephole_jumps;
-    bool opt_peephole_loads;
-    bool opt_peephole_movs;
-    bool opt_peephole_pairs;
-    bool opt_peephole_reduce;
-    bool opt_peephole_shifts;
-    bool opt_constant_folding;
-    bool opt_cse;
-    bool opt_dce;
-    bool opt_omit_frame_pointers;
-    bool opt_inline;
-	int  opt_inline_call_limit;
-	int  opt_inline_max_body_ins;
-    bool opt_promote_leaf;
-    bool opt_promote_loops;
-    bool opt_promote_regs;
+    bool     verbose;
+    bool     testing;
+    bool     debug;
+    bool     opt_peephole_algebra;
+    bool     opt_peephole_compiler_myopia;
+    bool     opt_peephole_dead_stores;
+    bool     opt_peephole_forwarding;
+    bool     opt_peephole_immediate_prop;
+    bool     opt_peephole_immediates;
+    bool     opt_peephole_jmp_chain;
+    bool     opt_peephole_jumps;
+    bool     opt_peephole_loads;
+    bool     opt_peephole_movs;
+    bool     opt_peephole_pairs;
+    bool     opt_peephole_reduce;
+    bool     opt_peephole_shifts;
+    bool     opt_constant_folding;
+    bool     opt_cse;
+    bool     opt_dce;
+    bool     opt_omit_frame_pointers;
+    bool     opt_inline;
+    int      opt_inline_call_limit;
+    int      opt_inline_max_body_ins;
+    bool     opt_promote_leaf;
+    bool     opt_promote_loops;
+    bool     opt_promote_regs;
+    LangMode lang_mode;
 } OptConfig;
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -237,17 +245,20 @@ extern       OptConfig  config;
 ////////////////////////////////////////////////////////////////////////////////////////
 // general utility function prototypes
 //
-void     remove_with_debug       (AsmNode      **, AsmNode *nodes[], int, OptType);
-void     strip_comment_from_line (char          *, const char *, size_t);
-void     normalize_whitespace    (char          *, const char *, size_t);
-void     insert_debug_comment    (AsmNode       *, OptType, const char *);
-void     safe_str_copy           (char          *, const char *, size_t);
-char    *trim                    (char          *);
-bool     str_case_eq             (const char    *, const char *);
-int      get_reg_index           (const char    *);
-bool     operands_equal          (const Operand *, const Operand *);
-bool     is_power_of_two         (int);
-int      get_log2                (int);
+void  remove_with_debug       (AsmNode      **, AsmNode       *nodes[], int, OptType);
+void  strip_comment_from_line (char          *, const char    *, size_t);
+void  normalize_whitespace    (char          *, const char    *, size_t);
+void  insert_debug_comment    (AsmNode       *, OptType,         const char *);
+void  safe_str_copy           (char          *, const char    *, size_t);
+char *trim                    (char          *);
+bool  str_case_eq             (const char    *, const char    *);
+int   get_reg_index           (const char    *);
+bool  operands_equal          (const Operand *, const Operand *);
+bool  is_power_of_two         (int);
+int   get_log2                (int);
+bool  is_lua_mode             (void);
+bool  is_boxed_type_operand   (const Operand *);
+bool  is_boxed_tagging        (AsmNode       *);
 
 Operand  parse_operand (const char *);
 AsmNode *create_node   (const char *, OpType, const char *, const char *, const char *);
@@ -272,9 +283,9 @@ void     write_vircon32_asm (const char *, AsmNode *);
 // Argument processing
 void     process_args (int,         char **,
                        OptConfig *, char  *,
-					   size_t,      char  *,
-					   size_t,      char  *,
-					   size_t,      int   *);
+                       size_t,      char  *,
+                       size_t,      char  *,
+                       size_t,      int   *);
 
 // peephole optimizations
 int      peephole_pairs           (AsmNode *);

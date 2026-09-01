@@ -104,18 +104,22 @@ void process_args(int argc, char **argv, OptConfig *cfg,
                  char *in_file, size_t in_size,
                  char *out_file, size_t out_size,
                  char *dot_file, size_t dot_size,
-                 int *max_passes) {
-    optind = 1; // Reset getopt state
-    opterr = 0; // Suppress default errors
+                 int *max_passes)
+{
+    optind          = 1; // Reset getopt state
+    opterr          = 0; // Suppress default errors
+
+    cfg->lang_mode  = LANG_C;  // Default to C mode
 
     // Long options
     static struct option long_opts[] = {
-        {"dot", required_argument, NULL, 'D'},
+        {"dot",      required_argument, NULL, 'D'},
+        {"langmode", required_argument, NULL, 'L'},
         {NULL, 0, NULL, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "vdto:O:f:", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "vdto:O:f:L:", long_opts, NULL)) != -1) {
         switch (opt) {
             case 'v': cfg->verbose = true; break;
             case 'd': cfg->debug = true; break;
@@ -158,6 +162,18 @@ void process_args(int argc, char **argv, OptConfig *cfg,
                     exit(1);
                 }
                 break;
+
+            case 'L':
+                if (strcmp(optarg, "c") == 0 || strcmp(optarg, "C") == 0) {
+                    cfg->lang_mode = LANG_C;
+                } else if (strcmp(optarg, "lua") == 0 || strcmp(optarg, "LUA") == 0) {
+                    cfg->lang_mode = LANG_LUA;
+                } else {
+                    fprintf(stderr, "ERROR: Unknown language mode '%s'. Use 'c' or 'lua'.\n", optarg);
+                    exit(1);
+                }
+                break;
+
             case '?': exit(1); // getopt already printed error
             default: fprintf(stderr, "ERROR: unknown option '-%c'\n", opt); exit(1);
         }

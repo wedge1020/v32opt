@@ -16,7 +16,7 @@ const char *opt_type_names[]       = {
     [OPT_PEEPHOLE_REDUCE]          = "peephole-reduce",
     [OPT_PEEPHOLE_SHIFTS]          = "peephole-shifts",
     [OPT_CONSTANT_FOLDING]         = "constant-folding",
-	[OPT_CSE]                      = "cse",
+    [OPT_CSE]                      = "cse",
     [OPT_DCE]                      = "dce",
     [OPT_OMIT_FRAME_POINTERS]      = "omit-frame-pointers",
     [OPT_INLINE]                   = "inline",
@@ -24,6 +24,24 @@ const char *opt_type_names[]       = {
     [OPT_PROMOTE_LOOPS]            = "promote-loops",
     [OPT_PROMOTE_REGS]             = "promote-regs"
 };
+
+bool is_lua_mode(void) {
+    extern OptConfig config;
+    return config.lang_mode == LANG_LUA;
+}
+
+bool is_boxed_type_operand(const Operand *op) {
+    if (!op || op->mode != MODE_IMMEDIATE) return false;
+    const char *raw = op->raw;
+    return (strstr(raw, "BOXED_") != NULL) ||
+           (strstr(raw, "0x7F") == raw) ||  // BOXED_FUNCTION
+           (strstr(raw, "0xFF") == raw);    // BOXED_NIL, BOXED_TABLE, etc.
+}
+
+bool is_boxed_tagging(AsmNode *node) {
+    if (!node || node->type != OP_OR) return false;
+    return is_boxed_type_operand(&node->src_op);
+}
 
 // Helper: remove nodes and insert debug comments
 void remove_with_debug(AsmNode **curr_ptr, AsmNode *nodes[], int count, OptType opt_type)
@@ -265,7 +283,7 @@ Operand parse_operand(const char *str) {
     }
     // --- Labels/Symbols: Everything else (e.g., __literal_string_11455) ---
     else
-	{
+    {
         op.mode = MODE_IMMEDIATE;  // Treat as address (resolved by assembler)
         op.immediate = 0;
         op.is_float = false;

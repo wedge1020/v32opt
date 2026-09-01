@@ -202,8 +202,8 @@ bool is_numeric_immediate(const Operand *op)
 // Structurally verify if two operands are identical
 // Handles: REG, INDIRECT, IMMEDIATE modes
 // ---------------------------------------------------------------
-bool operands_equal(const Operand *op1, const Operand *op2)
-{
+// In helpers.c, modify operands_equal():
+bool operands_equal(const Operand *op1, const Operand *op2) {
     if (op1->mode != op2->mode) return false;
 
     if (op1->mode == MODE_REG) {
@@ -215,7 +215,16 @@ bool operands_equal(const Operand *op1, const Operand *op2)
     if (op1->mode == MODE_IMMEDIATE) {
         if (op1->is_float != op2->is_float) return false;
         if (op1->is_float) return op1->float_value == op2->float_value;
-        return op1->immediate == op2->immediate;
+        // FIX: If raw strings differ but values are same, they're different labels
+        if (op1->immediate == op2->immediate) {
+            // Same numeric value - check if they're both labels with different names
+            if (op1->raw[0] == '_' || op2->raw[0] == '_') {
+                // Label operand - compare raw strings
+                return str_case_eq(op1->raw, op2->raw);
+            }
+            return true; // Same numeric immediate
+        }
+        return false;
     }
     return str_case_eq(op1->raw, op2->raw);
 }
