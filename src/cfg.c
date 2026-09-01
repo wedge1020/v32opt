@@ -323,14 +323,18 @@ bool apply_transfer_function(BasicBlock *block) {
         // --- MOV: Register-to-register or immediate ---
         // FIX: Gate on dst_op.mode == MODE_REG to avoid misinterpreting
         // indirect destinations (e.g., [BP+2]) as writes to BP itself.
+        // --- MOV: Register-to-register or immediate ---
         if (node->type == OP_MOV && node->dst_op.mode == MODE_REG) {
             int dst_reg = get_reg_index(node->dst_op.reg);
             if (dst_reg >= 0) {
                 // FIX: Float immediates must not be tracked as VAL_CONST.
-                // parse_operand sets immediate=0 for ALL floats (since strtoul
-                // stops at '.'), which is only correct for 0.0.
                 if (node->src_op.mode == MODE_IMMEDIATE && !node->src_op.is_float) {
-                    current.regs[dst_reg] = (RegState){VAL_CONST, node->src_op.immediate};
+                    // NEW FIX: Don't track labels/symbols (start with letter/underscore) as constants
+                    if (isalpha((unsigned char)node->src_op.raw[0]) || node->src_op.raw[0] == '_') {
+                        current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
+                    } else {
+                        current.regs[dst_reg] = (RegState){VAL_CONST, node->src_op.immediate};
+                    }
                 } else if (node->src_op.mode == MODE_REG) {
                     int src_reg = get_reg_index(node->src_op.reg);
                     current.regs[dst_reg] = (src_reg >= 0) ? current.regs[src_reg] : (RegState){VAL_BOTTOM, 0};
@@ -339,6 +343,7 @@ bool apply_transfer_function(BasicBlock *block) {
                 }
             }
         }
+
         // --- IADD: Register addition ---
         // FIX: Same mode check as MOV above.
         else if (node->type == OP_IADD && node->dst_op.mode == MODE_REG) {
@@ -357,6 +362,7 @@ bool apply_transfer_function(BasicBlock *block) {
                 }
             }
         }
+
         // --- All other register-writing instructions ---
         // FIX: Any instruction that writes to a register and isn't MOV/IADD
         // must invalidate that register's state. PUSH is the exception:
@@ -447,6 +453,9 @@ void propagate_constants_cfg(ControlFlowGraph *cfg) {
 // ===================================================================
 // CONSTANT FOLDING: APPLY PROPAGATED CONSTANTS
 // ===================================================================
+// ===================================================================
+// CONSTANT FOLDING: APPLY PROPAGATED CONSTANTS
+// ===================================================================
 int fold_constants_cfg(ControlFlowGraph *cfg) {
     int optimizations = 0;
     if (!cfg) return 0;
@@ -465,20 +474,29 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
                 continue;
             }
 
-            // === LUA MODE FIX: Skip folding OR with BOXED_* ===
+            // === FIX: Skip folding OR with BOXED_* ===
             if (is_lua_mode() && is_boxed_tagging(node)) {
-                // Don't fold boxed type tagging instructions
-                // But still update register state for the OR operation
                 if (node->dst_op.mode == MODE_REG) {
                     int dst_reg = get_reg_index(node->dst_op.reg);
                     if (dst_reg >= 0) {
-                        // OR with BOXED_* is a tagging operation, not arithmetic
-                        // We can't track the result as a constant
                         current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
                     }
                 }
                 if (node == block->last_ins) break;
                 continue;
+            }
+
+            // === FIX: Skip MOV with label immediates ===
+            if (node->type == OP_MOV && node->dst_op.mode == MODE_REG &&
+                node->src_op.mode == MODE_IMMEDIATE) {
+                if (isalpha((unsigned char)node->src_op.raw[0]) || node->src_op.raw[0] == '_') {
+                    int dst_reg = get_reg_index(node->dst_op.reg);
+                    if (dst_reg >= 0) {
+                        current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
+                    }
+                    if (node == block->last_ins) break;
+                    continue;
+                }
             }
 
             // --- MOV R1, R2: Fold if R2 is constant ---
@@ -488,23 +506,58 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
                     if (src_reg >= 0) {
                         RegState src_st = current.regs[src_reg];
                         if (src_st.type == VAL_CONST) {
-                            // === LUA MODE FIX: Don't fold if source is a boxed type ===
-                            if (is_lua_mode() && is_boxed_type_operand(&node->src_op)) {
-                                // Skip folding for boxed types
-                            } else {
-                                node->src_op.mode = MODE_IMMEDIATE;
-                                node->src_op.immediate = src_st.val;
-                                snprintf(node->src_op.raw, sizeof(node->src_op.raw), "%d", src_st.val);
-                                snprintf(node->raw, sizeof(node->raw), "    MOV %s, %d",
-                                         node->dst_op.raw, src_st.val);
-                                optimizations++;
-                            }
+                            node->src_op.mode = MODE_IMMEDIATE;
+                            node->src_op.immediate = src_st.val;
+                            snprintf(node->src_op.raw, sizeof(node->src_op.raw), "%d", src_st.val);
+                            snprintf(node->raw, sizeof(node->raw), "    MOV %s, %d",
+                                     node->dst_op.raw, src_st.val);
+                            optimizations++;
                         }
                     }
                 }
             }
 
-            // ... rest of existing code for IADD, state updates, etc. ...
+            // --- Update state for MOV (mirrors apply_transfer_function) ---
+            if (node->type == OP_MOV && node->dst_op.mode == MODE_REG) {
+                int dst_reg = get_reg_index(node->dst_op.reg);
+                if (dst_reg >= 0) {
+                    if (node->src_op.mode == MODE_IMMEDIATE && !node->src_op.is_float) {
+                        // FIX: Don't track labels
+                        if (isalpha((unsigned char)node->src_op.raw[0]) || node->src_op.raw[0] == '_') {
+                            current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
+                        } else {
+                            current.regs[dst_reg] = (RegState){VAL_CONST, node->src_op.immediate};
+                        }
+                    } else if (node->src_op.mode == MODE_REG) {
+                        int src_reg = get_reg_index(node->src_op.reg);
+                        current.regs[dst_reg] = (src_reg >= 0) ? current.regs[src_reg] : (RegState){VAL_BOTTOM, 0};
+                    } else {
+                        current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
+                    }
+                }
+            }
+            // --- Update state for IADD ---
+            else if (node->type == OP_IADD && node->dst_op.mode == MODE_REG) {
+                int dst_reg = get_reg_index(node->dst_op.reg);
+                if (dst_reg >= 0) {
+                    RegState dst_st = current.regs[dst_reg];
+                    RegState src_st = (node->src_op.mode == MODE_IMMEDIATE && !node->src_op.is_float)
+                        ? (RegState){VAL_CONST, node->src_op.immediate}
+                        : (node->src_op.mode == MODE_REG ? current.regs[get_reg_index(node->src_op.reg)] : (RegState){VAL_BOTTOM, 0});
+                    if (dst_st.type == VAL_CONST && src_st.type == VAL_CONST) {
+                        current.regs[dst_reg] = (RegState){VAL_CONST, dst_st.val + src_st.val};
+                    } else {
+                        current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
+                    }
+                }
+            }
+            // --- Invalidate for all other register-writing instructions ---
+            else if (node->has_dst && node->dst_op.mode == MODE_REG && node->type != OP_PUSH) {
+                int dst_reg = get_reg_index(node->dst_op.reg);
+                if (dst_reg >= 0) {
+                    current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
+                }
+            }
 
             if (node == block->last_ins) break;
         }
