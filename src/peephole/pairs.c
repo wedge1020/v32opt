@@ -1,5 +1,32 @@
 #include "v32opt.h"
 
+// ---------------------------------------------------------------
+// Returns true if 'node' makes it unsafe to remove an in-flight
+// "PUSH Rn ... POP Rn" span at this point: any control transfer, any
+// OTHER push/pop (they move SP, and something later in the span --
+// or after it -- may depend on exactly how many words are currently
+// pushed), any direct read/write of SP or BP, or a write to the
+// register the span is trying to protect. A plain READ of that
+// register inside the span is fine: nothing here overwrites it, so a
+// read sees the same value with or without the push/pop.
+// ---------------------------------------------------------------
+static bool blocks_push_pop_removal(AsmNode *node, const char *reg_name)
+{
+    if (!node) return true;
+    if (node->type == OP_LABEL) return true;
+    if (str_case_eq(node->mnemonic, "JMP") || str_case_eq(node->mnemonic, "JT") ||
+        str_case_eq(node->mnemonic, "JF") || str_case_eq(node->mnemonic, "CALL") ||
+        str_case_eq(node->mnemonic, "RET") || str_case_eq(node->mnemonic, "HLT")) return true;
+    if (node->type == OP_PUSH || node->type == OP_POP) return true;
+    if (modifies_register(node, "SP") || modifies_register(node, "BP")) return true;
+    if (node->has_dst && (node->dst_op.mode == MODE_REG || node->dst_op.mode == MODE_INDIRECT) &&
+        str_case_eq(node->dst_op.reg, "SP")) return true;
+    if (node->has_src && (node->src_op.mode == MODE_REG || node->src_op.mode == MODE_INDIRECT) &&
+        str_case_eq(node->src_op.reg, "SP")) return true;
+    if (modifies_register(node, reg_name)) return true;
+    return false;
+}
+
 // ===================================================================
 // PEEPHOLE: Adjacent Instruction Pair Elimination
 //
@@ -117,18 +144,46 @@ int peephole_pairs(AsmNode *head)
             }
         }
 
-        // --- PUSH/POP Pair Elimination ---
-        // PUSH r; POP r → no net effect on the stack or register
-        AsmNode *pop_node = skip_other_nodes(n1->next);
-
-        if (n1->type == OP_PUSH && pop_node && pop_node->type == OP_POP &&
-            n1->dst_op.mode == MODE_REG && pop_node->dst_op.mode == MODE_REG &&
-            str_case_eq(n1->dst_op.reg, pop_node->dst_op.reg))
+        // --- PUSH/POP Pair Elimination (adjacent, OR across a safe span) ---
+        // PUSH r; ...; POP r -> remove both, PROVIDED nothing in between
+        // writes r, touches SP/BP, transfers control, or itself pushes/pops
+        // (see blocks_push_pop_removal()). This subsumes the old
+        // adjacent-only match (that's just the zero-instructions-in-between
+        // case) and additionally catches the extremely common compiler
+        // idiom of "PUSH left-operand; evaluate right-operand; POP
+        // left-operand" that v32lua emits around essentially every binary
+        // operator -- unconditionally, even when the right-hand side
+        // provably makes no CALL and so never needed the protection in the
+        // first place.
+        if (n1->type == OP_PUSH && n1->dst_op.mode == MODE_REG)
         {
-            AsmNode *nodes[] = {n1, pop_node};
-            remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_PAIRS);
-            optimizations += 2;
-            continue;
+            char *reg_name = n1->dst_op.reg;
+            AsmNode *scan = n1->next;
+            AsmNode *match = NULL;
+
+            while (scan)
+            {
+                if (scan->type == OP_OTHER) { scan = scan->next; continue; }
+
+                if (scan->type == OP_POP && scan->dst_op.mode == MODE_REG &&
+                    str_case_eq(scan->dst_op.reg, reg_name))
+                {
+                    match = scan;
+                    break;
+                }
+
+                if (blocks_push_pop_removal(scan, reg_name)) break;
+
+                scan = scan->next;
+            }
+
+            if (match)
+            {
+                AsmNode *nodes[] = {n1, match};
+                remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_PAIRS);
+                optimizations += 2;
+                continue;
+            }
         }
 
         curr = curr->next;

@@ -39,7 +39,26 @@ bool is_boxed_type_operand(const Operand *op) {
 }
 
 bool is_boxed_tagging(AsmNode *node) {
-    if (!node || node->type != OP_OR) return false;
+    if (!node) return false;
+    // Any instruction that manipulates a value's NaN-boxing tag bits via a
+    // BOXED_* immediate operand. OR boxes a table/function/string pointer
+    // ("OR Rd, BOXED_FUNCTION"); AND strips the tag bits back out
+    // (unboxing, e.g. "AND Rd, BOXED_PAYLOAD"); IADD boxes a Lua boolean
+    // ("IADD Rd, BOXED_BOOLEAN"). This used to only recognize OR, which let
+    // the AND/IADD boxing idioms slip past CSE's and constant-folding's
+    // Lua-mode guards elsewhere (see fold_constants_cfg() in cfg.c and
+    // is_computable_expression() in cse.c).
+    //
+    // NOTE: "XOR Rd, 3" (flip BOXED_FALSE<->BOXED_TRUE) is a *deliberate*
+    // blind spot here -- it has no BOXED_* operand to key off of, so it
+    // can't be recognized by this name-based check. It's safe today only
+    // because nothing currently treats XOR as constant-foldable or
+    // CSE-computable in a way that would corrupt it; if that ever changes,
+    // this function will need a smarter check (e.g. tracking that Rd's
+    // value came from a boxed-boolean producer) rather than another string
+    // match.
+    if (node->type != OP_OR && node->type != OP_AND && node->type != OP_IADD)
+        return false;
     return is_boxed_type_operand(&node->src_op);
 }
 

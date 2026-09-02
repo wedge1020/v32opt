@@ -1,7 +1,5 @@
 #include "v32opt.h"
 
-#include "v32opt.h"
-
 int peephole_dead_stores(AsmNode *head)
 {
     int optimizations = 0;

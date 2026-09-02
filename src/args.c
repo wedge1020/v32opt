@@ -1,5 +1,4 @@
 #include "v32opt.h"
-#include <getopt.h>
 
 // --- Optimization Level Presets ------------------------------------------
 static void set_opt_level(OptConfig *cfg, int level) {

@@ -290,6 +290,22 @@ RegState merge_reg(RegState a, RegState b) {
 }
 
 // ===================================================================
+// SYMBOLIC IMMEDIATE CHECK
+// parse_operand() maps any bare symbol it doesn't recognize (a jump
+// label, or a %define'd constant name like BOXED_BOOLEAN/BOXED_NIL) to
+// MODE_IMMEDIATE with .immediate forced to 0, since there's no numeric
+// value to resolve at parse time -- the real value is only known to the
+// assembler. Constant-tracking code must NEVER treat that fabricated 0
+// as a real value; doing so silently corrupts any fold that depends on
+// it (e.g. "IADD Rd, BOXED_BOOLEAN" would be folded as "Rd += 0").
+// ===================================================================
+static bool is_symbolic_immediate(const Operand *op) {
+    if (!op || op->mode != MODE_IMMEDIATE) return false;
+    if (!op->raw[0]) return false;
+    return isalpha((unsigned char)op->raw[0]) || op->raw[0] == '_';
+}
+
+// ===================================================================
 // CONSTANT PROPAGATION: TRANSFER FUNCTION
 // Applies the effect of a basic block's instructions to the state.
 //   - block: Basic block to process
@@ -321,15 +337,10 @@ bool apply_transfer_function(BasicBlock *block) {
         }
 
         // --- MOV: Register-to-register or immediate ---
-        // FIX: Gate on dst_op.mode == MODE_REG to avoid misinterpreting
-        // indirect destinations (e.g., [BP+2]) as writes to BP itself.
-        // --- MOV: Register-to-register or immediate ---
         if (node->type == OP_MOV && node->dst_op.mode == MODE_REG) {
             int dst_reg = get_reg_index(node->dst_op.reg);
             if (dst_reg >= 0) {
-                // FIX: Float immediates must not be tracked as VAL_CONST.
                 if (node->src_op.mode == MODE_IMMEDIATE && !node->src_op.is_float) {
-                    // NEW FIX: Don't track labels/symbols (start with letter/underscore) as constants
                     if (isalpha((unsigned char)node->src_op.raw[0]) || node->src_op.raw[0] == '_') {
                         current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
                     } else {
@@ -345,15 +356,22 @@ bool apply_transfer_function(BasicBlock *block) {
         }
 
         // --- IADD: Register addition ---
-        // FIX: Same mode check as MOV above.
         else if (node->type == OP_IADD && node->dst_op.mode == MODE_REG) {
             int dst_reg = get_reg_index(node->dst_op.reg);
             if (dst_reg >= 0) {
                 RegState dst_st = current.regs[dst_reg];
-                // FIX: Float immediate guard
-                RegState src_st = (node->src_op.mode == MODE_IMMEDIATE && !node->src_op.is_float)
-                    ? (RegState){VAL_CONST, node->src_op.immediate}
-                    : (node->src_op.mode == MODE_REG ? current.regs[get_reg_index(node->src_op.reg)] : (RegState){VAL_BOTTOM, 0});
+                // FIX: Float immediate guard, AND symbolic immediate guard
+                // (see is_symbolic_immediate() -- without this, "IADD Rd,
+                // BOXED_BOOLEAN" was folded as "Rd += 0").
+                RegState src_st;
+                if (node->src_op.mode == MODE_IMMEDIATE && !node->src_op.is_float &&
+                    !is_symbolic_immediate(&node->src_op)) {
+                    src_st = (RegState){VAL_CONST, node->src_op.immediate};
+                } else if (node->src_op.mode == MODE_REG) {
+                    src_st = current.regs[get_reg_index(node->src_op.reg)];
+                } else {
+                    src_st = (RegState){VAL_BOTTOM, 0};
+                }
 
                 if (dst_st.type == VAL_CONST && src_st.type == VAL_CONST) {
                     current.regs[dst_reg] = (RegState){VAL_CONST, dst_st.val + src_st.val};
@@ -364,9 +382,6 @@ bool apply_transfer_function(BasicBlock *block) {
         }
 
         // --- All other register-writing instructions ---
-        // FIX: Any instruction that writes to a register and isn't MOV/IADD
-        // must invalidate that register's state. PUSH is the exception:
-        // it reads the register (to push it), but doesn't modify it.
         else if (node->has_dst && node->dst_op.mode == MODE_REG && node->type != OP_PUSH) {
             int dst_reg = get_reg_index(node->dst_op.reg);
             if (dst_reg >= 0) {
@@ -450,12 +465,6 @@ void propagate_constants_cfg(ControlFlowGraph *cfg) {
 //   - Same float immediate guards
 //   - Has its own register state tracking (must mirror transfer function)
 // ===================================================================
-// ===================================================================
-// CONSTANT FOLDING: APPLY PROPAGATED CONSTANTS
-// ===================================================================
-// ===================================================================
-// CONSTANT FOLDING: APPLY PROPAGATED CONSTANTS
-// ===================================================================
 int fold_constants_cfg(ControlFlowGraph *cfg) {
     int optimizations = 0;
     if (!cfg) return 0;
@@ -474,7 +483,9 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
                 continue;
             }
 
-            // === FIX: Skip folding OR with BOXED_* ===
+            // === FIX: Skip folding boxed-tagging ops (OR/AND/IADD with
+            // BOXED_*) -- is_boxed_tagging() was widened past OR-only; see
+            // tools.c patch. ===
             if (is_lua_mode() && is_boxed_tagging(node)) {
                 if (node->dst_op.mode == MODE_REG) {
                     int dst_reg = get_reg_index(node->dst_op.reg);
@@ -541,9 +552,17 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
                 int dst_reg = get_reg_index(node->dst_op.reg);
                 if (dst_reg >= 0) {
                     RegState dst_st = current.regs[dst_reg];
-                    RegState src_st = (node->src_op.mode == MODE_IMMEDIATE && !node->src_op.is_float)
-                        ? (RegState){VAL_CONST, node->src_op.immediate}
-                        : (node->src_op.mode == MODE_REG ? current.regs[get_reg_index(node->src_op.reg)] : (RegState){VAL_BOTTOM, 0});
+                    // FIX: same symbolic-immediate guard as apply_transfer_function()
+                    // -- without it, "IADD Rd, BOXED_BOOLEAN" was folded as "Rd += 0".
+                    RegState src_st;
+                    if (node->src_op.mode == MODE_IMMEDIATE && !node->src_op.is_float &&
+                        !is_symbolic_immediate(&node->src_op)) {
+                        src_st = (RegState){VAL_CONST, node->src_op.immediate};
+                    } else if (node->src_op.mode == MODE_REG) {
+                        src_st = current.regs[get_reg_index(node->src_op.reg)];
+                    } else {
+                        src_st = (RegState){VAL_BOTTOM, 0};
+                    }
                     if (dst_st.type == VAL_CONST && src_st.type == VAL_CONST) {
                         current.regs[dst_reg] = (RegState){VAL_CONST, dst_st.val + src_st.val};
                     } else {

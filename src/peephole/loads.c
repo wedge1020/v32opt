@@ -2,20 +2,15 @@
 
 // ===================================================================
 // PEEPHOLE: Redundant Load Elimination (Vircon32-Optimized)
-// //
+//
 // Removes redundant loads from the same memory location:
 //   - MOV R1, [R2+X]; MOV R3, [R2+X] → MOV R1, [R2+X]; MOV R3, R1 (saves 1 word)
 //   - MOV R1, [R2+X]; FADD R3, [R2+X] → MOV R1, [R2+X]; FADD R3, R1 (floating-point)
-// //
+//
 // Guards:
 //   - Different offsets: MOV R1, [R2+4]; MOV R3, [R2+8] → KEEP
 //   - Base register modified: MOV R1, [R2]; IADD R2, 4; MOV R3, [R2] → KEEP
 //   - Memory store in between: MOV R1, [R2]; MOV [R3], R4; MOV R5, [R2] → KEEP
-// ===================================================================
-#include "v32opt.h"
-
-// ===================================================================
-// PEEPHOLE: Redundant Load Elimination (Vircon32-Optimized)
 // ===================================================================
 int peephole_loads(AsmNode *head) {
     int optimizations = 0;

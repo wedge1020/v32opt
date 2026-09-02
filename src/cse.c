@@ -27,8 +27,12 @@ static bool is_computable_expression(AsmNode *node) {
         node->type == OP_CALL || node->type == OP_RET || node->type == OP_HLT) return false;
     if (node->type == OP_MOV || node->type == OP_PUSH || node->type == OP_POP) return false;
 
-    // === LUA MODE FIX: Skip OR with BOXED_* immediates ===
-    if (is_lua_mode() && node->type == OP_OR && is_boxed_type_operand(&node->src_op)) {
+    // === LUA MODE FIX: Skip boxed-tagging ops (OR/AND/IADD with BOXED_*
+    // immediates -- see is_boxed_tagging()'s comment in tools.c). Previously
+    // this only checked OP_OR directly, which let "AND Rd, BOXED_PAYLOAD"
+    // (unboxing) and "IADD Rd, BOXED_BOOLEAN" (boolean boxing) be treated as
+    // ordinary computable expressions and considered for CSE. ===
+    if (is_lua_mode() && is_boxed_tagging(node)) {
         return false;
     }
 

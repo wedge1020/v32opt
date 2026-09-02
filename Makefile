@@ -10,7 +10,7 @@ all:
 
 # Clean both the build files in src/ and the generated assembly in testing/
 clean:
-	rm -f err.txt
+	rm -f err.txt put/*
 	$(MAKE) -C src clean
 	$(MAKE) -C testing clean
 
@@ -32,6 +32,10 @@ sysinstall: $(TARGET)
 	else \
 		@echo "Skipping: /usr/local/bin does not exist"; \
 	fi
+
+monofiles:
+	@rm -f put/*
+	scripts/monolithic_code.sh
 
 # Run the test compilations. 
 # We explicitly depend on the optimizer binary ('v32opt') being built first!

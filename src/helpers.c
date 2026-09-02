@@ -162,12 +162,23 @@ bool is_register_read(AsmNode *node, const char *reg_name)
 
 // ---------------------------------------------------------------
 // Check if a register is "Live-Out" across function returns
-// In Vircon32: R0 (return value), SP, and BP survive a RET
+// In Vircon32: R0, SP, and BP survive a RET.
+//
+// FIX: R2 and R3 must ALSO be treated as live-out. v32lua's calling
+// convention returns values 1-3 of any multi-return function in
+// R0/R2/R3 (see MAX_EXTRA_RETURN_SLOTS and get_extra_return_slot_access()
+// in v32lua.c) -- only return values beyond the third spill to memory.
+// A pass that trusted this function to mean "only R0 survives a RET"
+// would be free to discard a live write to R2/R3 immediately before a
+// RET in a multi-return function, silently dropping the 2nd/3rd return
+// value.
 // ---------------------------------------------------------------
 bool is_live_out_register(const char *reg_name)
 {
     if (!reg_name) return true;
     if (str_case_eq(reg_name, "R0")) return true;
+    if (str_case_eq(reg_name, "R2")) return true;
+    if (str_case_eq(reg_name, "R3")) return true;
     if (str_case_eq(reg_name, "SP")) return true;
     if (str_case_eq(reg_name, "BP")) return true;
     return false;
