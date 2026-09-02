@@ -32,6 +32,7 @@ asm: $(TEST).asm
 $(TEST).asm: $(TEST).lua
 	@echo -n "Compiling  $(TEST).lua    -> $(TEST).asm     ... "
 	@$(COMPILER) $(COMPILER_FLAGS) $(DEBUG_FLAGS) -o $(TEST).asm $(TEST).lua && echo "OK" || echo "FAIL"
+	@cat $(TEST).xml | sed 's/" ver/ [optimized]" ver/g' | sed 's/\.vbin/Opt.vbin/g' > $(TEST)Opt.xml
 
 opt: $(TEST)Opt.asm
 
@@ -70,4 +71,4 @@ report: $(TEST).v32 $(TEST)Opt.v32
 
 # --- Clean Up ---
 clean:
-	@rm -f *.asm *.v32 textures/*.vtex *.vbin *Opt.asm *.debug *.txt
+	@rm -f *.asm *.v32 textures/*.vtex *.vbin *Opt.asm *.debug *.txt *.xml
