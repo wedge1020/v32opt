@@ -127,11 +127,20 @@ int peephole_algebra(AsmNode *head)
         // a value Rd provably can't hold, so they're dead code -- remove
         // them and keep only the BOXED_FALSE check.
         //
-        // NOTE: this intentionally matches only emit_falsy_jump()'s shape
-        // (both JT branches target the same label). emit_truthy_jump() uses
-        // a different 7-instruction template (two distinct targets plus a
-        // trailing JMP) and is not handled here -- a good candidate for a
-        // follow-up pass, but kept out of scope to avoid misidentifying it.
+        // NOTE: this also transparently covers emit_truthy_jump()'s shape.
+        // Despite having a 3rd distinct target (the trailing JMP's
+        // short-circuit target), emit_truthy_jump()'s own two JT branches
+        // -- like emit_falsy_jump()'s -- both target the SAME label (its
+        // internal "not truthy, go evaluate the right operand" label); the
+        // JMP to the 3rd target only runs if both JTs fall through. Since
+        // this match only looks at the first six instructions (both JTs'
+        // shared target), it fires identically for both templates -- the
+        // trailing JMP+label a truthy_jump leaves behind afterwards is
+        // irrelevant to this match and untouched by it. Verified against
+        // real v32lua output: fires on both emit_falsy_jump() call sites
+        // (and/or short-circuit chains) and emit_truthy_jump() call sites
+        // (e.g. "..._truthy_fail_N" labels) alike.
+        //
         if (is_lua_mode() && curr->type == OP_IADD && curr->dst_op.mode == MODE_REG &&
             is_boxed_type_operand(&curr->src_op) &&
             str_case_eq(curr->src_op.raw, "BOXED_BOOLEAN"))
