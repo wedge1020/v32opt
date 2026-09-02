@@ -58,11 +58,76 @@ static bool is_function_boundary_label(const char *lbl) {
 // Note: On Vircon32, all instructions are 1 cycle, so this optimization
 // only reduces code size, not execution time.
 // ===================================================================
+
+// ---------------------------------------------------------------------
+// Name-sorted lookup index for FunctionDef.name, used by opt_dce() to
+// turn "is this operand text the name of one of our known functions"
+// from an O(func_count) linear scan into an O(log func_count) binary
+// search. See the "1C. BUILD A NAME-SORTED LOOKUP INDEX" comment in
+// opt_dce() for why this matters.
+// ---------------------------------------------------------------------
+typedef struct {
+    const char *name;
+    int         idx;
+} FuncNameIdx;
+
+static int cmp_func_name_idx(const void *a, const void *b) {
+    const FuncNameIdx *fa = (const FuncNameIdx *)a;
+    const FuncNameIdx *fb = (const FuncNameIdx *)b;
+    return strcasecmp(fa->name, fb->name);
+}
+
+// Returns the funcs[] index whose name matches 'name' (case-insensitive),
+// or -1 if none match. 'name_idx' must be sorted with cmp_func_name_idx.
+static int find_func_by_name(FuncNameIdx *name_idx, int func_count, const char *name) {
+    if (!name_idx || !name || name[0] == '\0') return -1;
+    int lo = 0, hi = func_count - 1;
+    while (lo <= hi) {
+        int mid = lo + (hi - lo) / 2;
+        int cmp = strcasecmp(name_idx[mid].name, name);
+        if (cmp == 0) return name_idx[mid].idx;
+        else if (cmp < 0) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    return -1;
+}
 int opt_dce (AsmNode *head)
 {
     // --- STEP 1: COLLECT ALL FUNCTION DEFINITIONS ---
-    FunctionDef funcs[MAX_FUNCTIONS];
+    //
+    // BUG FIX: funcs[] and worklist[] used to be fixed-size stack arrays
+    // capped at MAX_FUNCTIONS (4096). On a real program with more
+    // functions than that (a genuine C-mode program was seen with 8784),
+    // registration silently stopped at the 4096th function -- no error,
+    // no warning -- and every function after that point was invisible to
+    // this pass for the rest of the run. That's not just "those specific
+    // functions never get DCE'd" (which would be merely a missed
+    // optimization) -- it's actively unsound: an invisible function's own
+    // CALL instructions are never scanned in step 4 (WORKLIST TRAVERSAL),
+    // so if some registered, otherwise-genuinely-reachable function X is
+    // only ever called BY one of the invisible functions, that edge is
+    // never discovered and X gets swept as "unreachable" even though it's
+    // very much still called somewhere in the program. Confirmed exactly
+    // this on the 8784-function program: registration hit the 4096 cap,
+    // and afterward real, called function definitions (e.g.
+    // __function_rupComposeMapByte, called twice) were removed while
+    // their CALL sites were left behind -- dangling references into
+    // deleted code.
+    //
+    // Fix: size funcs[] and worklist[] to the program's actual label
+    // count (a cheap single pass, and a safe upper bound since every
+    // function boundary is a label, though not every label is a
+    // function), heap-allocated instead of a fixed stack array. No more
+    // arbitrary cap.
+    int label_count = 1; // +1 for the synthetic "__boot_vector" entry
+    for (AsmNode *n = head; n != NULL; n = n->next) {
+        if (n->type == OP_LABEL) label_count++;
+    }
+
+    FunctionDef *funcs = malloc(sizeof(FunctionDef) * (size_t)(label_count + 1));
     int func_count = 0;
+    int funcs_cap  = label_count + 1;
+    if (!funcs) return 0; // allocation failure: bail out safely, no changes made
 
     AsmNode *curr = head ? head->next : NULL;
 
@@ -107,7 +172,7 @@ int opt_dce (AsmNode *head)
             preamble_end = look;
         }
 
-        if (func_count < MAX_FUNCTIONS) {
+        if (func_count < funcs_cap) {
             safe_str_copy(funcs[func_count].name, "__boot_vector", sizeof(funcs[func_count].name));
             funcs[func_count].start_node = preamble_start;
             funcs[func_count].end_node = preamble_end;
@@ -168,7 +233,7 @@ int opt_dce (AsmNode *head)
             }
 
             // Register this function
-            if (func_count < MAX_FUNCTIONS) {
+            if (func_count < funcs_cap) {
                 safe_str_copy(funcs[func_count].name, func_name, sizeof(funcs[func_count].name));
                 funcs[func_count].start_node = curr;
                 funcs[func_count].end_node = end_of_func;
@@ -182,13 +247,45 @@ int opt_dce (AsmNode *head)
         curr = curr->next;
     }
 
-    if (func_count == 0) return 0;
+    if (func_count == 0) { free(funcs); return 0; }
+
+    // ----------------------------------------------------------------
+    // 1C. BUILD A NAME-SORTED LOOKUP INDEX
+    // ----------------------------------------------------------------
+    // PERF FIX: steps 3 and 4 below used to do a full O(func_count)
+    // linear scan, per operand, per instruction, to test "does this
+    // operand's text name one of our known functions". On a real
+    // program with thousands of functions and a function body that is
+    // itself hundreds of thousands of instructions long (a large
+    // sequential data/struct initializer is a completely normal thing
+    // for a compiler to emit as one giant branch-free block), that's
+    // O(node_count * func_count) -- with node_count and func_count in
+    // the hundreds of thousands and thousands respectively, that is
+    // billions of string compares for a single function, which in
+    // practice never finishes ("hangs after first pass, never writes
+    // output"). Sort a small (name, index) index once and binary-search
+    // it instead: O(func_count log func_count) to build, O(log
+    // func_count) per lookup. This does not change what DCE decides is
+    // reachable -- it is the exact same name-equality test, just no
+    // longer paying for it func_count times per instruction.
+    FuncNameIdx *name_idx = malloc(sizeof(FuncNameIdx) * func_count);
+    if (name_idx) {
+        for (int i = 0; i < func_count; i++) {
+            name_idx[i].name = funcs[i].name;
+            name_idx[i].idx  = i;
+        }
+        qsort(name_idx, func_count, sizeof(FuncNameIdx), cmp_func_name_idx);
+    }
 
     // ----------------------------------------------------------------
     // 2. SEED REACHABILITY WORKLIST
     // ----------------------------------------------------------------
     // Known entry points that are always reachable
-    char worklist[MAX_FUNCTIONS][128];
+    // Same fix as funcs[] above: size to the actual (now known) function
+    // count instead of a fixed MAX_FUNCTIONS cap.
+    char (*worklist)[128] = malloc(sizeof(char[128]) * (size_t)(func_count + 1));
+    int worklist_cap = func_count + 1;
+    if (!worklist) { free(funcs); return 0; }
     int worklist_size = 0;
 
     for (int i = 0; i < func_count; i++) {
@@ -206,7 +303,7 @@ int opt_dce (AsmNode *head)
             strstr(funcs[i].name, "interrupt") != NULL)
         {
             funcs[i].reachable = true;
-            if (worklist_size < MAX_FUNCTIONS) {
+            if (worklist_size < worklist_cap) {
                 safe_str_copy(worklist[worklist_size++], funcs[i].name, sizeof(worklist[0]));
             }
         }
@@ -232,12 +329,11 @@ int opt_dce (AsmNode *head)
             if (token && str_case_eq(token, "pointer")) {
                 token = strtok(NULL, " ,\t\n\r");
                 while (token != NULL) {
-                    for (int f = 0; f < func_count; f++) {
-                        if (str_case_eq(funcs[f].name, token) && !funcs[f].reachable) {
-                            funcs[f].reachable = true;
-                            if (worklist_size < MAX_FUNCTIONS) {
-                                safe_str_copy(worklist[worklist_size++], funcs[f].name, sizeof(worklist[0]));
-                            }
+                    int f = find_func_by_name(name_idx, func_count, token);
+                    if (f >= 0 && !funcs[f].reachable) {
+                        funcs[f].reachable = true;
+                        if (worklist_size < worklist_cap) {
+                            safe_str_copy(worklist[worklist_size++], funcs[f].name, sizeof(worklist[0]));
                         }
                     }
                     token = strtok(NULL, " ,\t\n\r");
@@ -256,12 +352,8 @@ int opt_dce (AsmNode *head)
         safe_str_copy(current_label, worklist[--worklist_size], sizeof(current_label));
 
         FunctionDef *fn = NULL;
-        for (int i = 0; i < func_count; i++) {
-            if (str_case_eq(funcs[i].name, current_label)) {
-                fn = &funcs[i];
-                break;
-            }
-        }
+        int fn_idx = find_func_by_name(name_idx, func_count, current_label);
+        if (fn_idx >= 0) fn = &funcs[fn_idx];
         if (!fn) continue;
 
         // Scan the function body for calls to other functions
@@ -274,16 +366,22 @@ int opt_dce (AsmNode *head)
             char *op_dst = trim(node->dst_op.raw);
             char *op_src = trim(node->src_op.raw);
 
-            // Check if this instruction references another function
-            for (int f = 0; f < func_count; f++) {
-                if (funcs[f].reachable) continue; // Already reachable
-
-                if ((strlen(op_dst) > 0 && str_case_eq(funcs[f].name, op_dst)) ||
-                    (strlen(op_src) > 0 && str_case_eq(funcs[f].name, op_src))) {
-                    funcs[f].reachable = true;
-                    if (worklist_size < MAX_FUNCTIONS) {
-                        safe_str_copy(worklist[worklist_size++], funcs[f].name, sizeof(worklist[0]));
-                    }
+            // Check if this instruction references another function.
+            // (Was an O(func_count) linear scan per operand per node --
+            // see the "1C." comment above for why that's fatal on a
+            // large program. Same name-equality test, O(log func_count).)
+            int f_dst = (op_dst[0] != '\0') ? find_func_by_name(name_idx, func_count, op_dst) : -1;
+            if (f_dst >= 0 && !funcs[f_dst].reachable) {
+                funcs[f_dst].reachable = true;
+                if (worklist_size < worklist_cap) {
+                    safe_str_copy(worklist[worklist_size++], funcs[f_dst].name, sizeof(worklist[0]));
+                }
+            }
+            int f_src = (op_src[0] != '\0') ? find_func_by_name(name_idx, func_count, op_src) : -1;
+            if (f_src >= 0 && !funcs[f_src].reachable) {
+                funcs[f_src].reachable = true;
+                if (worklist_size < worklist_cap) {
+                    safe_str_copy(worklist[worklist_size++], funcs[f_src].name, sizeof(worklist[0]));
                 }
             }
 
@@ -311,6 +409,10 @@ int opt_dce (AsmNode *head)
             eliminated_funcs++;
         }
     }
+
+    free(name_idx);
+    free(worklist);
+    free(funcs);
 
     return eliminated_funcs;
 }

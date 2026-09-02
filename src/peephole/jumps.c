@@ -137,7 +137,24 @@ int peephole_jumps(AsmNode *head)
                 {
                     // This custom structural comment is fine to keep as a banner
                     insert_debug_comment(curr, OPT_PEEPHOLE_JUMPS, "DEAD CODE ELIMINATED");
-                    remove_with_debug(&curr->next, to_remove, remove_count, OPT_PEEPHOLE_JUMPS);
+                    // Unlike the peephole/movs.c call sites, this one genuinely
+                    // needs curr->next updated to the real next_after: did_optimize
+                    // is true here, so the outer loop does NOT advance curr, and
+                    // on the very next iteration pattern-3 re-scans starting at
+                    // curr->next. If that scan re-discovers the just-inserted
+                    // debug comments (because curr->next still threads through
+                    // them instead of skipping to real code), it would re-wrap
+                    // them in new comments forever -- a reproduced infinite loop.
+                    // So the write-through IS required here; do it explicitly,
+                    // after remove_with_debug() has returned (no race with its
+                    // internal splice), and fix up BOTH directions of the link --
+                    // the original code only ever wrote curr->next, never
+                    // resume->prev, which is exactly the asymmetry described in
+                    // tools.c.patch.c.
+                    AsmNode *resume;
+                    remove_with_debug(&resume, to_remove, remove_count, OPT_PEEPHOLE_JUMPS);
+                    curr->next = resume;
+                    if (resume) resume->prev = curr;
                     optimizations += remove_count;
                     did_optimize = true;
                 }

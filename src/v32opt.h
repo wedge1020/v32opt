@@ -18,6 +18,8 @@
 #define  MAX_BODY_INS                 8
 #define  MAX_FUNCTIONS                4096
 
+#define  PEEPHOLE_MAX_SCAN_DISTANCE   256
+
 // ---------------------------------------------------------------------------
 // Enums & Data Structures
 // ---------------------------------------------------------------------------
@@ -143,7 +145,7 @@ typedef struct {
 
 typedef struct AsmNode {
     OpType type;
-    char raw[8192];
+    char raw[1024];              // was: char raw[8192];
     char mnemonic[32];
 
     Operand dst_op;

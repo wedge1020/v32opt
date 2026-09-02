@@ -55,7 +55,10 @@ int peephole_movs(AsmNode *head) {
             }
 
             AsmNode *scan = curr->next;
+            int scan_distance = 0;
             while (scan && !is_cf_boundary(scan)) {  // Use strict boundary check
+                if (++scan_distance > PEEPHOLE_MAX_SCAN_DISTANCE) break;  // see PEEPHOLE_MAX_SCAN_DISTANCE
+
                 AsmNode *next_scan = scan->next;
 
                 if (scan->type != OP_MOV) {
@@ -95,8 +98,15 @@ int peephole_movs(AsmNode *head) {
                     bool src_modified = operand_registers_modified(curr->next, scan, &curr->src_op);
 
                     if (!dst_modified && !src_modified) {
+                        // NOTE: must NOT pass &scan->prev->next -- that's a live
+                        // list field, not a private bookkeeping variable; see
+                        // remove_with_debug's contract comment (tools.c). scan
+                        // already advances via next_scan (captured above), so
+                        // nothing needs to be read back out of the write-through
+                        // anyway.
                         AsmNode *nodes[] = {scan};
-                        remove_with_debug(&scan->prev->next, nodes, 1, OPT_PEEPHOLE_MOVS);
+                        AsmNode *dummy;
+                        remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_MOVS);
                         optimizations++;
                     }
                 }
@@ -118,8 +128,11 @@ int peephole_movs(AsmNode *head) {
                         }
 
                         if (!reg1_modified && !reg2_modified) {
+                            // NOTE: see the "Duplicate Move Elimination" branch
+                            // above -- same fix, same reason.
                             AsmNode *nodes[] = {scan};
-                            remove_with_debug(&scan->prev->next, nodes, 1, OPT_PEEPHOLE_MOVS);
+                            AsmNode *dummy;
+                            remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_MOVS);
                             optimizations++;
                         }
                     }

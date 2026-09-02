@@ -17,8 +17,13 @@ int peephole_dead_stores(AsmNode *head)
             // --- PRE-SCAN: Check if there's a CALL in this basic block ---
             // If so, be conservative - don't eliminate stores that might feed function arguments
             AsmNode *pre_scan = scan;
+            int pre_scan_distance = 0;
             while (pre_scan) {
                 if (is_dead_store_scan_boundary(pre_scan)) break;
+                if (++pre_scan_distance > PEEPHOLE_MAX_SCAN_DISTANCE) {
+                    has_call_in_block = true;  // conservative: didn't prove otherwise
+                    break;
+                }
                 if (pre_scan->type == OP_OTHER) {
                     pre_scan = pre_scan->next;
                     continue;
@@ -30,11 +35,16 @@ int peephole_dead_stores(AsmNode *head)
                 pre_scan = pre_scan->next;
             }
 
+            int scan_distance = 0;
             while (scan)
             {
-                // Stop scanning at control flow boundaries (labels, branches,
-                // rets, AND conditional jumps -- see is_dead_store_scan_boundary()).
                 if (is_dead_store_scan_boundary(scan)) {
+                    break;
+                }
+
+                // Same cap as the pre-scan above, same reasoning: giving up
+                // here just means "not proven dead", the safe default.
+                if (++scan_distance > PEEPHOLE_MAX_SCAN_DISTANCE) {
                     break;
                 }
 

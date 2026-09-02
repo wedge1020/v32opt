@@ -63,6 +63,23 @@ bool is_boxed_tagging(AsmNode *node) {
 }
 
 // Helper: remove nodes and insert debug comments
+//
+// CONTRACT: curr_ptr must point to a private/local bookkeeping variable
+// owned by the caller (e.g. &curr, &dummy) -- NEVER to a live linked-list
+// struct field (e.g. &scan->prev->next, &curr->next). When config.debug is
+// on, the insert_debug_comment() loop above splices new comment nodes into
+// the list, which mutates exactly the kind of field a "&node->next"-style
+// argument would alias; the unconditional "*curr_ptr = next_after" below
+// then blindly overwrites that field, orphaning the just-inserted comments
+// from the real list structure and desynchronizing forward/backward
+// reachability. Writing into a local variable is always safe, since the
+// list's own links are already correctly threaded by insert_debug_comment()
+// and remove_node() regardless of what any caller's bookkeeping variable
+// holds. If a caller genuinely needs the post-removal position written
+// back into a real list field (peephole/jumps.c's dead-code-elimination
+// site does -- see its patch), do that explicitly at the call site, AFTER
+// this function returns, fixing up BOTH directions of the link -- not by
+// passing the field's address in here.
 void remove_with_debug(AsmNode **curr_ptr, AsmNode *nodes[], int count, OptType opt_type)
 {
     if (config.debug) {
