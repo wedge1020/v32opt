@@ -250,6 +250,7 @@ extern       OptConfig  config;
 ////////////////////////////////////////////////////////////////////////////////////////
 // general utility function prototypes
 //
+void  print_usage             (const char    *);
 void  remove_with_debug       (AsmNode      **, AsmNode       *nodes[], int, OptType);
 void  strip_comment_from_line (char          *, const char    *, size_t);
 void  normalize_whitespace    (char          *, const char    *, size_t);

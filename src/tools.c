@@ -288,10 +288,18 @@ Operand parse_operand(const char *str) {
     else if (isdigit((unsigned char)str[0]) || (str[0] == '-' && isdigit((unsigned char)str[1]))) {
         op.mode = MODE_IMMEDIATE;
 
-        // FIX: Detect floating-point literals (e.g., "0.500000")
-        // strtoul would incorrectly parse "0.5" as 0, causing silent data corruption
-        // in later passes. Flag floats so downstream code treats them as unknown.
+        // Detect floating-point literals (e.g., "0.500000")
+        // strtoul would incorrectly parse "0.5" as 0, causing silent data
+        // corruption in later passes. Flag floats so downstream code
+        // treats them as unknown to integer arithmetic.
         op.is_float   = (strchr(str, '.') != NULL);
+
+        // THE FIX (one line): actually parse the float's value.
+        // Previously float_value was never assigned here, so it stayed at
+        // its memset()-zeroed 0.0f for every float immediate, making
+        // operands_equal() treat all float immediates as mutually equal.
+        op.float_value = op.is_float ? strtof(str, NULL) : 0.0f;
+
         op.immediate  = op.is_float ? 0 : (int)strtoul(str, NULL, 0);
     }
     // --- Register: ONLY R0-R15, SP, BP ---

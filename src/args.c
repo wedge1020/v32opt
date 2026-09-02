@@ -133,6 +133,43 @@ static void print_version(const char *prog_name)
     fprintf(stdout, "  github: %s\n", URL);
 }
 
+void print_usage(const char *prog_name)
+{
+    fprintf(stdout, "Assembly Optimizer for Vircon32 (%s)\n", prog_name);
+    fprintf(stdout, "Usage: %s <input.asm> [-o output.asm] [options]\n", prog_name);
+    fprintf(stdout, "Options:\n");
+    fprintf(stdout, "  --help, -h       Displays this information\n");
+    fprintf(stdout, "  --version, -V    Displays optimizer version\n");
+    fprintf(stdout, "  -v               Verbose output (show pass statistics)\n");
+    fprintf(stdout, "  -d               In-code debugging (mark the hits)\n");
+    fprintf(stdout, "  -t               Testing mode: just display opt:hits\n");
+    fprintf(stdout, "  -L <mode>        Language mode: 'C' (default) or 'lua'\n");
+    fprintf(stdout, "                   Lua mode enables boxed-type awareness\n\n");
+    fprintf(stdout, "  --dot <cfg.dot>  Export Control Flow Graph to DOT format\n");
+    fprintf(stdout, "  -o <file>        Specify output assembly file name\n");
+    fprintf(stdout, "  -O0              Disable all optimizations [default]\n");
+    fprintf(stdout, "  -Os              Enables space-saving optimizations\n");
+    fprintf(stdout, "  -O1              Enables first level optimizations\n");
+    fprintf(stdout, "  -O2              Enables second level optimizations\n");
+    fprintf(stdout, "  -O3              Enables aggressive optimizations (could break):\n");
+    fprintf(stdout, "Individual Optimization Toggles:\n");
+    fprintf(stdout, "  -f<name>     Enable specific pass (e.g., -fpeephole-algebra)\n");
+    fprintf(stdout, "  -fno-<name>  Disable specific pass (e.g., -fno-inline)\n\n");
+    fprintf(stdout, "Available optimization names:\n");
+    fprintf(stdout, "  peephole-pairs, peephole-algebra, peephole-forwarding,\n");
+    fprintf(stdout, "  peephole-jumps, peephole-movs, peephole-immediates,\n");
+    fprintf(stdout, "  peephole-reduce, peephole-shifts, peephole-dead-stores,\n");
+    fprintf(stdout, "  peephole-loads, peephole-immediate-prop, peephole-jmp-chain,\n");
+    fprintf(stdout, "  inline, cse, dce, constant-folding, promote-regs, promote-leaf,\n");
+    fprintf(stdout, "  promote-loops, omit-frame-pointers, peephole-compiler-myopia\n\n");
+    fprintf(stdout, "Diagnostic Flags:\n");
+    fprintf(stdout, "  -finline-max=N   Cap the number of inlined CALL sites to N\n");
+    fprintf(stdout, "  -fmax-passes=N   Cap the maximum iterative optimization passes to N\n\n");
+    fprintf(stdout, "NOTE: peephole-dead-stores,\n");
+    fprintf(stdout, "promote-regs, promote-leaf, and promote-loops not yet\n");
+    fprintf(stdout, "connected to any optimization category. Test and bugfix first\n\n");
+}
+
 // --- Main Argument Processor ----------------------------------------------
 void process_args(int argc, char **argv, OptConfig *cfg,
                  char *in_file, size_t in_size,
@@ -150,12 +187,14 @@ void process_args(int argc, char **argv, OptConfig *cfg,
         {"dot",      required_argument, NULL, 'D'},
         {"langmode", required_argument, NULL, 'L'},
         {"version",  no_argument,       NULL, 'V'},
+        {"help",     no_argument,       NULL, 'h'},
         {NULL, 0, NULL, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "Vvdto:O:f:L:", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "hVvdto:O:f:L:", long_opts, NULL)) != -1) {
         switch (opt) {
+            case 'h': print_usage(argv[0]); exit(0);
             case 'v': cfg->verbose = true; break;
             case 'd': cfg->debug = true; break;
             case 't': cfg->testing = true; break;
