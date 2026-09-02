@@ -64,21 +64,31 @@ int peephole_pairs(AsmNode *head)
         AsmNode *n2 = curr->next;
 
         // --- IEQ/INE + CIB Redundancy ---
-        // IEQ/INE sets a flag; CIB converts an integer to boolean
-        // If they target the same register, the CIB is redundant
+        // IEQ/INE already produces a canonical 0/1 result by definition --
+        // that's what "equal"/"not-equal" means. CIB (Convert Integer to
+        // Boolean) just normalizes an arbitrary integer down to canonical
+        // 0/1; on a value that's already exactly 0 or 1, it's a no-op.
+        // If they target the same register, the CIB is redundant.
+        //
+        // BUG FIX: this used to keep the CIB whenever the very next
+        // instruction was JT/JF, on the apparent assumption that JT/JF
+        // need CIB's normalization to correctly test truthiness --
+        // i.e., that CIB has some effect JT/JF specifically depends on.
+        // It doesn't: CIB is a pure integer-to-boolean *conversion* with
+        // no control-flow role whatsoever (see the OpType enum --
+        // CIF/CFI/CIB/CFB are all just conversions), and JT/JF branch on
+        // "is this register nonzero," which IEQ/INE's direct 0/1 output
+        // already satisfies identically to CIB's output on that same
+        // value. There's no case where removing the CIB here changes
+        // what JT/JF branches on. This carve-out cost real optimizations
+        // in exactly the pattern most likely to matter -- a comparison
+        // feeding straight into a branch, i.e. every plain `if`/`while`
+        // condition -- for no correctness benefit; removed.
         if ((n1->type == OP_IEQ || n1->type == OP_INE) &&
              n2->type == OP_CIB &&
              n1->dst_op.mode == MODE_REG && n2->dst_op.mode == MODE_REG &&
              str_case_eq(n1->dst_op.reg, n2->dst_op.reg))
         {
-            // Don't remove CIB if next non-comment is JT/JF
-            AsmNode *after_cib = skip_other_nodes(n2->next);
-            if (after_cib && (str_case_eq(after_cib->mnemonic, "JT") ||
-                               str_case_eq(after_cib->mnemonic, "JF"))) {
-                curr = curr->next;
-                continue;
-            }
-
             AsmNode *nodes[] = {n2};
             remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_PAIRS);
             optimizations++;

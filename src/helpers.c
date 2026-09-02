@@ -114,16 +114,75 @@ bool modifies_register(AsmNode *node, const char *reg_name)
 
 // ---------------------------------------------------------------
 // Check if an instruction breaks a basic block (control flow)
-// Returns true for: NULL, labels, JMP, CIB, RET, HLT
+// Returns true for: NULL, labels, JMP, RET, HLT
+//
+// NOTE ON JT/JF: deliberately NOT included here. This helper is the
+// "how far can a purely local forward scan see" boundary shared by
+// several different passes, and JT/JF need different treatment
+// depending on what the caller does with what it finds past them:
+//
+//   - Passes that only PROPAGATE/FORWARD a value or REWRITE/DELETE an
+//     instruction that is itself only reachable via straight fall-through
+//     from the scan's start (peephole_loads' redundant-load-as-copy
+//     rewrite, peephole_compiler_myopia's redundant-reload deletion,
+//     peephole_immediate_prop's constant folding) are SAFE to scan past
+//     a JT/JF: whatever they touch is never visited at all if the branch
+//     is taken, so the branch-taken path is simply unaffected either way.
+//     Stopping at JT/JF here would only cost optimizations, for no
+//     safety benefit -- so this shared helper does not stop for them,
+//     and those passes keep seeing past conditional branches.
+//   - peephole_dead_stores is different: it deletes the ORIGINAL
+//     PRODUCER of a value based only on proving no use along the
+//     fall-through side, which is unsound if the branch-taken side
+//     still needs it (a real, confirmed miscompilation -- see its own
+//     comment and dedicated boundary check below). It uses its own
+//     stricter helper, is_dead_store_scan_boundary(), instead of this
+//     one.
+//
+// BUG FIX (CIB): CIB is Vircon32's integer-to-boolean *conversion*
+// instruction (see CIF/CFI/CIB/CFB in the OpType enum) -- an ordinary
+// ALU-style op with no control-flow effect whatsoever. It has no
+// business being treated as an unconditional block terminator; that
+// looks like a stray copy/paste of "JT"/"JF"/"CALL" that was never
+// caught because treating a random arithmetic op as "unconditional
+// end of block" only ever makes a pass MORE conservative (stops one
+// instruction too early), never unsound -- so it never showed up as a
+// visible bug, just a quiet loss of optimization opportunities on any
+// code that used CIB. Removed.
 // ---------------------------------------------------------------
 bool is_control_flow_boundary(AsmNode *node)
 {
     if (!node) return true;
     if (node->type == OP_LABEL) return true;
     if (str_case_eq(node->mnemonic, "JMP") ||
-        str_case_eq(node->mnemonic, "CIB") ||
         str_case_eq(node->mnemonic, "RET") ||
         str_case_eq(node->mnemonic, "HLT")) {
+        return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------
+// Stricter boundary check used ONLY by peephole_dead_stores: everything
+// is_control_flow_boundary() stops at, PLUS conditional branches (JT/JF).
+//
+// peephole_dead_stores proves a write is dead by scanning forward and
+// concluding "nothing between here and there reads this register/memory
+// before it gets overwritten." That conclusion is only sound if the scan
+// actually covers every path execution can take -- and a JT/JF forks
+// execution into two paths, only one of which (fall-through) a linear
+// node-list scan ever sees. Without stopping here, a store that's dead
+// on the fall-through path but still live at the branch target (reached
+// only through the jump, never visited by this scan) could be wrongly
+// deleted. Confirmed by reproduction: `MOV R1,5 / JT R4,L / MOV R1,10 /
+// ... / L: MOV R0,R1` (expects the original 5) had its `MOV R1,5`
+// deleted before this fix.
+// ---------------------------------------------------------------
+bool is_dead_store_scan_boundary(AsmNode *node)
+{
+    if (is_control_flow_boundary(node)) return true;
+    if (!node) return true;
+    if (str_case_eq(node->mnemonic, "JT") || str_case_eq(node->mnemonic, "JF")) {
         return true;
     }
     return false;

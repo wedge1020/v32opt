@@ -2,37 +2,65 @@
 
 // --- Optimization Level Presets ------------------------------------------
 static void set_opt_level(OptConfig *cfg, int level) {
-    // Disable all
-    cfg->opt_peephole_compiler_myopia =
-    cfg->opt_peephole_pairs = cfg->opt_peephole_algebra = cfg->opt_peephole_forwarding =
-    cfg->opt_peephole_jumps = cfg->opt_peephole_movs = cfg->opt_peephole_immediates =
-    cfg->opt_peephole_reduce = cfg->opt_peephole_shifts = cfg->opt_peephole_dead_stores =
-    cfg->opt_peephole_loads = cfg->opt_peephole_immediate_prop = cfg->opt_peephole_jmp_chain =
-    cfg->opt_cse = cfg->opt_dce = cfg->opt_constant_folding = cfg->opt_inline =
-    cfg->opt_promote_regs = cfg->opt_promote_leaf = cfg->opt_promote_loops =
-    cfg->opt_omit_frame_pointers = false;
 
-    if (level == 0) return; // -O0: all off
+    // Disable all by default
+    cfg -> opt_peephole_algebra          = false;
+    cfg -> opt_peephole_compiler_myopia  = false;
+    cfg -> opt_peephole_dead_stores      = false;
+    cfg -> opt_peephole_forwarding       = false;
+    cfg -> opt_peephole_immediates       = false;
+    cfg -> opt_peephole_immediate_prop   = false;
+    cfg -> opt_peephole_jmp_chain        = false;
+    cfg -> opt_peephole_jumps            = false;
+    cfg -> opt_peephole_loads            = false;
+    cfg -> opt_peephole_movs             = false;
+    cfg -> opt_peephole_pairs            = false;
+    cfg -> opt_peephole_reduce           = false;
+    cfg -> opt_peephole_shifts           = false;
+    cfg -> opt_cse                       = false;
+    cfg -> opt_constant_folding          = false;
+    cfg -> opt_dce                       = false;
+    cfg -> opt_omit_frame_pointers       = false;
+    cfg -> opt_inline                    = false;
 
-    // -O1
-    cfg->opt_peephole_compiler_myopia =
-    cfg->opt_peephole_pairs = cfg->opt_peephole_algebra = cfg->opt_peephole_jumps =
-    cfg->opt_peephole_jmp_chain = cfg->opt_peephole_immediates = cfg->opt_peephole_reduce =
-    cfg->opt_peephole_shifts = cfg->opt_peephole_immediate_prop = true;
+    // still disabled by default: needs further testing/completion
+    cfg -> opt_promote_regs              = false;
+    cfg -> opt_promote_leaf              = false;
+    cfg -> opt_promote_loops             = false;
 
-    if (level == 1) return;
+    if (level                           == 0) return; // -O0: all off
+
+    // -O1: peephole optimizations
+    cfg -> opt_peephole_algebra          = true;
+    cfg -> opt_peephole_compiler_myopia  = true;
+    cfg -> opt_peephole_dead_stores      = true;
+    cfg -> opt_peephole_forwarding       = true;
+    cfg -> opt_peephole_immediates       = true;
+    cfg -> opt_peephole_immediate_prop   = true;
+    cfg -> opt_peephole_jmp_chain        = true;
+    cfg -> opt_peephole_jumps            = true;
+    cfg -> opt_peephole_loads            = true;
+    cfg -> opt_peephole_movs             = true;
+    cfg -> opt_peephole_pairs            = true;
+    cfg -> opt_peephole_reduce           = true;
+    cfg -> opt_peephole_shifts           = true;
+
+    if (level                           == 1) return;
 
     // -O2: add CSE, DCE, constant folding, omit-frame-pointers
-    cfg->opt_cse = cfg->opt_constant_folding = cfg->opt_omit_frame_pointers = true;
+    cfg -> opt_cse                       = true;
+    cfg -> opt_constant_folding          = true;
+    cfg -> opt_dce                       = true;
+    cfg -> opt_omit_frame_pointers       = true;
 
-    if (level == 2) return;
+    if (level                           == 2) return;
 
     // -O3: add inlining
-    cfg->opt_inline = true;
+    cfg -> opt_inline                    = true;
 
-    if (level == 3) return;
-    cfg->opt_inline = false;
-    cfg->opt_peephole_immediate_prop = false;
+    if (level                           == 3) return;
+    //cfg->opt_inline = false;
+    //cfg->opt_peephole_immediate_prop = false;
 }
 
 // --- Handle -f<name> / -fno-<name> ----------------------------------------
@@ -98,6 +126,13 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
     return true;
 }
 
+static void print_version(const char *prog_name)
+{
+    fprintf(stdout, "%s %s\n", prog_name, VERSION);
+    fprintf(stdout, "Assembly Optimizer targeting Vircon32 (v32opt) by %s\n", AUTHOR);
+    fprintf(stdout, "  github: %s\n", URL);
+}
+
 // --- Main Argument Processor ----------------------------------------------
 void process_args(int argc, char **argv, OptConfig *cfg,
                  char *in_file, size_t in_size,
@@ -114,11 +149,12 @@ void process_args(int argc, char **argv, OptConfig *cfg,
     static struct option long_opts[] = {
         {"dot",      required_argument, NULL, 'D'},
         {"langmode", required_argument, NULL, 'L'},
+        {"version",  no_argument,       NULL, 'V'},
         {NULL, 0, NULL, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "vdto:O:f:L:", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "Vvdto:O:f:L:", long_opts, NULL)) != -1) {
         switch (opt) {
             case 'v': cfg->verbose = true; break;
             case 'd': cfg->debug = true; break;
@@ -155,6 +191,7 @@ void process_args(int argc, char **argv, OptConfig *cfg,
                 break;
 
             case 'D': safe_str_copy(dot_file, optarg, dot_size); break;
+            case 'V': print_version(argv[0]); exit(0);
             case 'f':
                 if (!handle_f_arg(optarg, cfg, max_passes)) {
                     fprintf(stderr, "ERROR: unrecognized optimization '%s'\n", optarg);

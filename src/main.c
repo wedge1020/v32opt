@@ -50,6 +50,7 @@ int main(int argc, char **argv) {
         fprintf(stdout, "Usage: %s <input.asm> [-o output.asm] [options]\n", argv[0]);
         fprintf(stdout, "Options:\n");
         fprintf(stdout, "  -v               Verbose output (show pass statistics)\n");
+        fprintf(stdout, "  --version        Displays optimizer version\n");
         fprintf(stdout, "  -d               In-code debugging (mark the hits)\n");
         fprintf(stdout, "  -t               Testing mode: just display opt:hits\n");
         fprintf(stdout, "  -L <mode>        Language mode: 'C' (default) or 'lua'\n");

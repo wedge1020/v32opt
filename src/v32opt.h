@@ -9,14 +9,18 @@
 #include <math.h>
 #include <getopt.h>
 
-#define  MAX_OPTIMIZATION_ALGORITHMS 21
-#define  MAX_INLINE_CANDIDATES 64
-#define  MAX_BODY_INS 8
-#define  MAX_FUNCTIONS 4096
+#define  VERSION                      "20260902-dev"
+#define  AUTHOR                       "Matthew Haas"
+#define  URL                          "https://github.com/wedge1020/v32opt"
 
-// -------------------------------------------------------------------
+#define  MAX_OPTIMIZATION_ALGORITHMS  21
+#define  MAX_INLINE_CANDIDATES        64
+#define  MAX_BODY_INS                 8
+#define  MAX_FUNCTIONS                4096
+
+// ---------------------------------------------------------------------------
 // Enums & Data Structures
-// -------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 // Add at the top with other enums
 typedef enum {
@@ -266,16 +270,17 @@ AsmNode *create_node   (const char *, OpType, const char *, const char *, const 
 void     remove_node   (AsmNode    *);
 AsmNode *clone_node    (AsmNode    *);
 
-bool     is_unconditional_branch  (AsmNode       *);
-bool     is_conditional_branch    (AsmNode       *);
-bool     is_branch_or_call        (AsmNode       *);
-bool     modifies_register        (AsmNode       *, const char *);
-bool     is_control_flow_boundary (AsmNode       *);
-bool     is_register_read         (AsmNode       *, const char *);
-bool     is_live_out_register     (const char    *);
-long     parse_imm_val            (const char    *);
-bool     is_numeric_immediate     (const Operand *);
-void     get_label_name           (const AsmNode *, char       *, size_t);
+bool     is_unconditional_branch     (AsmNode       *);
+bool     is_conditional_branch       (AsmNode       *);
+bool     is_branch_or_call           (AsmNode       *);
+bool     modifies_register           (AsmNode       *, const char *);
+bool     is_control_flow_boundary    (AsmNode       *);
+bool     is_dead_store_scan_boundary (AsmNode       *);
+bool     is_register_read            (AsmNode       *, const char *);
+bool     is_live_out_register        (const char    *);
+long     parse_imm_val               (const char    *);
+bool     is_numeric_immediate        (const Operand *);
+void     get_label_name              (const AsmNode *, char       *, size_t);
 
 // parsing / writing functions
 AsmNode *parse_vircon32_asm (const char *);

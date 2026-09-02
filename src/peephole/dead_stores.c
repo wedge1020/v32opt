@@ -18,7 +18,7 @@ int peephole_dead_stores(AsmNode *head)
             // If so, be conservative - don't eliminate stores that might feed function arguments
             AsmNode *pre_scan = scan;
             while (pre_scan) {
-                if (is_control_flow_boundary(pre_scan)) break;
+                if (is_dead_store_scan_boundary(pre_scan)) break;
                 if (pre_scan->type == OP_OTHER) {
                     pre_scan = pre_scan->next;
                     continue;
@@ -32,8 +32,9 @@ int peephole_dead_stores(AsmNode *head)
 
             while (scan)
             {
-                // Stop scanning at control flow boundaries (labels, branches, rets)
-                if (is_control_flow_boundary(scan)) {
+                // Stop scanning at control flow boundaries (labels, branches,
+                // rets, AND conditional jumps -- see is_dead_store_scan_boundary()).
+                if (is_dead_store_scan_boundary(scan)) {
                     break;
                 }
 
