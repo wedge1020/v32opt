@@ -26,13 +26,19 @@ static bool has_memory_store(AsmNode *start, AsmNode *end) {
     while (check != end && check != NULL) {
         if (check->type == OP_MOV && check->dst_op.mode == MODE_INDIRECT)
             return true;
+        // BUG FIX: MOVS/SETS write memory at a dynamically-computed address
+        // (via the implicit DR/SR/CR registers) and are NOT OP_MOV, so the
+        // check above walked straight past them. See the block comment at
+        // the top of this patch for the confirmed real-world reproduction.
+        if (check->type == OP_MOVS || check->type == OP_SETS)
+            return true;
         check = check->next;
     }
     return false;
 }
 
 // Helper: Strict control flow boundary check (includes JT/JF/CALL/RET/Labels)
-static bool is_cf_boundary(AsmNode *node) {
+static bool is_movs_cf_boundary(AsmNode *node) {
     if (!node) return true;
     if (node->type == OP_JT || node->type == OP_JF || node->type == OP_CALL || node->type == OP_RET)
         return true;
@@ -56,7 +62,7 @@ int peephole_movs(AsmNode *head) {
 
             AsmNode *scan = curr->next;
             int scan_distance = 0;
-            while (scan && !is_cf_boundary(scan)) {  // Use strict boundary check
+            while (scan && !is_movs_cf_boundary(scan)) {  // Use strict boundary check
                 if (++scan_distance > PEEPHOLE_MAX_SCAN_DISTANCE) break;  // see PEEPHOLE_MAX_SCAN_DISTANCE
 
                 AsmNode *next_scan = scan->next;
