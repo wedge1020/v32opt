@@ -248,7 +248,6 @@ function main()
             elseif alg         == 6 then
                 print(x, y, "  +o+s:")
             elseif alg         == 7 then
-				__rawasm__("__strdebug:")
                 print(x, y, "+b+o+s:")
             end
 
@@ -302,7 +301,6 @@ function main()
             --
             if flag[alg]       == true then
                 x               = x + 80
-				__rawasm__("__debug:")
                 print(x, y, qty[alg])
             end
 
@@ -331,7 +329,7 @@ function main()
                 x               = x + 100
                 print(x, y, time[alg])
 
-                if time[alg]   >  6.0 then
+                if time[alg]   >  2.0 then
                     flag[alg]   = false
                 end
             end
