@@ -9,7 +9,7 @@
 #include <math.h>
 #include <getopt.h>
 
-#define  VERSION                      "20260902-dev"
+#define  VERSION                      "20260903-dev"
 #define  AUTHOR                       "Matthew Haas"
 #define  URL                          "https://github.com/wedge1020/v32opt"
 

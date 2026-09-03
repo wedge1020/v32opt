@@ -282,19 +282,38 @@ bool operands_equal(const Operand *op1, const Operand *op2) {
     if (op1->mode == MODE_INDIRECT) {
         return str_case_eq(op1->reg, op2->reg) && (op1->offset == op2->offset);
     }
-    if (op1->mode == MODE_IMMEDIATE) {
+	if (op1->mode == MODE_IMMEDIATE) {
         if (op1->is_float != op2->is_float) return false;
         if (op1->is_float) return op1->float_value == op2->float_value;
-        // FIX: If raw strings differ but values are same, they're different labels
-        if (op1->immediate == op2->immediate) {
-            // Same numeric value - check if they're both labels with different names
-            if (op1->raw[0] == '_' || op2->raw[0] == '_') {
-                // Label operand - compare raw strings
-                return str_case_eq(op1->raw, op2->raw);
-            }
-            return true; // Same numeric immediate
+
+        // BUG FIX (round 9 root cause): the previous check ("if raw starts
+        // with '_', compare raw strings instead of value") assumed every
+        // label operand is one of the compiler's own internally-generated
+        // names (__function_X, __if_X, __literal_string_N, ...). It missed
+        // bare global variable/array names used as address-of immediates
+        // (e.g. "global_bblastBalls"), which don't start with '_'.
+        //
+        // parse_operand() unconditionally sets ->immediate = 0 for EVERY
+        // symbolic operand (the real address is resolved later, by the
+        // assembler), so ->immediate can never be trusted to compare two
+        // symbolic operands, or a symbol against a genuine literal 0, for
+        // equality. The only reliable signal is whether the raw text is
+        // actually a numeric literal -- which is exactly the same test
+        // parse_operand() itself uses to decide whether to treat a token as
+        // a number in the first place (first char a digit, or '-' followed
+        // by a digit). Anything else is a symbol and must be compared by
+        // name, never by its (always-zero) ->immediate value.
+        bool op1_is_numeric_literal = isdigit((unsigned char)op1->raw[0]) ||
+            (op1->raw[0] == '-' && isdigit((unsigned char)op1->raw[1]));
+        bool op2_is_numeric_literal = isdigit((unsigned char)op2->raw[0]) ||
+            (op2->raw[0] == '-' && isdigit((unsigned char)op2->raw[1]));
+
+        if (op1_is_numeric_literal && op2_is_numeric_literal) {
+            return op1->immediate == op2->immediate;
         }
-        return false;
+        // At least one side is a symbol: only equal if they're literally
+        // the same text (covers symbol-vs-symbol and symbol-vs-0 alike).
+        return str_case_eq(op1->raw, op2->raw);
     }
     return str_case_eq(op1->raw, op2->raw);
 }
