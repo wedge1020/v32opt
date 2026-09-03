@@ -144,7 +144,7 @@ int main(int argc, char **argv) {
 
         // 2. Memory-to-Register Promotion
         if (config.opt_promote_regs) {
-            opts[OPT_PROMOTE_REGS] = pass_promote_stack_slots(program_ast);
+            opts[OPT_PROMOTE_REGS] = pass_promote_regs(program_ast);
         }
         if (config.opt_promote_leaf) {
             opts[OPT_PROMOTE_LEAF] = pass_promote_stack_slots(program_ast);

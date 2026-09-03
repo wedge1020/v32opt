@@ -355,6 +355,7 @@ int fold_constants_cfg(ControlFlowGraph *);
 void  promote_operand_to_reg      (Operand    *, const char *);
 bool  is_inside_loop              (const char *, AsmNode    *,    AsmNode *);
 int   pass_promote_stack_slots    (AsmNode    *);
+int   pass_promote_regs           (AsmNode    *);
 int   pass_promote_loop_registers (AsmNode    *);
 
 #endif
