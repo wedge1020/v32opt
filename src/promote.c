@@ -15,7 +15,11 @@
 //     independently within each CALL-free "segment" of the function (the
 //     code before the first CALL, between each pair of CALLs, and after the
 //     last one). Reduces to exactly what promote-leaf does on a function
-//     that happens to have no CALLs at all.
+//     that happens to have no CALLs at all. Only promotes within a segment
+//     that is single-entry/single-exit -- no branch inside it may target
+//     outside it, and nothing outside it may branch into its middle (see
+//     the segment_safe guard in pass_promote_regs for why: anything else
+//     lets code run past the load or before the flush this pass inserts).
 //   pass_promote_loop_registers (-fpromote-loops) -- loop-invariant
 //     promotion: hoists a repeatedly read/written stack slot into a
 //     register for the duration of a single CALL-free loop, via a true
@@ -506,6 +510,113 @@ int pass_promote_regs(AsmNode *head) {
                 // end_of_func->next (the function's end) -- an EXCLUSIVE
                 // upper bound either way.
 
+                // ----------------------------------------------------------------
+                // BUG FIX / SAFETY GUARD: a segment only behaves like the
+                // straight-line, single-entry/single-exit region this pass's
+                // "load once at the top, flush once at the natural end (RET
+                // or the ending CALL)" model assumes if NOTHING branches
+                // into or out of its middle. Two ways that can be violated,
+                // either of which lets code run with a promoted register's
+                // value silently diverged from the real [BP-off] memory:
+                //
+                //   (a) a branch INSIDE the segment (JT/JF/JMP) jumps to a
+                //       label OUTSIDE it -- an early exit that reaches code
+                //       after the segment without ever running the flush
+                //       this pass places at the segment's natural end.
+                //   (b) a branch OUTSIDE the segment jumps to a label
+                //       INSIDE it -- e.g. a loop back-edge landing on a
+                //       loop header that happens to sit inside this
+                //       CALL-free stretch -- reaching the segment's
+                //       promoted code without ever running the load this
+                //       pass places at the segment's start.
+                //
+                // Confirmed by direct reproduction: a synthetic function
+                // with "JF R5, __after_call" jumping past a promoted
+                // variable's flush-before-CALL left the promoted register
+                // holding the right value while the stack slot it should
+                // have been flushed to was never written -- code reached
+                // via that branch read stale/garbage data straight from
+                // memory. This is the exact failure reported against real
+                // game code: a blank screen and 100% CPU immediately on
+                // start, consistent with an early guard-clause branch (an
+                // extremely common pattern -- parameter checks, short-
+                // circuits) corrupting a promoted variable the very first
+                // time it fired.
+                //
+                // -fpromote-loops already guards against this same class of
+                // bug for loop bodies (its Rule 3 and "other entry" checks)
+                // -- pass_promote_regs never had an equivalent, because
+                // straight-line-only segments (no branches at all) were all
+                // that got exercised by this pass's own test coverage
+                // before now. Rather than track and patch every individual
+                // entry/exit edge, require the segment be free of both
+                // problems before promoting anything in it at all -- same
+                // conservative approach already proven correct in
+                // -fpromote-loops. This does cost some optimization
+                // opportunities on segments with internal branching (common
+                // in real code), but a segment that fails this check gets
+                // skipped entirely -- promotion in every OTHER, cleaner
+                // segment of the same function is unaffected.
+                // ----------------------------------------------------------------
+                bool segment_safe = true;
+
+                // (a) every branch inside the segment must target a label
+                // that is itself inside the segment.
+                for (AsmNode *m = seg_start; segment_safe && m != seg_limit; m = m->next) {
+                    if (str_case_eq(m->mnemonic, "JT") || str_case_eq(m->mnemonic, "JF") ||
+                        str_case_eq(m->mnemonic, "JMP")) {
+                        char target[128] = {0};
+                        safe_str_copy(target, trim(branch_target_raw(m)), sizeof(target));
+                        bool internal = false;
+                        for (AsmNode *chk = seg_start; chk != seg_limit; chk = chk->next) {
+                            if (chk->type == OP_LABEL) {
+                                char lbl_copy[128] = {0};
+                                safe_str_copy(lbl_copy, chk->raw, sizeof(lbl_copy));
+                                char *c = strchr(lbl_copy, ':');
+                                if (c) *c = '\0';
+                                if (str_case_eq(trim(lbl_copy), target)) { internal = true; break; }
+                            }
+                        }
+                        if (!internal) segment_safe = false;
+                    }
+                }
+
+                // (b) no branch anywhere else in the enclosing function may
+                // target a label inside the segment (bounded to the
+                // function, not the whole program, for the same performance
+                // reason -fpromote-loops's equivalent check is bounded --
+                // label targets are function-local by this compiler's own
+                // naming convention).
+                if (segment_safe) {
+                    bool inside_seg = false;
+                    for (AsmNode *n = curr->next; n && n != end_of_func->next; n = n->next) {
+                        if (n == seg_start) inside_seg = true;
+                        if (!inside_seg &&
+                            (str_case_eq(n->mnemonic, "JMP") || str_case_eq(n->mnemonic, "JT") ||
+                             str_case_eq(n->mnemonic, "JF"))) {
+                            char target[128] = {0};
+                            safe_str_copy(target, trim(branch_target_raw(n)), sizeof(target));
+                            for (AsmNode *chk = seg_start; chk != seg_limit; chk = chk->next) {
+                                if (chk->type == OP_LABEL) {
+                                    char lbl_copy[128] = {0};
+                                    safe_str_copy(lbl_copy, chk->raw, sizeof(lbl_copy));
+                                    char *c = strchr(lbl_copy, ':');
+                                    if (c) *c = '\0';
+                                    if (str_case_eq(trim(lbl_copy), target)) { segment_safe = false; break; }
+                                }
+                            }
+                        }
+                        if (n == seg_limit) inside_seg = false;
+                        if (!segment_safe) break;
+                    }
+                }
+
+                if (!segment_safe) {
+                    seg_start = (seg_limit == end_of_func->next) ? end_of_func->next
+                                                                   : (seg_limit ? seg_limit->next : NULL);
+                    continue;
+                }
+
                 // ---- Analyze this segment: register usage + BP-off refs ----
                 bool reg_used[16] = {0};
                 int slot_counts[128] = {0};
@@ -767,10 +878,41 @@ int pass_promote_loop_registers(AsmNode *head) {
 
             size_t len = strlen(start_lbl);
 
+            // BUG FIX: match against the label with one trailing "_<digits>"
+            // disambiguation index stripped, not the raw label. This
+            // heuristic was written against crisp-lib's (C-mode) own
+            // labeling convention, where a distinguishing numeric ID
+            // appears BEFORE the role suffix -- e.g. "__do_101780_start:"
+            // -- so matching the literal last 6/5/7 characters works fine
+            // there. The Lua-mode compiler instead appends its
+            // disambiguating index AFTER the role suffix, to tell multiple
+            // loops in the same function apart -- e.g.
+            // "__Background_draw_clouds_for_gen_start_0:",
+            // "__Game_draw_pause_overlay_for_start_3:". Against nostalgick
+            // .asm specifically, every single real loop header (38 of them)
+            // uses this trailing-index form and NONE matched the old
+            // literal-suffix check -- this pass was silently a complete
+            // no-op under Lua mode, not "no qualifying loops found". The
+            // strip only ever removes one "_<digits>" group and only when
+            // it's preceded by an underscore, so it does nothing to labels
+            // that don't have one (crisp-lib's own labels are unaffected --
+            // their digits are already mid-string, not trailing).
+            char norm_lbl[128];
+            safe_str_copy(norm_lbl, start_lbl, sizeof(norm_lbl));
+            size_t norm_len = len;
+            {
+                size_t i = norm_len;
+                while (i > 0 && isdigit((unsigned char)norm_lbl[i - 1])) i--;
+                if (i > 0 && i < norm_len && norm_lbl[i - 1] == '_') {
+                    norm_lbl[i - 1] = '\0';
+                    norm_len = i - 1;
+                }
+            }
+
             // Match common compiler patterns
-            bool is_loop_label = (len >= 6 && str_case_eq(start_lbl + len - 6, "_start")) ||
-                                 (len >= 5 && str_case_eq(start_lbl + len - 5, "_for_")) ||
-                                 (len >= 7 && str_case_eq(start_lbl + len - 7, "_while_"));
+            bool is_loop_label = (norm_len >= 6 && str_case_eq(norm_lbl + norm_len - 6, "_start")) ||
+                                 (norm_len >= 5 && str_case_eq(norm_lbl + norm_len - 5, "_for_")) ||
+                                 (norm_len >= 7 && str_case_eq(norm_lbl + norm_len - 7, "_while_"));
             if (!is_loop_label) {
                 curr = curr->next;
                 continue;
