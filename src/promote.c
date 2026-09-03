@@ -1,21 +1,41 @@
 #include "v32opt.h"
 
 // ============================================================================
-// promote.c -- complete, updated functions (Round 10+11)
+// promote.c -- stack-slot-to-register promotion passes
 // ============================================================================
 //
-// Everything below is the COMPLETE, current content of every function in
-// promote.c that changed this round, plus one brand new function
-// (pass_promote_regs) and one new small helper (branch_target_raw) that
-// didn't exist before. Nothing here is a diff/snippet -- each function is
-// whole and ready to replace the same-named function in your promote.c
-// wholesale. Functions NOT listed here (promote_operand_to_reg is the only
-// other one in promote.c, included below unchanged since pass_promote_regs
-// calls it too) are unaffected.
+// Three independent optimization passes, all opt-in and off by default at
+// every -O level (-fpromote-leaf, -fpromote-regs, -fpromote-loops):
 //
-// Two small changes are needed OUTSIDE this file -- see the accompanying
-// README for exact wiring (the driver's OPT_PROMOTE_REGS call site, and a
-// new prototype in v32opt.h).
+//   pass_promote_stack_slots    (-fpromote-leaf)  -- whole-function
+//     promotion for CALL-free (leaf) functions only. A promoted register's
+//     value never has to survive a CALL, because there isn't one.
+//   pass_promote_regs           (-fpromote-regs)  -- the same scalar-
+//     replacement logic generalized to ordinary non-leaf functions, applied
+//     independently within each CALL-free "segment" of the function (the
+//     code before the first CALL, between each pair of CALLs, and after the
+//     last one). Reduces to exactly what promote-leaf does on a function
+//     that happens to have no CALLs at all.
+//   pass_promote_loop_registers (-fpromote-loops) -- loop-invariant
+//     promotion: hoists a repeatedly read/written stack slot into a
+//     register for the duration of a single CALL-free loop, via a true
+//     preheader load (runs once, before the loop header label) and stores
+//     at every exit edge.
+//
+// All three follow the same shape: find a [BP-off] stack slot referenced
+// enough times in a safe, CALL-free region to be worth a register, rewrite
+// every reference in that region to the register FIRST, then splice in
+// the load(s)/store(s) needed to keep the stack slot's own backing memory
+// correct at the region's boundaries (function entry/return, segment/CALL
+// boundaries, or loop preheader/exit, respectively) -- always AFTER the
+// rewrite has finished with the original node range, never before (see the
+// "BUG FIX" comments at each insertion site for why that order matters).
+// See each function's own header comment for its specific safety guards.
+//
+// All three report through `-d` like every other pass in this project:
+// insert_debug_comment logs an existing instruction's original text right
+// before it's rewritten in place, and every newly-spliced load/store node
+// gets its own descriptive debug comment immediately after insertion.
 // ============================================================================
 
 // -------------------------------------------------------------------
@@ -204,6 +224,31 @@ int pass_promote_stack_slots(AsmNode *head) {
                                 str_case_eq(prologue_end->dst_op.reg, "BP") &&
                                 str_case_eq(prologue_end->src_op.reg, "SP")) {
                                 found_prologue = true;
+                                // BUG FIX: "MOV BP, SP" is very often
+                                // immediately followed by "ISUB SP, N",
+                                // which is what actually reserves this
+                                // function's local stack space. If we stop
+                                // right at "MOV BP, SP", SP hasn't been
+                                // decremented yet, so a [BP-off] load
+                                // spliced in here reads memory that isn't
+                                // part of this function's frame at all --
+                                // stale/garbage data left over from
+                                // whatever was last above the current SP,
+                                // not the local's real initial value.
+                                // Confirmed live: nostalgick.asm's
+                                // __function_Game_draw_pause_overlay had
+                                // its promoted loads landing between
+                                // "MOV BP, SP" and "ISUB SP, 24" -- reading
+                                // uninitialized stack instead of the real
+                                // locals. This is invisible to the
+                                // optimizer itself (it runs clean either
+                                // way) and only shows up once the
+                                // generated code actually executes.
+                                if (prologue_end->next &&
+                                    str_case_eq(prologue_end->next->mnemonic, "ISUB") &&
+                                    str_case_eq(prologue_end->next->dst_op.reg, "SP")) {
+                                    prologue_end = prologue_end->next;
+                                }
                                 break;
                             }
                             prologue_end = prologue_end->next;
@@ -262,6 +307,10 @@ int pass_promote_stack_slots(AsmNode *head) {
                                 modified = true;
                             }
                             if (modified) {
+                                // Log the original instruction text before it's
+                                // overwritten below -- same convention every
+                                // other pass in this project follows.
+                                insert_debug_comment(n->prev, OPT_PROMOTE_LEAF, n->raw);
                                 if (n->has_dst && n->has_src) {
                                     snprintf(n->raw, sizeof(n->raw), "    %s %s, %s", n->mnemonic, n->dst_op.raw, n->src_op.raw);
                                 } else if (n->has_dst) {
@@ -290,6 +339,16 @@ int pass_promote_stack_slots(AsmNode *head) {
                             load_node->prev = prologue_end;
                             if (prologue_end->next) prologue_end->next->prev = load_node;
                             prologue_end->next = load_node;
+
+                            // Describe the newly-spliced load itself -- there's
+                            // no "original" instruction to quote here (this
+                            // node didn't exist before), so the debug comment
+                            // states what it's for instead.
+                            char dbg_msg[96];
+                            snprintf(dbg_msg, sizeof(dbg_msg),
+                                     "PROMOTE-LEAF: preheader load of [BP-%d] into %s (whole-function, leaf-only)",
+                                     off, reg_name);
+                            insert_debug_comment(load_node, OPT_PROMOTE_LEAF, dbg_msg);
                         }
                     }
                 }
@@ -312,6 +371,12 @@ int pass_promote_stack_slots(AsmNode *head) {
                                 if (n->prev) n->prev->next = store_node;
                                 n->prev = store_node;
                                 optimizations++;
+
+                                char dbg_msg[96];
+                                snprintf(dbg_msg, sizeof(dbg_msg),
+                                         "PROMOTE-LEAF: flush %s back to [BP-%d] before RET",
+                                         reg_name, off);
+                                insert_debug_comment(store_node, OPT_PROMOTE_LEAF, dbg_msg);
                             }
                         }
                     }
@@ -489,6 +554,20 @@ int pass_promote_regs(AsmNode *head) {
                             str_case_eq(p->src_op.reg, "SP")) {
                             insert_after = p;
                             first_segment_prologue_found = true;
+                            // BUG FIX: same trap as pass_promote_stack_slots
+                            // -- "MOV BP, SP" is very often immediately
+                            // followed by "ISUB SP, N", which is what
+                            // actually reserves this function's local stack
+                            // space. Stopping at "MOV BP, SP" alone means
+                            // the load lands before SP is decremented, so it
+                            // reads memory outside this function's frame
+                            // (stale/garbage, not the local's real initial
+                            // value). Skip past the ISUB too when present.
+                            if (p->next &&
+                                str_case_eq(p->next->mnemonic, "ISUB") &&
+                                str_case_eq(p->next->dst_op.reg, "SP")) {
+                                insert_after = p->next;
+                            }
                             break;
                         }
                         p = p->next;
@@ -541,6 +620,10 @@ int pass_promote_regs(AsmNode *head) {
                             modified = true;
                         }
                         if (modified) {
+                            // Log the original instruction text before it's
+                            // overwritten below -- same convention every
+                            // other pass in this project follows.
+                            insert_debug_comment(m->prev, OPT_PROMOTE_REGS, m->raw);
                             if (m->has_dst && m->has_src) {
                                 snprintf(m->raw, sizeof(m->raw), "    %s %s, %s", m->mnemonic, m->dst_op.raw, m->src_op.raw);
                             } else if (m->has_dst) {
@@ -577,6 +660,18 @@ int pass_promote_regs(AsmNode *head) {
                         seg_start->prev = load_node;
                     }
 
+                    // Describe the newly-spliced load -- no "original"
+                    // instruction to quote (this node is brand new), so the
+                    // debug comment states what it's for and which segment
+                    // it belongs to instead.
+                    {
+                        char dbg_msg[128];
+                        snprintf(dbg_msg, sizeof(dbg_msg),
+                                 "PROMOTE-REGS: %s-segment load of [BP-%d] into %s (CALL-free segment, independent of any other segment)",
+                                 is_first_segment ? "first" : "later", off, reg_name);
+                        insert_debug_comment(load_node, OPT_PROMOTE_REGS, dbg_msg);
+                    }
+
                     // Flush back to the stack slot at EVERY exit from this
                     // segment: any RET inside it, and the CALL that ends
                     // the segment (if any) -- that flush is what keeps a
@@ -596,6 +691,12 @@ int pass_promote_regs(AsmNode *head) {
                                 if (m->prev) m->prev->next = store_node;
                                 m->prev = store_node;
                                 optimizations++;
+
+                                char dbg_msg[96];
+                                snprintf(dbg_msg, sizeof(dbg_msg),
+                                         "PROMOTE-REGS: flush %s back to [BP-%d] before RET",
+                                         reg_name, off);
+                                insert_debug_comment(store_node, OPT_PROMOTE_REGS, dbg_msg);
                             }
                         }
                         if (seg_limit && str_case_eq(seg_limit->mnemonic, "CALL")) {
@@ -605,6 +706,12 @@ int pass_promote_regs(AsmNode *head) {
                             if (seg_limit->prev) seg_limit->prev->next = store_node;
                             seg_limit->prev = store_node;
                             optimizations++;
+
+                            char dbg_msg[128];
+                            snprintf(dbg_msg, sizeof(dbg_msg),
+                                     "PROMOTE-REGS: flush %s back to [BP-%d] before CALL ends this segment (next segment reloads independently)",
+                                     reg_name, off);
+                            insert_debug_comment(store_node, OPT_PROMOTE_REGS, dbg_msg);
                         }
                     }
                 }
@@ -913,6 +1020,17 @@ int pass_promote_loop_registers(AsmNode *head) {
                     if (curr->prev) curr->prev->next = load_node;
                     curr->prev = load_node;
 
+                    // Describe the newly-spliced preheader load -- no
+                    // "original" instruction to quote (this node is brand
+                    // new), so the debug comment states what it's for.
+                    {
+                        char dbg_msg[96];
+                        snprintf(dbg_msg, sizeof(dbg_msg),
+                                 "PROMOTE-LOOPS: preheader load of [BP-%d] into %s (runs once, before %s)",
+                                 off, reg_name, start_lbl);
+                        insert_debug_comment(load_node, OPT_PROMOTE_LOOPS, dbg_msg);
+                    }
+
                     // 2. Insert Exit Store AFTER loop exit label (if slot was written)
                     if (slot_written[off] > 0) {
                         char dst_str[32];
@@ -931,6 +1049,12 @@ int pass_promote_loop_registers(AsmNode *head) {
                         if (store_insert_pt->next) store_insert_pt->next->prev = store_node;
                         store_insert_pt->next = store_node;
                         store_insert_pt = store_node;
+
+                        char dbg_msg[96];
+                        snprintf(dbg_msg, sizeof(dbg_msg),
+                                 "PROMOTE-LOOPS: flush %s back to [BP-%d] at main loop exit (%s)",
+                                 reg_name, off, exit_lbl);
+                        insert_debug_comment(store_node, OPT_PROMOTE_LOOPS, dbg_msg);
                     }
 
                     // 3. Rewrite all [BP-off] references inside loop body to R_free
@@ -945,6 +1069,10 @@ int pass_promote_loop_registers(AsmNode *head) {
                             modified = true;
                         }
                         if (modified) {
+                            // Log the original instruction text before it's
+                            // overwritten below -- same convention every
+                            // other pass in this project follows.
+                            insert_debug_comment(n->prev, OPT_PROMOTE_LOOPS, n->raw);
                             if (n->has_dst && n->has_src) {
                                 snprintf(n->raw, sizeof(n->raw), "    %s %s, %s", n->mnemonic, n->dst_op.raw, n->src_op.raw);
                             } else if (n->has_dst) {
@@ -987,6 +1115,12 @@ int pass_promote_loop_registers(AsmNode *head) {
                                     if (exit_target->prev) exit_target->prev->next = store_node;
                                     exit_target->prev = store_node;
                                     optimizations++;
+
+                                    char dbg_msg[128];
+                                    snprintf(dbg_msg, sizeof(dbg_msg),
+                                             "PROMOTE-LOOPS: flush %s back to [BP-%d] at secondary loop exit (%s)",
+                                             reg_name, off, target);
+                                    insert_debug_comment(store_node, OPT_PROMOTE_LOOPS, dbg_msg);
                                 }
                             }
                         }
