@@ -1,3 +1,5 @@
+#include "v32opt.h"
+
 // ===================================================================
 // PEEPHOLE: Immediate Propagation
 // Propagates immediate values through registers:
@@ -16,7 +18,6 @@
 //   2. Constant folding (MOV R1, val1 + ALU R1, val2 -> MOV R1, new_val)
 //   3. Sequential math combining (ALU R1, val1 + ALU R1, val2 -> combined ALU)
 // ===================================================================
-#include "v32opt.h"
 
 int peephole_immediate_prop(AsmNode *head)
 {
@@ -36,8 +37,7 @@ int peephole_immediate_prop(AsmNode *head)
             curr->src_op.immediate == 0)
         {
             AsmNode *nodes[] = {curr};
-            remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_IMMEDIATE_PROP);
-            optimizations++;
+            if (remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_IMMEDIATE_PROP)) optimizations++;
             continue;
         }
 
@@ -47,8 +47,7 @@ int peephole_immediate_prop(AsmNode *head)
             curr->src_op.immediate == 1)
         {
             AsmNode *nodes[] = {curr};
-            remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_IMMEDIATE_PROP);
-            optimizations++;
+            if (remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_IMMEDIATE_PROP)) optimizations++;
             continue;
         }
 
@@ -84,17 +83,25 @@ int peephole_immediate_prop(AsmNode *head)
                         else if (scan->type == OP_ISUB) result = v1 - v2;
                         else if (scan->type == OP_IMUL) result = v1 * v2;
 
-                        insert_debug_comment(curr->prev, OPT_PEEPHOLE_IMMEDIATE_PROP, curr->raw);
-                        curr->src_op.immediate = result;
-                        snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%ld", result);
-                        snprintf(curr->raw, sizeof(curr->raw), "    MOV %s, %ld", curr->dst_op.raw, result);
-
+                        // TRIGGER CAP: this fold is one atomic transform --
+                        // curr's rewrite and scan's removal must both happen
+                        // or neither must, or curr would end up "pre-folded"
+                        // while the original ALU instruction that supplied
+                        // the folded value is still there, silently applying
+                        // v2 a second time. Attempt the removal FIRST and
+                        // only rewrite curr if it actually commits, so
+                        // remove_with_debug()'s own trigger_allowed() check
+                        // is the single gate for the whole operation.
                         AsmNode *nodes[] = {scan};
                         AsmNode *dummy = scan;
-                        remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_IMMEDIATE_PROP);
-
-                        optimizations++;
-                        folded = true;
+                        if (remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_IMMEDIATE_PROP)) {
+                            insert_debug_comment(curr->prev, OPT_PEEPHOLE_IMMEDIATE_PROP, curr->raw);
+                            curr->src_op.immediate = result;
+                            snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%ld", result);
+                            snprintf(curr->raw, sizeof(curr->raw), "    MOV %s, %ld", curr->dst_op.raw, result);
+                            optimizations++;
+                            folded = true;
+                        }
                         break;
                     }
 
@@ -133,27 +140,40 @@ int peephole_immediate_prop(AsmNode *head)
                 if (combined == 0)
                 {
                     AsmNode *nodes[] = {curr, next_real};
-                    remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_IMMEDIATE_PROP);
-                    optimizations += 2;
+                    if (remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_IMMEDIATE_PROP)) optimizations += 2;
                     continue;
                 }
                 else
                 {
-                    if (config.debug) {
-                        insert_debug_comment(curr->prev, OPT_PEEPHOLE_IMMEDIATE_PROP, curr->raw);
-                    }
-                    curr->type = (combined > 0) ? OP_IADD : OP_ISUB;
-                    strcpy(curr->mnemonic, (combined > 0) ? "IADD" : "ISUB");
-                    curr->src_op.immediate = labs(combined);
-                    snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%ld", labs(combined));
-                    snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %ld",
-                             curr->mnemonic, curr->dst_op.raw, labs(combined));
-
+                    // TRIGGER CAP: same reasoning as Pattern 2's fold above --
+                    // attempt next_real's removal first, and only rewrite
+                    // curr into the combined instruction if that removal
+                    // actually commits, so a capped budget can't leave curr
+                    // "pre-merged" while next_real (still applying its own
+                    // delta) is left behind.
                     AsmNode *nodes[] = {next_real};
                     AsmNode *dummy = next_real;
-                    remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_IMMEDIATE_PROP);
-                    optimizations++;
-                    continue;
+                    if (remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_IMMEDIATE_PROP)) {
+                        if (config.debug) {
+                            insert_debug_comment(curr->prev, OPT_PEEPHOLE_IMMEDIATE_PROP, curr->raw);
+                        }
+                        curr->type = (combined > 0) ? OP_IADD : OP_ISUB;
+                        strcpy(curr->mnemonic, (combined > 0) ? "IADD" : "ISUB");
+                        curr->src_op.immediate = labs(combined);
+                        snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%ld", labs(combined));
+                        snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %ld",
+                                 curr->mnemonic, curr->dst_op.raw, labs(combined));
+                        optimizations++;
+                        continue;
+                    }
+                    // TRIGGER CAP: budget exhausted -- nothing was applied.
+                    // Must NOT unconditionally "continue" here (that was fine
+                    // in the original code, which always removed next_real
+                    // and always made forward progress); with the removal
+                    // now skipped, curr and next_real are both untouched, so
+                    // retrying immediately would re-match the exact same
+                    // pattern forever. Fall through to advance past curr
+                    // instead, exactly like a non-match.
                 }
             }
         }

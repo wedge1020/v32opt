@@ -164,7 +164,18 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "  promote-loops, omit-frame-pointers, peephole-compiler-myopia\n\n");
     fprintf(stdout, "Diagnostic Flags:\n");
     fprintf(stdout, "  -finline-max=N   Cap the number of inlined CALL sites to N\n");
-    fprintf(stdout, "  -fmax-passes=N   Cap the maximum iterative optimization passes to N\n\n");
+    fprintf(stdout, "  -fmax-passes=N   Cap the maximum iterative optimization passes to N\n");
+    fprintf(stdout, "  --trigger-max=N  Global cap: allow at most N total transformations\n");
+    fprintf(stdout, "                   to commit across EVERY enabled pass and EVERY\n");
+    fprintf(stdout, "                   fixed-point iteration, combined. Once N is reached,\n");
+    fprintf(stdout, "                   every later candidate is left untouched, as if it had\n");
+    fprintf(stdout, "                   never matched. Omit (or pass a negative N) for the\n");
+    fprintf(stdout, "                   default, unlimited behavior.\n");
+    fprintf(stdout, "                   Meant for bisecting a miscompile: re-run with\n");
+    fprintf(stdout, "                   increasing N until the output breaks -- the Nth\n");
+    fprintf(stdout, "                   transform applied (in program order, across all\n");
+    fprintf(stdout, "                   passes) is the one to inspect. Combine with -d to see\n");
+    fprintf(stdout, "                   exactly which transform that was in the output.\n\n");
     fprintf(stdout, "NOTE: peephole-dead-stores,\n");
     fprintf(stdout, "promote-regs, promote-leaf, and promote-loops not yet\n");
     fprintf(stdout, "connected to any optimization category. Test and bugfix first\n\n");
@@ -184,10 +195,11 @@ void process_args(int argc, char **argv, OptConfig *cfg,
 
     // Long options
     static struct option long_opts[] = {
-        {"dot",      required_argument, NULL, 'D'},
-        {"langmode", required_argument, NULL, 'L'},
-        {"version",  no_argument,       NULL, 'V'},
-        {"help",     no_argument,       NULL, 'h'},
+        {"dot",          required_argument, NULL, 'D'},
+        {"langmode",     required_argument, NULL, 'L'},
+        {"version",      no_argument,       NULL, 'V'},
+        {"help",         no_argument,       NULL, 'h'},
+        {"trigger-max",  required_argument, NULL, 'T'},
         {NULL, 0, NULL, 0}
     };
 
@@ -230,6 +242,21 @@ void process_args(int argc, char **argv, OptConfig *cfg,
                 break;
 
             case 'D': safe_str_copy(dot_file, optarg, dot_size); break;
+
+            case 'T': {
+                char *endptr = NULL;
+                long val = strtol(optarg, &endptr, 10);
+                if (endptr == optarg || *endptr != '\0') {
+                    fprintf(stderr, "ERROR: --trigger-max requires an integer, got '%s'\n", optarg);
+                    exit(1);
+                }
+                // Negative means "unlimited" (same as omitting the flag,
+                // since g_trigger_max already defaults to -1) -- accepted
+                // rather than rejected so scripts that compute N don't need
+                // a special case for "no cap this run".
+                g_trigger_max = val;
+                break;
+            }
             case 'V': print_version(argv[0]); exit(0);
             case 'f':
                 if (!handle_f_arg(optarg, cfg, max_passes)) {

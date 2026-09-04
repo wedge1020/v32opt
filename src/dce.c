@@ -394,7 +394,7 @@ int opt_dce (AsmNode *head)
     // ----------------------------------------------------------------
     int eliminated_funcs = 0;
     for (int i = 0; i < func_count; i++) {
-        if (!funcs[i].reachable) {
+        if (!funcs[i].reachable && trigger_allowed()) {
             // Remove all nodes in this function's range
             AsmNode *sweep_curr = funcs[i].start_node;
             AsmNode *sweep_end = funcs[i].end_node;

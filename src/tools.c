@@ -80,8 +80,23 @@ bool is_boxed_tagging(AsmNode *node) {
 // site does -- see its patch), do that explicitly at the call site, AFTER
 // this function returns, fixing up BOTH directions of the link -- not by
 // passing the field's address in here.
-void remove_with_debug(AsmNode **curr_ptr, AsmNode *nodes[], int count, OptType opt_type)
+//
+// TRIGGER CAP: this is the single shared commit point for every
+// deletion-based pass in the project, so it's also where --trigger-max
+// is enforced for all of them at once. If the budget is exhausted,
+// nothing is removed and false is returned; *curr_ptr is still
+// advanced past nodes[0] so callers that loop on the cursor this
+// function writes keep making forward progress instead of spinning on
+// the same (now permanently skipped) candidate. Callers must only
+// count/log the optimization -- e.g. "optimizations++" -- when this
+// returns true.
+bool remove_with_debug(AsmNode **curr_ptr, AsmNode *nodes[], int count, OptType opt_type)
 {
+    if (!trigger_allowed()) {
+        if (curr_ptr) *curr_ptr = nodes[0]->next;
+        return false;
+    }
+
     if (config.debug) {
         for (int i = 0; i < count; i++) {
             insert_debug_comment(nodes[i]->prev, opt_type, nodes[i]->raw);
@@ -93,6 +108,7 @@ void remove_with_debug(AsmNode **curr_ptr, AsmNode *nodes[], int count, OptType 
         remove_node(nodes[i]);
     }
     *curr_ptr = next_after;
+    return true;
 }
 
 // Helper: strip comments from line

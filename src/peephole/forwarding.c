@@ -45,7 +45,8 @@ int peephole_forwarding(AsmNode *head) {
                     // --- CASE 1: Register Load from Same Memory (Standard) ---
                     if (scan->type == OP_MOV && scan->dst_op.mode == MODE_REG &&
                         scan->src_op.mode == MODE_INDIRECT &&
-                        str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset == mem_off) {
+                        str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset == mem_off &&
+                        trigger_allowed()) {
                         insert_debug_comment(scan->prev, OPT_PEEPHOLE_FORWARDING, scan->raw);
                         scan->src_op = curr->src_op; // Replace [mem] with R1
                         snprintf(scan->raw, sizeof(scan->raw), "    MOV %s, %s",
@@ -120,6 +121,12 @@ int peephole_forwarding(AsmNode *head) {
 
                         // --- GUARD 4: Don't propagate into JMP ---
                         if (str_case_eq(scan->mnemonic, "JMP")) {
+                            break;
+                        }
+
+                        // TRIGGER CAP: treat an exhausted budget the same as
+                        // any other guard above -- stop propagating here.
+                        if (!trigger_allowed()) {
                             break;
                         }
 

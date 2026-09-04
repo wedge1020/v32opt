@@ -90,8 +90,7 @@ int peephole_pairs(AsmNode *head)
              str_case_eq(n1->dst_op.reg, n2->dst_op.reg))
         {
             AsmNode *nodes[] = {n2};
-            remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_PAIRS);
-            optimizations++;
+            if (remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_PAIRS)) optimizations++;
             continue;
         }
 
@@ -114,8 +113,7 @@ int peephole_pairs(AsmNode *head)
                 if (reg1 && reg2 && str_case_eq(reg1, reg2))
                 {
                     AsmNode *nodes[] = {n1, next};
-                    remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_PAIRS);
-                    optimizations += 2;
+                    if (remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_PAIRS)) optimizations += 2;
                     continue;
                 }
             }
@@ -146,8 +144,7 @@ int peephole_pairs(AsmNode *head)
                     if (src_match)
                     {
                         AsmNode *nodes[] = {n1, next};
-                        remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_PAIRS);
-                        optimizations += 2;
+                        if (remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_PAIRS)) optimizations += 2;
                         continue;
                     }
                 }
@@ -190,8 +187,7 @@ int peephole_pairs(AsmNode *head)
             if (match)
             {
                 AsmNode *nodes[] = {n1, match};
-                remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_PAIRS);
-                optimizations += 2;
+                if (remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_PAIRS)) optimizations += 2;
                 continue;
             }
         }

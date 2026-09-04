@@ -9,7 +9,7 @@
 #include <math.h>
 #include <getopt.h>
 
-#define  VERSION                      "20260903-dev"
+#define  VERSION                      "20260904-dev"
 #define  AUTHOR                       "Matthew Haas"
 #define  URL                          "https://github.com/wedge1020/v32opt"
 
@@ -243,6 +243,8 @@ typedef struct {
 ////////////////////////////////////////////////////////////////////////////////////////
 // global variables
 //
+extern       long       g_trigger_max;
+extern       long       g_trigger_count;
 extern       int        g_inline_call_limit;
 extern       int        g_inline_calls_so_far;
 extern       char       g_inline_exclude_name[1024];
@@ -253,7 +255,8 @@ extern       OptConfig  config;
 // general utility function prototypes
 //
 void  print_usage             (const char    *);
-void  remove_with_debug       (AsmNode      **, AsmNode       *nodes[], int, OptType);
+bool  trigger_allowed         (void);
+bool  remove_with_debug       (AsmNode      **, AsmNode       *nodes[], int, OptType);
 void  strip_comment_from_line (char          *, const char    *, size_t);
 void  normalize_whitespace    (char          *, const char    *, size_t);
 void  insert_debug_comment    (AsmNode       *, OptType,         const char *);
@@ -327,6 +330,9 @@ bool     operands_equal           (const Operand *, const Operand *);
 void     get_label_name           (const AsmNode *, char          *, size_t);
 
 // stack optimizations
+bool     is_reg_op                (AsmNode *, const char *);
+bool     references_bp            (AsmNode *);
+bool     references_bp_direct     (AsmNode *);
 int      omit_frame_pointers      (AsmNode *);
 
 // inline optimization

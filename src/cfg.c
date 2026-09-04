@@ -516,7 +516,7 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
                     int src_reg = get_reg_index(node->src_op.reg);
                     if (src_reg >= 0) {
                         RegState src_st = current.regs[src_reg];
-                        if (src_st.type == VAL_CONST) {
+                        if (src_st.type == VAL_CONST && trigger_allowed()) {
                             node->src_op.mode = MODE_IMMEDIATE;
                             node->src_op.immediate = src_st.val;
                             snprintf(node->src_op.raw, sizeof(node->src_op.raw), "%d", src_st.val);

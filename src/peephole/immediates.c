@@ -1,3 +1,5 @@
+#include "v32opt.h"
+
 // ===================================================================
 // PEEPHOLE: Immediate Math Combining (Vircon32-Optimized)
 // //
@@ -11,7 +13,6 @@
 //   - Non-consecutive: IADD R1, 5; MOV R2, 10; IADD R1, 3 → KEEP
 //   - Non-immediate: IADD R1, R2; IADD R1, 5 → KEEP
 // ===================================================================
-#include "v32opt.h"
 
 // Helper: Check if immediate is a non-zero numeric (not label, not zero)
 static bool is_nonzero_numeric_immediate(Operand *op) {
@@ -48,25 +49,30 @@ int peephole_immediates(AsmNode *head) {
 
                 if (combined == 0) {
                     AsmNode *nodes[] = {curr, next_real};
-                    remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_IMMEDIATES);
-                    optimizations += 2;
+                    if (remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_IMMEDIATES)) optimizations += 2;
                     continue;
                 } else {
-                    if (config.debug) {
-                        insert_debug_comment(curr->prev, OPT_PEEPHOLE_IMMEDIATES, curr->raw);
-                    }
-                    curr->type = (combined > 0) ? OP_IADD : OP_ISUB;
-                    strcpy(curr->mnemonic, (combined > 0) ? "IADD" : "ISUB");
-                    curr->src_op.immediate = abs(combined);
-                    snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%d", abs(combined));
-                    snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %d",
-                             curr->mnemonic, curr->dst_op.raw, abs(combined));
-
+                    // TRIGGER CAP: attempt next_real's removal first; only
+                    // rewrite curr into the combined instruction if it
+                    // actually commits (same reasoning as immediate_prop).
                     AsmNode *nodes[] = {next_real};
                     AsmNode *dummy = next_real;
-                    remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_IMMEDIATES);
-                    optimizations++;
-                    continue;
+                    if (remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_IMMEDIATES)) {
+                        if (config.debug) {
+                            insert_debug_comment(curr->prev, OPT_PEEPHOLE_IMMEDIATES, curr->raw);
+                        }
+                        curr->type = (combined > 0) ? OP_IADD : OP_ISUB;
+                        strcpy(curr->mnemonic, (combined > 0) ? "IADD" : "ISUB");
+                        curr->src_op.immediate = abs(combined);
+                        snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%d", abs(combined));
+                        snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %d",
+                                 curr->mnemonic, curr->dst_op.raw, abs(combined));
+                        optimizations++;
+                        continue;
+                    }
+                    // TRIGGER CAP: budget exhausted -- fall through to the
+                    // normal "no match" advancement below instead of
+                    // retrying this same, still-unresolved pattern forever.
                 }
             }
         }
@@ -92,25 +98,27 @@ int peephole_immediates(AsmNode *head) {
 
                 if (combined == 0.0f) {
                     AsmNode *nodes[] = {curr, next_real};
-                    remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_IMMEDIATES);
-                    optimizations += 2;
+                    if (remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_IMMEDIATES)) optimizations += 2;
                     continue;
                 } else {
-                    if (config.debug) {
-                        insert_debug_comment(curr->prev, OPT_PEEPHOLE_IMMEDIATES, curr->raw);
-                    }
-                    curr->type = (combined > 0) ? OP_FADD : OP_FSUB;
-                    strcpy(curr->mnemonic, (combined > 0) ? "FADD" : "FSUB");
-                    curr->src_op.float_value = fabs(combined);
-                    snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%.6f", fabs(combined));
-                    snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %.6f",
-                             curr->mnemonic, curr->dst_op.raw, fabs(combined));
-
+                    // TRIGGER CAP: same reasoning as the integer case above.
                     AsmNode *nodes[] = {next_real};
                     AsmNode *dummy = next_real;
-                    remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_IMMEDIATES);
-                    optimizations++;
-                    continue;
+                    if (remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_IMMEDIATES)) {
+                        if (config.debug) {
+                            insert_debug_comment(curr->prev, OPT_PEEPHOLE_IMMEDIATES, curr->raw);
+                        }
+                        curr->type = (combined > 0) ? OP_FADD : OP_FSUB;
+                        strcpy(curr->mnemonic, (combined > 0) ? "FADD" : "FSUB");
+                        curr->src_op.float_value = fabs(combined);
+                        snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%.6f", fabs(combined));
+                        snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %.6f",
+                                 curr->mnemonic, curr->dst_op.raw, fabs(combined));
+                        optimizations++;
+                        continue;
+                    }
+                    // TRIGGER CAP: budget exhausted -- fall through instead
+                    // of retrying this same pattern forever.
                 }
             }
         }

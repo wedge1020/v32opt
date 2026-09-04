@@ -189,8 +189,7 @@ int omit_frame_pointers(AsmNode *head)
                 if (!frame_used_in_body && epilogue_mov && epilogue_pop)
                 {
                     AsmNode *nodes[] = {push_bp, mov_bp_sp, epilogue_mov, epilogue_pop};
-                    remove_with_debug(&curr, nodes, 4, OPT_OMIT_FRAME_POINTERS);
-                    optimizations += 4;
+                    if (remove_with_debug(&curr, nodes, 4, OPT_OMIT_FRAME_POINTERS)) optimizations += 4;
                     continue;
                 }
             }

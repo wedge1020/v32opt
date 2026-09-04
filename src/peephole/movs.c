@@ -112,8 +112,7 @@ int peephole_movs(AsmNode *head) {
                         // anyway.
                         AsmNode *nodes[] = {scan};
                         AsmNode *dummy;
-                        remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_MOVS);
-                        optimizations++;
+                        if (remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_MOVS)) optimizations++;
                     }
                 }
                 // --- Mirror Move Elimination (register-to-register only) ---
@@ -138,8 +137,7 @@ int peephole_movs(AsmNode *head) {
                             // above -- same fix, same reason.
                             AsmNode *nodes[] = {scan};
                             AsmNode *dummy;
-                            remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_MOVS);
-                            optimizations++;
+                            if (remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_MOVS)) optimizations++;
                         }
                     }
                 }

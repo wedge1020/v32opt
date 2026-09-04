@@ -311,7 +311,7 @@ int inline_trivial_functions(AsmNode *head) {
 
             // --- Find Matching Candidate ---
             for (int c = 0; c < candidate_count; c++) {
-                if (str_case_eq(target_label, candidates[c].name)) {
+                if (str_case_eq(target_label, candidates[c].name) && trigger_allowed()) {
                     if (config.debug) {
                         AsmNode *debug_node = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
                         snprintf(debug_node->raw, sizeof(debug_node->raw),

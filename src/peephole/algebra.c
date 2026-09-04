@@ -39,8 +39,7 @@ int peephole_algebra(AsmNode *head)
         {
             // remove_with_debug handles the debug comment
             AsmNode *nodes[] = {curr};
-            remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_ALGEBRA);
-            optimizations++;
+            if (remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_ALGEBRA)) optimizations++;
             continue;
         }
 
@@ -51,8 +50,7 @@ int peephole_algebra(AsmNode *head)
         {
             // remove_with_debug handles the debug comment
             AsmNode *nodes[] = {curr};
-            remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_ALGEBRA);
-            optimizations++;
+            if (remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_ALGEBRA)) optimizations++;
             continue;
         }
 
@@ -60,7 +58,8 @@ int peephole_algebra(AsmNode *head)
         if (curr->type == OP_IMUL &&
             curr->dst_op.mode == MODE_REG &&
             is_numeric_immediate(&curr->src_op) &&
-            curr->src_op.immediate == 2)
+            curr->src_op.immediate == 2 &&
+            trigger_allowed())
         {
             // Keep this debug comment, as we are mutating, not removing
             insert_debug_comment(curr->prev, OPT_PEEPHOLE_ALGEBRA, curr->raw);
@@ -76,7 +75,8 @@ int peephole_algebra(AsmNode *head)
         if (curr->type == OP_IMUL &&
             curr->dst_op.mode == MODE_REG &&
             is_numeric_immediate(&curr->src_op) &&
-            curr->src_op.immediate == 0)
+            curr->src_op.immediate == 0 &&
+            trigger_allowed())
         {
             // Keep this debug comment, as we are mutating, not removing
             insert_debug_comment(curr->prev, OPT_PEEPHOLE_ALGEBRA, curr->raw);
@@ -96,8 +96,7 @@ int peephole_algebra(AsmNode *head)
         {
             // remove_with_debug handles the debug comment
             AsmNode *nodes[] = {curr};
-            remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_ALGEBRA);
-            optimizations++;
+            if (remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_ALGEBRA)) optimizations++;
             continue;
         }
 
@@ -109,8 +108,7 @@ int peephole_algebra(AsmNode *head)
         {
             // remove_with_debug handles the debug comment
             AsmNode *nodes[] = {curr};
-            remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_ALGEBRA);
-            optimizations++;
+            if (remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_ALGEBRA)) optimizations++;
             continue;
         }
 
@@ -184,8 +182,7 @@ int peephole_algebra(AsmNode *head)
                         operands_equal(&jt1->src_op, &jt2->src_op))
                     {
                         AsmNode *nodes[] = {mov1, ieq1, jt1};
-                        remove_with_debug(&curr, nodes, 3, OPT_PEEPHOLE_ALGEBRA);
-                        optimizations += 3;
+                        if (remove_with_debug(&curr, nodes, 3, OPT_PEEPHOLE_ALGEBRA)) optimizations += 3;
                         continue;
                     }
                 }

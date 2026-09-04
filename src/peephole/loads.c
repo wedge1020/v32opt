@@ -54,6 +54,7 @@ int peephole_loads(AsmNode *head) {
                         scan = scan->next;
                         continue;
                     }
+                    if (!trigger_allowed()) { scan = scan->next; continue; }
 
                     // --- FIX: Use strcpy instead of assignment ---
                     insert_debug_comment(scan->prev, OPT_PEEPHOLE_LOADS, scan->raw);

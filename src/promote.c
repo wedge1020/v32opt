@@ -1,7 +1,7 @@
 #include "v32opt.h"
 
 // ============================================================================
-// promote.c -- stack-slot-to-register promotion passes
+// promote -- stack-slot-to-register promotion passes
 // ============================================================================
 //
 // Three independent optimization passes, all opt-in and off by default at
@@ -216,6 +216,16 @@ int pass_promote_stack_slots(AsmNode *head) {
                         }
 
                         if (free_reg == -1) break;
+
+                        // TRIGGER CAP: gate this offset's whole promotion
+                        // (every rewritten reference plus its preheader
+                        // load) as one atomic unit, same granularity as
+                        // pass_promote_regs. free_reg_for_off[off] stays 0
+                        // so phase 2 below (which inserts the matching
+                        // store-before-RET) also skips this offset instead
+                        // of trying to flush a register that was never
+                        // actually loaded.
+                        if (!trigger_allowed()) { free_reg_for_off[off] = 0; continue; }
 
                         char reg_name[16];
                         snprintf(reg_name, sizeof(reg_name), "R%d", free_reg);
@@ -695,6 +705,16 @@ int pass_promote_regs(AsmNode *head) {
                     // than risk reading through the wrong BP.
                     if (is_first_segment && !first_segment_prologue_found) continue;
 
+                    // TRIGGER CAP: gate the WHOLE promotion of this one
+                    // offset (its load, every rewritten reference, and its
+                    // flush(es)) as a single atomic unit -- same granularity
+                    // remove_with_debug() uses for a node group elsewhere.
+                    // Applying only part of a promotion (e.g. the load but
+                    // not a later rewrite) would produce code that doesn't
+                    // correspond to any real pass state, so the cap must not
+                    // be able to split one promotion across the boundary.
+                    if (!trigger_allowed()) continue;
+
                     int free_reg = -1;
                     for (int r = 1; r <= 13; r++) {
                         if (!reg_used[r]) { free_reg = r; reg_used[r] = true; break; }
@@ -1109,6 +1129,15 @@ int pass_promote_loop_registers(AsmNode *head) {
                     }
 
                     if (free_reg == -1) break;
+
+                    // TRIGGER CAP: gate this offset's whole promotion
+                    // (preheader load, main-exit store, and every rewritten
+                    // reference inside the loop body) as one atomic unit.
+                    // free_reg_for_off[off] stays 0 so the second loop below
+                    // (which adds stores at the OTHER, secondary exits) also
+                    // skips this offset instead of flushing a register that
+                    // was never actually loaded.
+                    if (!trigger_allowed()) { free_reg_for_off[off] = 0; continue; }
 
                     char reg_name[16];
                     snprintf(reg_name, sizeof(reg_name), "R%d", free_reg);

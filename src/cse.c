@@ -1,7 +1,8 @@
+#include "v32opt.h"
+
 // ===================================================================
 // CSE: Common Subexpression Elimination (Vircon32-Specific)
 // ===================================================================
-#include "v32opt.h"
 
 // --- Local boundary check: uses OpType enum (not just mnemonic) ---
 static bool is_cf_boundary(AsmNode *node) {
@@ -84,6 +85,8 @@ int opt_cse(AsmNode *head) {
                                     scan = op_ry->next;
                                     continue;
                                 }
+
+                                if (!trigger_allowed()) { scan = op_ry->next; continue; }
 
                                 insert_debug_comment(op_ry->prev, OPT_CSE, op_ry->raw);
                                 op_ry->type = OP_MOV;

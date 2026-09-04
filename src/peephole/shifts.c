@@ -1,3 +1,5 @@
+#include "v32opt.h"
+
 // ===================================================================
 // PEEPHOLE: Shift Optimizations
 // Optimizes SHL (shift left) instructions on Vircon32:
@@ -15,7 +17,6 @@
 //   SHL R1, -1    ->  (kept, shift right by 1)
 //   SHL R1, 4; SHL R1, -4  ->  (both removed, cancel out)
 // ===================================================================
-#include "v32opt.h"
 
 int peephole_shifts(AsmNode *head)
 {
@@ -32,8 +33,7 @@ int peephole_shifts(AsmNode *head)
             curr->src_op.immediate == 0)
         {
             AsmNode *nodes[] = {curr};
-            remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_SHIFTS);
-            optimizations++;
+            if (remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_SHIFTS)) optimizations++;
             continue;
         }
 
@@ -41,7 +41,8 @@ int peephole_shifts(AsmNode *head)
         if (curr->type == OP_SHL &&
             curr->dst_op.mode == MODE_REG &&
             is_numeric_immediate(&curr->src_op) && !curr->src_op.is_float &&
-            curr->src_op.immediate == 1)
+            curr->src_op.immediate == 1 &&
+            trigger_allowed())
         {
             insert_debug_comment(curr->prev, OPT_PEEPHOLE_SHIFTS, curr->raw);
             curr->type = OP_IADD;
@@ -69,8 +70,7 @@ int peephole_shifts(AsmNode *head)
                     curr->src_op.immediate != 0)
                 {
                     AsmNode *nodes[] = {curr, next_real};
-                    remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_SHIFTS);
-                    optimizations += 2;
+                    if (remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_SHIFTS)) optimizations += 2;
                     continue;
                 }
             }
@@ -81,8 +81,7 @@ int peephole_shifts(AsmNode *head)
             str_case_eq(curr->dst_op.reg, curr->src_op.reg))
         {
             AsmNode *nodes[] = {curr};
-            remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_SHIFTS);
-            optimizations++;
+            if (remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_SHIFTS)) optimizations++;
             continue;
         }
 

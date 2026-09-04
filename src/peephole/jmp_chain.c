@@ -1,3 +1,5 @@
+#include "v32opt.h"
+
 // ===================================================================
 // PEEPHOLE: Jump Chain Elimination
 // Eliminates indirect jump chains by making jumps direct:
@@ -19,7 +21,6 @@
 // NOTE: We use remove_with_debug for intermediate JMPs to properly handle
 // debug comments while preserving the optimization structure.
 // ===================================================================
-#include "v32opt.h"
 
 int peephole_jmp_chain(AsmNode *head)
 {
@@ -64,7 +65,8 @@ int peephole_jmp_chain(AsmNode *head)
                     // Only chain if the second JMP targets a label (not a register or immediate)
                     if (final_target && final_target[0] != '\0' &&
                         !is_register_operand(final_target) &&
-                        !is_immediate_string(final_target))
+                        !is_immediate_string(final_target) &&
+                        trigger_allowed())
                     {
                         // Inject debug comment before mutating the instruction
                         insert_debug_comment(curr->prev, OPT_PEEPHOLE_JMP_CHAIN, curr->raw);
@@ -76,9 +78,7 @@ int peephole_jmp_chain(AsmNode *head)
                         // Use remove_with_debug to properly handle the intermediate JMP
                         AsmNode *nodes[] = {next_after_label};
                         AsmNode *dummy = next_after_label;
-                        remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_JMP_CHAIN);
-
-                        optimizations++;
+                        if (remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_JMP_CHAIN)) optimizations++;
                         // Don't advance curr - we might be able to chain further
                         continue;
                     }

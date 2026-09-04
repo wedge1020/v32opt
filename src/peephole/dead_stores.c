@@ -140,7 +140,7 @@ int peephole_dead_stores(AsmNode *head)
             }
 
             // Remove the dead store and advance curr properly
-            if (is_dead)
+            if (is_dead && trigger_allowed())
             {
                 insert_debug_comment(curr->prev, OPT_PEEPHOLE_DEAD_STORES, curr->raw);
                 AsmNode *to_remove = curr;

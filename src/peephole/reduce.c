@@ -1,3 +1,10 @@
+// ===========================================================================
+// v32opt - Vircon32 assembler optimizer
+// peephole/reduce.c - PEEPHOLE: Strength reduction
+// ===========================================================================
+
+#include "v32opt.h"
+
 // ===================================================================
 // PEEPHOLE: Strength Reduction (Vircon32-Optimized)
 // //
@@ -13,7 +20,6 @@
 //   - Register operands: IMUL R1, R2 → KEEP (not a constant)
 //   - Non-reducible: IMUL R1, 3 → KEEP
 // ===================================================================
-#include "v32opt.h"
 
 // Helper: Check if operand is a numeric immediate (not a label)
 static bool is_numeric_immediate_only(Operand *op) {
@@ -37,7 +43,7 @@ int peephole_reduce(AsmNode *head) {
             
             long imm = curr->src_op.immediate;
 
-            if (imm == 0) {
+            if (imm == 0 && trigger_allowed()) {
                 insert_debug_comment(curr->prev, OPT_PEEPHOLE_REDUCE, curr->raw);
                 curr->type = OP_MOV;
                 strcpy(curr->mnemonic, "MOV");
@@ -47,10 +53,9 @@ int peephole_reduce(AsmNode *head) {
                 optimizations++;
             } else if (imm == 1) {
                 AsmNode *nodes[] = {curr};
-                remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_REDUCE);
-                optimizations++;
+                if (remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_REDUCE)) optimizations++;
                 continue;
-            } else if (imm == 2) {
+            } else if (imm == 2 && trigger_allowed()) {
                 insert_debug_comment(curr->prev, OPT_PEEPHOLE_REDUCE, curr->raw);
                 curr->type = OP_IADD;
                 strcpy(curr->mnemonic, "IADD");
@@ -70,8 +75,7 @@ int peephole_reduce(AsmNode *head) {
             long imm = curr->src_op.immediate;
             if (imm == 1) {
                 AsmNode *nodes[] = {curr};
-                remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_REDUCE);
-                optimizations++;
+                if (remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_REDUCE)) optimizations++;
                 continue;
             }
         }
@@ -83,7 +87,7 @@ int peephole_reduce(AsmNode *head) {
             is_numeric_immediate_only(&curr->src_op)) {
             
             long imm = curr->src_op.immediate;
-            if (imm == 1) {
+            if (imm == 1 && trigger_allowed()) {
                 insert_debug_comment(curr->prev, OPT_PEEPHOLE_REDUCE, curr->raw);
                 curr->type = OP_MOV;
                 strcpy(curr->mnemonic, "MOV");
@@ -102,7 +106,7 @@ int peephole_reduce(AsmNode *head) {
             
             float imm = curr->src_op.float_value;
 
-            if (imm == 0.0f) {
+            if (imm == 0.0f && trigger_allowed()) {
                 insert_debug_comment(curr->prev, OPT_PEEPHOLE_REDUCE, curr->raw);
                 curr->type = OP_MOV;
                 strcpy(curr->mnemonic, "MOV");
@@ -112,8 +116,7 @@ int peephole_reduce(AsmNode *head) {
                 optimizations++;
             } else if (imm == 1.0f) {
                 AsmNode *nodes[] = {curr};
-                remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_REDUCE);
-                optimizations++;
+                if (remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_REDUCE)) optimizations++;
                 continue;
             }
         }
@@ -127,8 +130,7 @@ int peephole_reduce(AsmNode *head) {
             float imm = curr->src_op.float_value;
             if (imm == 1.0f) {
                 AsmNode *nodes[] = {curr};
-                remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_REDUCE);
-                optimizations++;
+                if (remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_REDUCE)) optimizations++;
                 continue;
             }
         }

@@ -1,10 +1,51 @@
 #include "v32opt.h"
-#include <getopt.h>
 
 // Global variables
 int   g_inline_call_limit          = -1;
 int   g_inline_calls_so_far        = 0;
 char  g_inline_exclude_name[1024]  = {0};
+
+// ---------------------------------------------------------------------
+// TRIGGER CAP (--trigger-max=N): a single global choke point, shared
+// by every optimization pass, that gates whether a given pass is
+// allowed to actually COMMIT a transformation it has found (delete a
+// node, rewrite an operand in place, or splice in a new node) versus
+// leaving the code untouched as if the candidate had never matched.
+//
+// g_trigger_count is a running total across the ENTIRE run: every
+// pass, every fixed-point iteration of the optimizer's do-while loop,
+// all sharing the same counter. g_trigger_max (-1 by default) is the
+// cap set via --trigger-max=N; once g_trigger_count reaches it, every
+// later call to trigger_allowed() returns false and no further
+// transformation is applied anywhere, for the rest of the run.
+//
+// This exists so a miscompile can be bisected: re-run with increasing
+// N until the output starts breaking, and the exact Nth transform
+// applied (in program order across all passes) is the culprit -- the
+// same technique used ad hoc via a getenv() check in an earlier
+// session, now promoted to a proper, permanent, documented flag so it
+// doesn't have to be reinvented the next time a pass is suspect.
+// ---------------------------------------------------------------------
+long  g_trigger_max                = -1;
+long  g_trigger_count              = 0;
+
+// ---------------------------------------------------------------------
+// trigger_allowed(): call this immediately before COMMITTING any single
+// transformation (one deleted node, one in-place rewrite, one inserted
+// load/store) -- never before merely detecting a candidate. Returns
+// true and consumes one slot of the budget if the transform may
+// proceed; returns false (budget exhausted) if the caller must leave
+// the code exactly as it found it and treat this exactly like "no
+// match" -- same as if the pattern simply hadn't fired.
+// ---------------------------------------------------------------------
+bool trigger_allowed(void)
+{
+    if (g_trigger_max >= 0 && g_trigger_count >= g_trigger_max) {
+        return false;
+    }
+    g_trigger_count++;
+    return true;
+}
 
 // -------------------------------------------------------------------
 // Optimization Configuration
@@ -68,6 +109,9 @@ int main(int argc, char **argv) {
     // --- Tally up and display enabled optimizations (verbose mode) ---
     if (config.verbose) {
         fprintf(stdout, "--- Configuration: Enabled Optimizations ---\n");
+        if (g_trigger_max >= 0) {
+            fprintf(stdout, "Trigger cap active: --trigger-max=%ld\n", g_trigger_max);
+        }
         int opt_count = 0;
 
         // Map OptType -> config field for this loop
@@ -327,6 +371,16 @@ int main(int argc, char **argv) {
     // --- Final Statistics ---
     if (config.verbose) {
         printf("\nOptimization complete: %d total optimizations applied.\n", total_opts);
+        if (g_trigger_max >= 0) {
+            printf("Trigger cap: %ld of %ld transform slot(s) used (--trigger-max=%ld)%s\n",
+                   g_trigger_count, g_trigger_max, g_trigger_max,
+                   g_trigger_count >= g_trigger_max
+                       ? " -- cap reached, later transforms were skipped"
+                       : " -- cap not reached, every candidate was applied");
+        } else if (g_trigger_count > 0) {
+            printf("Trigger count: %ld transform(s) applied (no --trigger-max cap set).\n",
+                   g_trigger_count);
+        }
     }
 
     // --- Testing Results ---
