@@ -77,6 +77,17 @@ int peephole_jumps(AsmNode *head)
 
                     if (str_case_eq(lbl_name, branch_target))
                     {
+                        // BUG FIX: jmp_target previously pointed directly into
+                        // next_jmp->dst_op.raw / src_op.raw. remove_with_debug()
+                        // below frees next_jmp (via remove_node()), so using
+                        // jmp_target AFTER that call is a use-after-free --
+                        // confirmed by a real corrupted-output report ("JF R2,"
+                        // with garbage/blank trailing it, i.e. reading freed
+                        // heap memory). Snapshot it into a local buffer first,
+                        // independent of next_jmp's lifetime.
+                        char jmp_target_copy[128];
+                        safe_str_copy(jmp_target_copy, jmp_target, sizeof(jmp_target_copy));
+
                         // TRIGGER CAP: this inversion is NOT safe to split --
                         // if curr is inverted but next_jmp is left behind,
                         // the true-condition path falls straight into that
@@ -97,9 +108,9 @@ int peephole_jumps(AsmNode *head)
                                 strcpy(curr->mnemonic, "JT");
                             }
 
-                            safe_str_copy(curr->src_op.raw, jmp_target, sizeof(curr->src_op.raw));
+                            safe_str_copy(curr->src_op.raw, jmp_target_copy, sizeof(curr->src_op.raw));
                             snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %s",
-                                     curr->mnemonic, curr->dst_op.raw, jmp_target);
+                                     curr->mnemonic, curr->dst_op.raw, jmp_target_copy);
 
                             optimizations++;
                             did_optimize = true;
