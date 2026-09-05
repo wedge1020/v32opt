@@ -25,12 +25,68 @@
 // below -- it just also needs to behave like every other boundary label
 // when some OTHER function's body is being measured.
 // ---------------------------------------------------------------
+// ---------------------------------------------------------------
+// Is this "__global_..." label one of the compiler's internal
+// control-flow helper labels (short-circuit and/or, truthy-check,
+// division guards, if/for scaffolding) rather than a real boundary?
+//
+// Inside a function, these helpers are named "__<FunctionName>_<suffix>"
+// (e.g. "__Game_update_short_and:", "__Game_update_truthy_fail:") and are
+// already correctly excluded since they don't start with "__function_",
+// "__literal_", or "__global_" at all. But the SAME kind of helper,
+// generated for an expression written directly at top level (outside any
+// function -- i.e. as part of what becomes __global_scope_initialization),
+// has no enclosing function name to borrow, so the compiler substitutes
+// "global" instead: "__global_short_and_0:", "__global_truthy_fail_2:",
+// etc. These are internal jump targets INSIDE __global_scope_initialization
+// -- not a separate function or data label -- exactly analogous to
+// __if_N_start being internal to whatever function contains it.
+//
+// BUG FIX: is_function_boundary_label() used to treat every "__global_"
+// prefixed label as a boundary, no exceptions. That meant
+// __global_scope_initialization's own "find my end" scan stopped at the
+// FIRST such helper label it hit (which happens early, since these
+// helpers are generated inline as part of ordinary global-scope
+// expression evaluation) -- silently truncating its registered range to
+// a small fraction of its real body. Everything after that point,
+// including every "MOV Rn, __function_X / OR Rn, BOXED_FUNCTION / CALL
+// __builtin_table_set" sequence that registers a Lua-mode callback table,
+// fell outside ANY registered function -- invisible to DCE's reachability
+// walk. Confirmed on nostalgick.asm: this swept away 60 of 69 functions
+// (Background_*, Enemies_*, Camera_*, Player_*, ...) that are very much
+// called, via those table-based registrations, from __global_scope_initialization.
+// ---------------------------------------------------------------
+static bool is_global_scope_internal_label(const char *lbl) {
+    if (strncmp(lbl, "__global_", 9) != 0) return false;
+    if (str_case_eq(lbl, "__global_scope_initialization:")) return false;
+
+    static const char *internal_suffixes[] = {
+        "short_and", "short_or", "truthy_fail",
+        "div_by_zero", "div_done", "div_neg_huge",
+        "else", "end_if",
+        "for_start", "for_end", "for_gen_start", "for_gen_end",
+        "not_end", "not_true",
+        NULL
+    };
+    const char *rest = lbl + 9; // text after "__global_"
+    for (int i = 0; internal_suffixes[i]; i++) {
+        size_t slen = strlen(internal_suffixes[i]);
+        if (strncmp(rest, internal_suffixes[i], slen) == 0) {
+            char c = rest[slen];
+            // must end there, or continue with "_<digits>" (a disambiguating
+            // counter), not just happen to be a prefix of some longer word
+            if (c == ':' || c == '_') return true;
+        }
+    }
+    return false;
+}
+
 static bool is_function_boundary_label(const char *lbl) {
     size_t lbl_len = strlen(lbl);
     bool is_return_label = (lbl_len >= 8 && str_case_eq(lbl + lbl_len - 8, "_return:"));
     return (strncmp(lbl, "__function_", 11) == 0 && !is_return_label) ||
            strncmp(lbl, "__literal_", 10) == 0 ||
-           strncmp(lbl, "__global_", 9) == 0; // includes __global_scope_initialization: on purpose
+           (strncmp(lbl, "__global_", 9) == 0 && !is_global_scope_internal_label(lbl));
 }
 
 // -------------------------------------------------------------------
