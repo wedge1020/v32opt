@@ -22,8 +22,9 @@ in action, and improve execution efficiency.
 This project and  this documentation - was built with  the help of AI:
 
   * Google Gemini,  a mix of  its Thinking (3.6)  mid-tier model and  Pro (3.1)
-  * Anthropic Claude Sonnet 5 (medium)
   * Mistral Vibe (Thinking)
+  * Anthropic Claude Sonnet 5 (medium)
+  * OpenCode Go (GLM 5.2)
 
 ---
 
@@ -54,8 +55,9 @@ If your repository includes the standard Makefile, simply run:
 # Build the binary
 $ make
 
-# Optionally install to your system PATH (defaults to /usr/local/bin)
-$ sudo make install
+# Optionally install to your home bin directory (~/bin, or ~/bin/bin.<arch>
+# if it exists). Use "sudo make sysinstall" for /usr/local/bin instead.
+$ make install
 
 # Clean build artifacts
 $ make clean
@@ -63,17 +65,22 @@ $ make clean
 
 ### Direct Compilation
 
-You can also compile the modular codebase directly using GCC or Clang:
+You can also compile the modular codebase directly using GCC or Clang
+(note that the  peephole  passes live in their own subdirectory, and the
+math functions used by several passes need `-lm`):
 
 ```bash
 # Compile all source files with optimization enabled
-$ gcc -O3 -Wall -Wextra src/*.c -o v32opt
+$ gcc -O3 -Wall -Wextra src/*.c src/peephole/*.c -o v32opt -lm
 
 # Verify  the  build  (running  with  no  arguments  will  display  usage
 # information)
 
 $ ./v32opt
 ```
+
+A full command-line  reference is available as a unix manual page in
+`v32opt.1` (view it with `man ./v32opt.1`).
 
 ---
 
@@ -135,9 +142,12 @@ file `gameOpt.asm` (do NOT overwrite the original):
 $ v32opt game.asm -o gameOpt.asm -O1
 ```
 
-NOTE: currently argument ordering is  rather inflexible; you MUST specify
-the  source  assembly  file  first,   and  follow  it  with  any  desired
-command-line arguments.
+NOTE: keep  the  source  assembly  file  first,  followed  by  any  desired
+command-line  arguments,  as  shown  (the  input  file  must  be  the  only
+non-option  argument).  On  glibc  Linux  and  macOS  option  permutation
+additionally  lets  flags  appear  after  the  file  name  too,  but  that
+behavior  is  libc-specific  (musl,  for  example,  stops  parsing  at  the
+first  non-option),  so  don't  rely  on  it  in  scripts.
 
 You can also run `v32opt` with the  `-v` argument, and it will give you a
 high-level status report of optimization actions it was able to perform:
@@ -214,11 +224,24 @@ v32opt <input.asm> [-o output.asm] [options]
 | Flag | Description | Included Passes |
 | --- | --- | --- |
 | `-O0` | **No Optimization** | Disables all optimization passes (default). |
-| `-O1` | **Local Peephole** | Enables all 12 local 1–3 instruction window peephole optimizations. |
-| `-O2` | **Global Analysis** | Enables all `-O1` passes + **Dead Code Elimination (DCE)** & **Global Constant Folding**. |
+| `-O1` | **Local Peephole** | Enables all 13 local window peephole optimizations. |
+| `-O2` | **Global Analysis** | Enables all `-O1` passes + **CSE**, **Dead Code Elimination (DCE)**, **Global Constant Folding** & **Frame Pointer Elimination**. |
 | `-O3` | **Aggressive** | Enables all `-O2` passes + **Function Inlining**. |
+| `-Os` | **Space Saving** | Currently identical to `-O3` (a placeholder for a dedicated size-focused tier). |
 | `-v` | **Verbose Mode** | Displays detailed pass statistics and optimization counts per iteration. |
+| `-t` | **Testing Mode** | Prints a machine-readable `pass:count` summary (plus a `total:N` line). |
+| `-d` | **Debug Marking** | Marks every optimization inline in the output as `; [DEBUG <pass>] ...` comments. |
+| `-L <c\|lua>` | **Language Mode** | `lua` enables NaN-boxed-type awareness for `v32lua` output (see below). |
 | `--dot <file>` | **CFG Export** | Exports the Control Flow Graph to a Graphviz `.dot` file for visualization. |
+| `--trigger-max=<N>` | **Bisection Cap** | Global budget on total committed transformations (see below). |
+
+`-L lua` (long form `--langmode lua`) makes the value-tracking passes
+aware of `v32lua`'s boxed type system: `BOXED_*` tagging/untagging idioms
+(OR/AND/IADD with a boxed immediate) are never folded, forwarded, or
+CSE'd away as ordinary arithmetic, and the algebra pass drops the
+provably-dead "is it Nil?" half of the compiler's fixed truthiness test
+after a boxed-boolean producer. `-L c` (the default) keeps the plain
+C-mode behavior.
 
 ### Optimization Tier Philosophy & Debugging Considerations
 
@@ -226,10 +249,14 @@ In `v32opt`, optimization  tiers are separated not just by  how much they
 shrink  the binary,  but  by their  computational complexity,  structural
 impact, and debugging ergonomics:
 
-*  **`-O1` (Local  Peepholes):**  Operates on  sliding  windows of  1–3
-instructions.  These  are stateless,  linear-time  passes  that clean  up
-obvious  compiler  artifacts  with  zero risk  to  program  semantics  or
-debugging ergonomics.
+*  **`-O1` (Local  Peepholes):**  Operates on  small sliding  windows  of
+instructions (a few passes scan  further ahead,  bounded by a scan-distance
+cap).  These  are stateless,  linear-time  passes that clean  up
+obvious  compiler  artifacts  with  no  structural  impact  on  the  program
+and  no  effect  on  debugging  ergonomics.  They  are  the  least  risky
+tier,  but  "least  risky"  is  not  "risk-free":  several  window  passes
+make  assumptions  about  indirect  memory  (see  `ISSUES`),  so  it  is
+still  worth  play-testing  the  optimized  build  against  the  original.
 
 * **`-O2`  (Global Analysis  & Structural Cleanup):**  Introduces Control
 Flow  Graphs  (CFG), program-wide  data-flow  tracking,  and stack  frame
@@ -338,15 +365,34 @@ MOV [R1+4], R2                       MOV [R1+4], R2
 MOV R3, [R1+4]                       MOV R3, R2
 ```
 
-While this may  not offer any distinct performance boost,  it should save
+While this may  not offer any distinct performance boost, it should save
 you 1 word  of space, as the resulting double  registered `MOV` will only
 need  1 word  to  store  the instruction,  where  any indirect  reference
 requires a second, follow-on word for the immediate value/address.
 
+### Redundant Reload Elimination (`peephole-compiler-myopia`)
+
+Removes a reload of a value that  was  just  stored  from the  same  regis-
+ter to the same memory location, when  nothing  in  between  changed  the
+memory or the registers involved.
+
+```vircon32
+; BEFORE                             ; AFTER
+MOV [R1+4], R2                       MOV [R1+4], R2
+MOV R2, [R1+4]                       ; (Reload removed: R2 still holds it)
+```
+
+A common  compiler  artifact:  the  code  generator  writes  a  temporary
+back  to  its  stack  slot  and  then  immediately  reads  it  again  before
+anything  could  have  changed.
+
 ### Redundant Jump Elimination (`peephole-jumps`)
 
-Removes  unconditional jumps  (`JMP`) that  point directly  to the  label
-immediately following the instruction.
+Three  local  control-flow  cleanups:  removes  `JMP`/`JT`/`JF`  that
+point  directly  to  the  label  immediately  following  the  instruction;
+inverts  branch-over-jump  pairs  (`JF R, L1; JMP L2; L1:`  becomes
+`JT R, L2; L1:`);  and  eliminates  code  made  unreachable  by  an
+unconditional  `JMP`  (up  to  the  next  label,  which  is  kept).
 
 ```vircon32
 ; BEFORE                             ; AFTER
@@ -463,17 +509,24 @@ Optimization can be as much an art as it is a science.
 
 ### Jump Chain Elimination (`peephole-jmp-chain`)
 
-Short-circuits jump  indirection. If a jump  lands on a label  whose only
-immediate instruction  is another unconditional  jump, the first  jump is
-updated to point directly to the final target.
+Short-circuits jump  indirection. If a jump  lands  on  a  label  whose
+first  instruction  is another unconditional  jump, the first  jump is
+retargeted  to  point  directly  at  the  final  destination,  and  the
+intermediate  jump  is  removed.
 
 ```vircon32
 ; BEFORE                             ; AFTER
 JMP label_step1                      JMP label_final
 ...                                  ...
 label_step1:                         label_step1:
-JMP label_final                      JMP label_final
+JMP label_final                      ; (Intermediate jump removed)
 ```
+
+NOTE: removing the  intermediate  jump  is  only  safe  when  no  OTHER
+jump  or  branch  still  targets  `label_step1`;  the  current  implemen-
+tation  does  not  check  for  other  users  of  the  label  (a  known
+issue  —  see  `ISSUES`).  Multi-hop  chains  are  only  collapsed  when
+each  jump  sits  immediately  before  its  target  label.
 
 ---
 
@@ -719,10 +772,21 @@ promotion is  automatically aborted  for that  block to  guarantee memory
 safety and prevent aliasing bugs.
 
 *  **Inlining  Stack  Rewriting:**   When  leaf  functions  are  inlined,
-parameter  reads accessing  `[BP+N]`  (where `N  >=  2`) are  dynamically
+parameter  reads accessing  `[BP+N]`  (where `N  >=  2`)  are  dynamically
 rewritten to `[SP+(N-2)]` at the call site. This allows seamless splicing
 of callee  bodies without corrupting  caller stack frames or  requiring a
 dedicated frame pointer.
+
+*  **These  guardrails  are  not  exhaustive.**  In  particular,  several
+window  passes  do  not  model  memory  writes  whose  addressing  differs
+from  the  pattern  they  matched  (read-modify-write  instructions  like
+`IADD [R1+0], 5`,  stores  through  a  different  base  register  that
+aliases  the  tracked  address,  and  the  dynamic-memory  `MOVS`/`SETS`
+operations),  and  `omit-frame-pointers`  currently  treats  `[BP-N]`
+local-variable  accesses  as  if  they  did  not  depend  on  the  frame.
+Known  soundness  issues  are  tracked  in  the  `ISSUES`  file;  always
+verify  optimized  output  by  building  and  running  it  alongside  the
+original.
 
 ---
 
@@ -734,7 +798,15 @@ optimizer behavior:
 
 * **`-finline-max=N`**
 
-Caps the total  number of `CALL` sites inlined across  the entire file to
+Caps the  size  of  a  function  still  considered  inlinable,  in  body
+instructions:  any  function  whose  straight-line  body  is  longer  than
+`N` instructions  is  never  inlined.
+
+*(Default: `8`).*
+
+* **`-finline-call-limit=N`**
+
+Caps the total  number of `CALL` sites inlined across  the entire run to
 `N` (evaluated in file order). By  adjusting this number, you can perform
 binary-search bisection on inlined calls to isolate runtime-only bugs.
 
@@ -747,7 +819,20 @@ comma-separated list of target label names.
 
 *(Example: `-finline-exclude=__function_play_audio,__function_update_physics`).*
 
-* **`-fmax_passes=N`**
+* **`-fmax-passes=N`**
 
 Limits the iterative local optimization engine to a maximum of `N` passes
 (default: `1000`).
+
+* **`--trigger-max=N`**
+
+A  global  transformation  budget  shared  by  EVERY  enabled  pass  and
+every  fixed-point  iteration:  once  a  total  of  `N`  transformations
+(deleted  nodes,  in-place  rewrites,  spliced  loads/stores)  have  been
+committed,  every  later  candidate  is  left  untouched  as  if  it  had
+never  matched.  Omit  (or  pass  a  negative  `N`)  for  unlimited.  The
+primary  tool  for  bisecting  a  miscompile:  re-run  with  increasing
+`N`  until  the  output  breaks  —  the  `N`th  transform  applied,  in
+program  order  across  all  passes,  is  the  one  to  inspect.  Combine
+with  `-d`  to  have  the  culprit  named  right  in  the  output  file,
+and  with  `-v`  for  a  final  report  of  how  many  slots  were  used.

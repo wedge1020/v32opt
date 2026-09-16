@@ -1,12 +1,99 @@
-endless loop, when done tends to produce premature HLT
+v32opt known issues -- verified by audit + repro, Sep 15 2026
+(updated; supersedes earlier notes. "RMW" = read-modify-write to memory,
+ e.g. "IADD [R1+0], 5")
+
+CONFIRMED MISCOMPILES (each reproduced with a minimal input):
+
+-fpeephole-immediate-prop
+  Pattern 2 (MOV + ALU constant folding) scans past reads of the
+  register and past JT/JF branches. "MOV R1,10 / MOV R2,R1 / IADD R1,5"
+  folds to "MOV R1,15 / MOV R2,R1" (R2 now sees 15, not 10); folding
+  across a JT also changes the value seen on the taken path.
+
 -fpeephole-forwarding
--fpeephole-loads
--fpeephole-movs --> will not actually run, even with -fpeephole-movs
+  Rule 1 treats only "MOV [mem],x" as a memory store. An intervening
+  RMW to the same address ("IADD [R1+0],5") or an aliasing store via a
+  different base register holding the same address is not seen, so the
+  later load is wrongly replaced with a register move. MOVS/SETS also
+  unmodeled. (Likely cause of the old "premature HLT" reports on real
+  v32lua output, which emits RMW loop counters like "IADD [BP-2],1".)
 
--fpeephole-dead-stores also disabled
+-fpeephole-dead-stores
+  Case 2 counts ANY instruction with the same indirect destination as
+  an "exact overwrite". An RMW ("IADD [BP-4],1") READS the slot too, so
+  the feeding store is wrongly deleted. MOVS/SETS also unmodeled.
 
-still failing some unit tests (but generally seem to work)
--fpeephole-jumps
--fpeephole-jmp-chains
+-fpeephole-jmp-chain
+  Retargeting a jump past a label is fine, but the pass also DELETES
+  the intermediate JMP even when other branches still target that
+  label; they now fall through into whatever followed it. Also burns
+  2 --trigger-max slots for one transform (bisection off-by-one).
+
+-fpeephole-shifts
+  "SHL r,N; SHL r,-N" removal is not identity: shifted-out bits are
+  gone, so (x<<N)>>N != x. "SHL r,r" (dst==src register) is removed as
+  a no-op but is a shift by r's own value.
+
+-fpeephole-pairs
+  "NOT r; NOT r" removal is only identity for boolean r; for any other
+  value it computes CIB(r) (0/1), not r. XOR self-cancel pair compares
+  only the base register of indirect destinations, not the offset
+  ("XOR [R1],R2; XOR [R1+4],R2" is deleted).
+
+-fomit-frame-pointers
+  [BP-N] accesses are treated as "not using BP" (offset>=0 test), so
+  functions whose locals live at [BP-N] with no other BP/SP use get
+  their frame stripped and their locals redirected into the caller's
+  frame. (Unit test scenario 3/4 encodes this wrong expectation.)
+
 -fcse
--finline
+  Only the destination register is tracked between the two matching
+  expressions. If a SOURCE register (or the memory a source operand
+  points at) is modified in between, the second computation is still
+  replaced by a move of the stale first result.
+
+-finline (edge cases)
+  Function-end detection stops only at RET / "MOV SP,BP": a body that
+  ends in HLT (noreturn helpers) swallows the following function (and
+  any data directives) into the candidate body. "MOV BP,x" writes are
+  not rejected. [BP+N]->[SP+N-2] rewrite assumes args were pushed
+  immediately before the CALL (no intervening SP moves are verified).
+
+DEAD CODE / MISSED OPTIMIZATIONS:
+
+-fpeephole-immediates, -fpeephole-reduce
+  All float branches are unreachable: is_numeric_immediate() rejects
+  every is_float operand, so FADD/FSUB combining and FMUL/FDIV by
+  0.0/1.0 never fire. (If re-enabled, note float cancellation
+  "(x+a)-a == x" is NOT exact in float32 -- do not remove such pairs.)
+
+--dot with any node-removing pass (e.g. -O2)
+  CFG was built before Phase-3 cleanup; export walks freed nodes
+  (use-after-free; currently "works" only by allocator luck).
+
+general
+  CALL/RET move SP (hardware return-address push/pop) but
+  modifies_register() doesn't model it; SP-relative forwarding across
+  a CALL is theoretically wrong (rare in compiler output).
+  main() frees only the list head (whole-program leak; harmless for
+  output correctness).
+
+UNIT TESTS (make -C testing), current state:
+  pass: omit-frame-pointers, peephole-algebra, peephole-compiler-myopia,
+        peephole-dead-stores, peephole-immediate-prop, peephole-loads,
+        peephole-movs, primes, promote-loops
+        (earlier notes that movs/loads/dead-stores/forwarding hang or
+        refuse to run are stale -- they run; forwarding's real problems
+        are the RMW/alias holes above)
+  fail (code bugs): cse (source-operand tracking), shifts + pairs
+        (fixtures encode the unsound SHL-cancel / SHL r,r / NOT-NOT
+        expectations -- fixing the pass will "break" these fixtures),
+        immediates + reduce (float dead code)
+  fail (stale/misbuilt fixtures): peephole-forwarding (expects the old
+        immediate-propagation behavior now delegated to
+        peephole-immediate-prop), peephole-jumps (scenarios not
+        separated by labels, so one scenario's dead zone legitimately
+        eats the next; KEEP marks are over-strict), peephole-jmp-chain
+        (expects full multi-hop collapse), inline (cascaded inlining
+        after a callee becomes leaf), constant-folding (fixture uses
+        the reserved word "skip" as a label -- never assembles)
