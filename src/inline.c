@@ -9,7 +9,15 @@
 // VIRCON32 NOTES:
 //   - All instructions are 1 cycle → Inlining is purely for SIZE reduction.
 //   - Focus on register-only ops; avoid inlining functions with stack/indirection.
-//   - BP-based offsets ([BP+N]) are rewritten to SP-based ([SP+N-2]) at call sites.
+//   - BP-based offsets ([BP+N], N >= 2) are rewritten to SP-based ([SP+N-2]) at
+//     call sites. This mapping is a frame-layout INVARIANT (the callee's BP is
+//     always SP_at_call - 2: one word for the return address CALL pushes, one
+//     for the saved BP the prologue pushes), so it holds regardless of how the
+//     caller arranged its arguments -- v32lua PUSHes them, the v32 C compiler
+//     STOREs them at [SP+k]; both land at callee [BP+2], [BP+3], ... It is
+//     only sound because candidate bodies are forbidden from touching SP or
+//     BP themselves, so the spliced body runs with SP exactly where the CALL
+//     would have left it.
 //
 // EXAMPLES:
 //   ; BEFORE               ; AFTER (inlined)
@@ -23,7 +31,25 @@
 //   - N=8:  Default (inline functions ≤8 instructions)
 //   - N=16: Aggressive (inline functions ≤16 instructions)
 //   - N=0:  Disable inlining entirely
+//   (N is clamped to 0..MAX_BODY_INS, the candidate body array capacity.)
 // ================================================================================
+
+// ---------------------------------------------------------------
+// Is this label a genuine function/data boundary, as opposed to an
+// internal control-flow label of whatever function contains it?
+// Mirrors dce.c's boundary predicate: "__function_<name>:" (but not
+// a function's internal "<name>_return:" label), "__literal_*:"
+// data, and any "__global_*:" label. Used to keep this pass's
+// function-body scans from running past the end of one function
+// into the next one (or into a data section).
+// ---------------------------------------------------------------
+static bool is_inline_boundary_label(const char *lbl) {
+    size_t lbl_len = strlen(lbl);
+    bool is_return_label = (lbl_len >= 8 && str_case_eq(lbl + lbl_len - 8, "_return:"));
+    return (strncmp(lbl, "__function_", 11) == 0 && !is_return_label) ||
+           strncmp(lbl, "__literal_", 10) == 0 ||
+           strncmp(lbl, "__global_", 9) == 0;
+}
 
 int inline_trivial_functions(AsmNode *head) {
     // --- PHASE 0: COLLECT NON-LEAF FUNCTIONS ---
@@ -45,6 +71,16 @@ int inline_trivial_functions(AsmNode *head) {
             bool is_non_leaf = false;
             while (scan) {
                 if (scan->type == OP_LABEL) {
+                    // BUG FIX: a genuine function/data boundary label ends
+                    // THIS function, full stop. The scan used to skip ALL
+                    // labels and keep going, so a function that fell off
+                    // its own end (no RET/epilogue) silently swallowed the
+                    // NEXT function's body into its own "non-leaf" scan --
+                    // usually just a wasted optimization, but wrong.
+                    char line_copy[8192];
+                    safe_str_copy(line_copy, scan->raw, sizeof(line_copy));
+                    char *lbl = trim(line_copy);
+                    if (is_inline_boundary_label(lbl)) break;
                     scan = scan->next;
                     continue;
                 }
@@ -58,6 +94,12 @@ int inline_trivial_functions(AsmNode *head) {
                 if ((scan->type == OP_MOV && str_case_eq(scan->dst_op.reg, "SP") &&
                      str_case_eq(scan->src_op.reg, "BP")) ||
                     str_case_eq(scan->mnemonic, "RET")) {
+                    break;
+                }
+                // BUG FIX: HLT also ends a function's execution (a
+                // noreturn helper, e.g. a fatal-error exit). Without this
+                // the scan ran past it into whatever followed.
+                if (str_case_eq(scan->mnemonic, "HLT")) {
                     break;
                 }
                 scan = scan->next;
@@ -110,12 +152,28 @@ int inline_trivial_functions(AsmNode *head) {
             }
 
             // --- Collect Function Body ---
-            AsmNode *core_nodes[MAX_BODY_INS]; // Note: MAX_BODY_INS is still used for static array size
+            AsmNode *core_nodes[MAX_BODY_INS]; // sized for the clamped -finline-max
             int core_count = 0;
             bool valid_candidate = true;
 
             while (scan) {
                 if (scan->type == OP_LABEL) {
+                    // BUG FIX: a function/data boundary label ends this
+                    // function's body. Skipping ALL labels (the old
+                    // behavior) let a function with no RET/epilogue (e.g.
+                    // one ending in HLT, or falling off its end) swallow
+                    // the NEXT function's instructions -- and any data
+                    // directives -- into its collected body, which then
+                    // got spliced into every call site. Internal labels
+                    // (loop leftovers, "<name>_return:") are still skipped:
+                    // a branch-free candidate can't be jumped into.
+                    char line_copy[8192];
+                    safe_str_copy(line_copy, scan->raw, sizeof(line_copy));
+                    char *lbl = trim(line_copy);
+                    if (is_inline_boundary_label(lbl)) {
+                        valid_candidate = false;  // fell off the end: no epilogue
+                        break;
+                    }
                     scan = scan->next;
                     continue;
                 }
@@ -124,6 +182,16 @@ int inline_trivial_functions(AsmNode *head) {
                 if ((scan->type == OP_MOV && str_case_eq(scan->dst_op.reg, "SP") &&
                      str_case_eq(scan->src_op.reg, "BP")) ||
                     str_case_eq(scan->mnemonic, "RET")) {
+                    break;
+                }
+
+                // BUG FIX: a body ending in HLT is a noreturn function;
+                // it has no epilogue, and collecting past it would swallow
+                // whatever follows. Disqualify entirely (inlining a halt
+                // is defensible, but such functions are rare and this
+                // keeps the splice strictly epilogue-terminated).
+                if (str_case_eq(scan->mnemonic, "HLT")) {
+                    valid_candidate = false;
                     break;
                 }
 
@@ -162,6 +230,18 @@ int inline_trivial_functions(AsmNode *head) {
                     break;
                 }
 
+                // BUG FIX: reject ANY direct reference to the BP register
+                // (read or write). The old check only rejected SP --
+                // "MOV BP, R1" (clobbering the caller's frame pointer) and
+                // "MOV R1, BP" (capturing it) both slipped through.
+                if ((scan->has_dst && scan->dst_op.mode == MODE_REG &&
+                     str_case_eq(scan->dst_op.reg, "BP")) ||
+                    (scan->has_src && scan->src_op.mode == MODE_REG &&
+                     str_case_eq(scan->src_op.reg, "BP"))) {
+                    valid_candidate = false;
+                    break;
+                }
+
                 // Reject local variables ([BP-N])
                 if ((scan->dst_op.mode == MODE_INDIRECT && str_case_eq(scan->dst_op.reg, "BP") &&
                      scan->dst_op.offset < 0) ||
@@ -176,6 +256,21 @@ int inline_trivial_functions(AsmNode *head) {
                         if (curr->next) curr->next->prev = debug_node;
                         curr->next = debug_node;
                     }
+                    valid_candidate = false;
+                    break;
+                }
+
+                // BUG FIX: reject [BP+0] and [BP+1] (offset < 2). Those
+                // slots are the callee's SAVED BP and RETURN ADDRESS --
+                // neither of which exists at the call site after the CALL
+                // is spliced away. The [BP+N] -> [SP+N-2] rewrite below
+                // only covers N >= 2 (real parameter slots), so a body
+                // touching [BP] / [BP+1] would read the CALLER's frame
+                // unrewritten.
+                if ((scan->dst_op.mode == MODE_INDIRECT && str_case_eq(scan->dst_op.reg, "BP") &&
+                     scan->dst_op.offset >= 0 && scan->dst_op.offset < 2) ||
+                    (scan->src_op.mode == MODE_INDIRECT && str_case_eq(scan->src_op.reg, "BP") &&
+                     scan->src_op.offset >= 0 && scan->src_op.offset < 2)) {
                     valid_candidate = false;
                     break;
                 }

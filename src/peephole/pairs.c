@@ -36,9 +36,7 @@ static bool blocks_push_pop_removal(AsmNode *node, const char *reg_name)
 // Patterns handled:
 //   - IEQ/INE followed by CIB on same register (CIB redundant)
 //   - BNOT x; BNOT x → remove both (double negation cancels)
-//   - NOT x; NOT x → remove both (double negation cancels)
-//   - ISGN x; ISGN x → remove both (sign flip twice = identity)
-//   - NEG x; NEG x → remove both (negate twice = identity)
+//   - ISGN x; ISGN x → remove both (sign of a sign is a fixed point)
 //   - XOR r1, r2; XOR r1, r2 → remove both (XOR twice = identity)
 //   - PUSH r; POP r → remove both (no net stack effect)
 //
@@ -96,19 +94,33 @@ int peephole_pairs(AsmNode *head)
 
         // ----------------------------------------------------------------
         // PATTERN: Self-Inverting Pairs (Involutions)
-        // Identical consecutive operations that cancel each other out
+        // Identical consecutive operations that cancel each other out.
+        //
+        // BNOT (bitwise NOT) and ISGN (sign: output is always -1/0/1, a
+        // fixed point of ISGN) are true involutions.
+        //
+        // BUG FIX: NOT (logical NOT: 0 -> 1, anything else -> 0) was
+        // removed from this list -- "NOT r; NOT r" is NOT an identity for
+        // non-boolean r: it computes CIB(r) (0/1), not r (e.g. r=5 stays 5
+        // "optimized" instead of becoming 1). "NEG" was also dropped: it
+        // isn't a Vircon32 mnemonic at all.
         // ----------------------------------------------------------------
         if (str_case_eq(n1->mnemonic, "BNOT") ||
-            str_case_eq(n1->mnemonic, "ISGN") ||
-            str_case_eq(n1->mnemonic, "NEG")  ||
-            str_case_eq(n1->mnemonic, "NOT"))
+            str_case_eq(n1->mnemonic, "ISGN"))
         {
             AsmNode *next = skip_other_nodes(n1->next);
 
             if (next && str_case_eq(next->mnemonic, n1->mnemonic))
             {
-                char *reg1 = n1->has_dst ? n1->dst_op.reg : (n1->has_src ? n1->src_op.reg : NULL);
-                char *reg2 = next->has_dst ? next->dst_op.reg : (next->has_src ? next->src_op.reg : NULL);
+                // Register operands only: an indirect destination's
+                // ->reg is just the BASE register, so "BNOT [R1]" vs
+                // "BNOT [R1+2]" would textually match on "R1" while
+                // addressing different memory words (same bug class as
+                // the XOR fix below).
+                char *reg1 = (n1->has_dst && n1->dst_op.mode == MODE_REG) ? n1->dst_op.reg :
+                             ((n1->has_src && n1->src_op.mode == MODE_REG) ? n1->src_op.reg : NULL);
+                char *reg2 = (next->has_dst && next->dst_op.mode == MODE_REG) ? next->dst_op.reg :
+                             ((next->has_src && next->src_op.mode == MODE_REG) ? next->src_op.reg : NULL);
 
                 if (reg1 && reg2 && str_case_eq(reg1, reg2))
                 {
@@ -122,6 +134,11 @@ int peephole_pairs(AsmNode *head)
         // ----------------------------------------------------------------
         // BONUS PATTERN: Identical XOR Pairs
         // Toggling a register with the exact same value twice cancels out
+        //
+        // BUG FIX: register destinations only. An indirect destination
+        // ("XOR [R1], R2") was compared by base register NAME alone, so
+        // "XOR [R1], R2; XOR [R1+4], R2" matched and both were deleted --
+        // but they address DIFFERENT memory words.
         // ----------------------------------------------------------------
         if (str_case_eq(n1->mnemonic, "XOR"))
         {
@@ -129,7 +146,9 @@ int peephole_pairs(AsmNode *head)
 
             if (next && str_case_eq(next->mnemonic, "XOR"))
             {
-                if (n1->has_dst && next->has_dst && str_case_eq(n1->dst_op.reg, next->dst_op.reg))
+                if (n1->has_dst && next->has_dst &&
+                    n1->dst_op.mode == MODE_REG && next->dst_op.mode == MODE_REG &&
+                    str_case_eq(n1->dst_op.reg, next->dst_op.reg))
                 {
                     bool src_match = false;
 
@@ -137,8 +156,7 @@ int peephole_pairs(AsmNode *head)
                         if (str_case_eq(n1->src_op.reg, next->src_op.reg)) src_match = true;
                     }
                     else if (n1->src_op.mode == MODE_IMMEDIATE && next->src_op.mode == MODE_IMMEDIATE) {
-                        if (n1->src_op.offset == next->src_op.offset &&
-                            str_case_eq(n1->src_op.raw, next->src_op.raw)) src_match = true;
+                        if (str_case_eq(n1->src_op.raw, next->src_op.raw)) src_match = true;
                     }
 
                     if (src_match)

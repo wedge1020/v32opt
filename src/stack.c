@@ -12,25 +12,13 @@ bool is_reg_op(AsmNode *node, const char *reg_name) {
 }
 
 // ===================================================================
-// HELPER: Check if an instruction references the BP register
-// ===================================================================
-bool references_bp(AsmNode *node) {
-    if (!node) return false;
-
-    // Only flag DIRECT BP usage (register mode)
-    if (node->has_dst && node->dst_op.mode == MODE_REG) {
-        if (str_case_eq(node->dst_op.reg, "BP")) return true;
-    }
-    if (node->has_src && node->src_op.mode == MODE_REG) {
-        if (str_case_eq(node->src_op.reg, "BP")) return true;
-    }
-    // DO NOT flag [BP+N] - that's local variable access, not BP register usage
-    return false;
-}
-
-// ===================================================================
-// HELPER: Check if an instruction uses BP DIRECTLY (not [BP-N])
-// [BP-N] is local variable access - does NOT require BP register
+// HELPER: Check if an instruction references the BP register DIRECTLY
+// (register-mode operand), as opposed to [BP+N]/[BP-N] indirect access.
+//
+// NOTE: indirect [BP+N]/[BP-N] operands DO depend on BP pointing at this
+// function's frame -- they just aren't flagged HERE because the frame
+// elimination pass checks them separately (see omit_frame_pointers).
+// This helper answers only "is BP itself an operand?".
 // ===================================================================
 bool references_bp_direct(AsmNode *node) {
     if (!node) return false;
@@ -45,7 +33,6 @@ bool references_bp_direct(AsmNode *node) {
         if (str_case_eq(node->src_op.reg, "BP")) return true;
     }
 
-    // DO NOT flag [BP+N] - that's local variable access, not BP itself
     return false;
 }
 
@@ -155,19 +142,57 @@ int omit_frame_pointers(AsmNode *head)
                             continue;
                         }
 
-                        // 🔥 Check for BP usage (direct or indirect with non-negative offset)
+                        // Check for BP usage: ANY BP-based reference --
+                        // direct register use, or an indirect operand with
+                        // ANY offset.
+                        //
+                        // BUG FIX: this used to flag only [BP+N] with
+                        // offset >= 0, on the theory that "[BP-N] is local
+                        // variable access, not BP register usage". That is
+                        // backwards: [BP-N] is BP-RELATIVE addressing -- it
+                        // needs BP to point at this function's frame just
+                        // as much as [BP+N] does. A function whose locals
+                        // live at [BP-N] (and that allocates them without
+                        // touching SP, e.g. red-zone style) had its frame
+                        // stripped, silently redirecting every local access
+                        // into the CALLER's frame. All indirect BP
+                        // references now block elimination.
                         bool bp_used = references_bp_direct(scan) ||
                                       (scan->has_dst && scan->dst_op.mode == MODE_INDIRECT &&
-                                       str_case_eq(scan->dst_op.reg, "BP") && scan->dst_op.offset >= 0) ||
+                                       str_case_eq(scan->dst_op.reg, "BP")) ||
                                       (scan->has_src && scan->src_op.mode == MODE_INDIRECT &&
-                                       str_case_eq(scan->src_op.reg, "BP") && scan->src_op.offset >= 0);
+                                       str_case_eq(scan->src_op.reg, "BP"));
 
-                        // 🔥 Check for SP usage (direct modification or indirect)
-                        bool sp_used = modifies_register(scan, "SP") ||
-                                      (scan->has_dst && scan->dst_op.mode == MODE_INDIRECT &&
-                                       str_case_eq(scan->dst_op.reg, "SP")) ||
-                                      (scan->has_src && scan->src_op.mode == MODE_INDIRECT &&
-                                       str_case_eq(scan->src_op.reg, "SP"));
+                        // Check for SP usage. BUG FIX (two holes):
+                        // 1. This used to be just modifies_register(scan,
+                        //    "SP"), which MISSED "MOV R1, SP" (reading SP
+                        //    is not modifying it) -- yet without the
+                        //    prologue SP sits 2 words higher, so a body
+                        //    that reads SP observes a different value.
+                        //    Any SP reference (read or write, direct or
+                        //    indirect) now blocks elimination.
+                        // 2. CALL is deliberately EXEMPT here (unlike the
+                        //    memory-traffic passes): the hardware
+                        //    push/pop of the return address is net-zero
+                        //    across the call, and both supported
+                        //    compilers keep SP net-zero across calls
+                        //    (v32lua cleans arguments in the caller, the
+                        //    v32 C compiler stages them with stores
+                        //    instead of pushes), so a body with no other
+                        //    SP/BP reference is unaffected by the call's
+                        //    temporary SP movement. An unbalanced callee
+                        //    would corrupt its own RET with or without
+                        //    this epilogue.
+                        bool sp_used =
+                            scan->type == OP_PUSH || scan->type == OP_POP ||
+                            (scan->has_dst && scan->dst_op.mode == MODE_REG &&
+                             str_case_eq(scan->dst_op.reg, "SP")) ||
+                            (scan->has_src && scan->src_op.mode == MODE_REG &&
+                             str_case_eq(scan->src_op.reg, "SP")) ||
+                            (scan->has_dst && scan->dst_op.mode == MODE_INDIRECT &&
+                             str_case_eq(scan->dst_op.reg, "SP")) ||
+                            (scan->has_src && scan->src_op.mode == MODE_INDIRECT &&
+                             str_case_eq(scan->src_op.reg, "SP"));
 
                         if (bp_used || sp_used) {
                             frame_used_in_body = true;

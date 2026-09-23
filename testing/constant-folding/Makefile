@@ -65,13 +65,7 @@ $(TEST)Opt.v32: $(TEST)Opt.vbin
 	@$(PACKER) $(TEST)Opt.xml -o $(TEST)Opt.v32 && echo "OK" || echo "FAIL"
 
 report: $(TEST).v32 $(TEST)Opt.v32
-	@echo "---file size comparison-------------"
-	@stat -c '%20n: %8s bytes' $(TEST).asm $(TEST)Opt.asm
-	@echo "------------------------------------"
-	@echo
-	#@echo "---code differences-----------------"
-	#@diff $(TEST).asm $(TEST)Opt.asm
-	#@echo "------------------------------------"
+	@../run_test.sh $(TEST)
 
 # --- Clean Up ---
 clean:

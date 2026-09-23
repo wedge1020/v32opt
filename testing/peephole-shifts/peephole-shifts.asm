@@ -37,14 +37,14 @@ __function_test_shl_by_one:
     RET
 
 ; ===================================================================
-; ✅ SECTION 3: Opposite Shifts Cancel Out
+; ❌ SECTION 3: Opposite Shifts (must KEEP -- not an identity)
 ; ===================================================================
 
 __function_test_shl_cancel:
     PUSH BP
     MOV BP, SP
-    SHL R1, 5          ; MATCH(5) Should be removed
-    SHL R1, -5         ; MATCH(6) Should be removed
+    SHL R1, 5          ; KEEP(5) NOT removable: (x<<5)>>5 loses the top 5 bits
+    SHL R1, -5         ; KEEP(6) NOT removable: opposite shifts do not cancel
     MOV SP, BP
     POP BP
     RET
@@ -52,21 +52,21 @@ __function_test_shl_cancel:
 __function_test_shl_cancel_sequence:
     PUSH BP
     MOV BP, SP
-    SHL R1, 2          ; MATCH(7) Should be removed
-    SHL R1, -2         ; MATCH(8) Should be removed
+    SHL R1, 2          ; KEEP(7) NOT removable: (x<<2)>>2 loses the top 2 bits
+    SHL R1, -2         ; KEEP(8) NOT removable: opposite shifts do not cancel
     SHL R1, 1          ; MATCH(9) Should become: IADD R1, R1
     MOV SP, BP
     POP BP
     RET
 
 ; ===================================================================
-; ✅ SECTION 4: SHL with Same Source and Destination
+; ❌ SECTION 4: SHL with Same Source and Destination (must KEEP)
 ; ===================================================================
 
 __function_test_shl_same_reg:
     PUSH BP
     MOV BP, SP
-    SHL R1, R1         ; MATCH(10) Should be removed
+    SHL R1, R1         ; KEEP(10) NOT a no-op: shifts R1 by R1's own value
     MOV SP, BP
     POP BP
     RET
@@ -146,9 +146,9 @@ __function_test_shifts_combined:
     MOV BP, SP
     SHL R1, 0          ; MATCH(11) Should be removed
     SHL R2, 1          ; MATCH(12) Should become: IADD R2, R2
-    SHL R3, R3        ; MATCH(13) Should be removed
+    SHL R3, R3        ; KEEP(13) NOT a no-op: shifts R3 by R3's own value
     SHL R4, 3          ; KEEP(13) No optimization
-    SHL R4, -3         ; MATCH(14) Should be removed
+    SHL R4, -3         ; KEEP(14) NOT removable: opposite shifts do not cancel
     MOV SP, BP
     POP BP
     RET
@@ -159,7 +159,7 @@ __function_test_shifts_mixed:
     SHL R1, 0          ; MATCH(15) Should be removed
     IADD R2, 5         ; KEEP(14) Not a shift
     SHL R3, 1          ; MATCH(16) Should become: IADD R3, R3
-    SHL R4, R4        ; MATCH(17) Should be removed
+    SHL R4, R4        ; KEEP(17) NOT a no-op: shifts R4 by R4's own value
     MOV SP, BP
     POP BP
     RET

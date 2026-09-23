@@ -218,8 +218,8 @@ __function_complex:
 |------|----------------|--------|
 | Scenario 1 | All frame instructions commented out | Simple case |
 | Scenario 2 | All frame instructions commented out | Return label handled |
-| Scenario 3 | All frame instructions commented out | Local vars don't use BP register |
-| Scenario 4 | All frame instructions commented out | Multiple local vars |
+| Scenario 3 | **Unchanged** | [BP-N] is BP-relative addressing -- frame required |
+| Scenario 4 | **Unchanged** | Multiple local vars at [BP-N] -- frame required |
 | Scenario 5 | **Unchanged** | Direct BP usage |
 | Scenario 6 | **Unchanged** | BP in arithmetic |
 | Scenario 7 | **Unchanged** | BP in indirect addressing |

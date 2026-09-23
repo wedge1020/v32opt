@@ -70,7 +70,10 @@ int peephole_immediate_prop(AsmNode *head)
                         continue;
                     }
 
-                    // Check for foldable ALU instruction first (before modifies_register check)
+                    // Check for foldable ALU instruction first (before
+                    // the read/modifies checks below: the ALU target itself
+                    // reads def_reg read-modify-write style, which is fine
+                    // -- it is the consumer being folded away).
                     if ((scan->type == OP_IADD || scan->type == OP_ISUB || scan->type == OP_IMUL) &&
                         scan->dst_op.mode == MODE_REG && str_case_eq(scan->dst_op.reg, def_reg) &&
                         is_numeric_immediate(&scan->src_op) && !scan->src_op.is_float)
@@ -102,6 +105,26 @@ int peephole_immediate_prop(AsmNode *head)
                             optimizations++;
                             folded = true;
                         }
+                        break;
+                    }
+
+                    // -------------------------------------------------------
+                    // BUG FIX: stop at conditional branches and at READS of
+                    // def_reg. The MOV being rewritten executes BEFORE this
+                    // scan point on EVERY path that reaches it -- including
+                    // the branch-taken side of a JT/JF -- so folding across
+                    // a branch, or across an intervening instruction that
+                    // observes def_reg's pre-ALU value (e.g. "MOV R2, R1"
+                    // or "PUSH R1"), changes values other code can see.
+                    // Reproduction: "MOV R1,10 / MOV R2,R1 / IADD R1,5"
+                    // used to fold to "MOV R1,15 / MOV R2,R1", giving R2
+                    // 15 instead of 10; same corruption on the taken side
+                    // of a "JT Rx,label" sitting between the MOV and ALU.
+                    // -------------------------------------------------------
+                    if (scan->type == OP_JT || scan->type == OP_JF) {
+                        break;
+                    }
+                    if (is_register_read(scan, def_reg)) {
                         break;
                     }
 

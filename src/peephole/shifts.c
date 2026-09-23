@@ -3,19 +3,25 @@
 // ===================================================================
 // PEEPHOLE: Shift Optimizations
 // Optimizes SHL (shift left) instructions on Vircon32:
+//   - On Vircon32, SHL with positive value shifts LEFT
 //   - On Vircon32, SHL with negative value shifts RIGHT
-//   - SHL with positive value shifts LEFT
 //   - Removing SHL by 0 (no-op)
 //   - Replacing SHL by 1 with IADD r, r (cost-neutral on Vircon32)
-//   - Removing consecutive opposite shifts that cancel out (SHL r, N; SHL r, -N)
-//   - Removing shifts with same src and dst register
 //
 // Examples:
 //   SHL R1, 0     ->  (removed)
 //   SHL R1, 1     ->  IADD R1, R1
 //   SHL R1, 8     ->  (kept, no simpler form)
 //   SHL R1, -1    ->  (kept, shift right by 1)
-//   SHL R1, 4; SHL R1, -4  ->  (both removed, cancel out)
+//
+// DELIBERATELY NOT DONE (both removed as unsound):
+//   - "SHL r,N; SHL r,-N" cancel-pair removal: NOT an identity. Bits
+//     shifted out of the word are gone, so (x << N) >> N != x in general
+//     (e.g. x = 0x80000000, N = 4: original ends at 0, the "optimized"
+//     version keeps 0x80000000). Only valid with a proven-zero top bits,
+//     which no pass here tracks.
+//   - "SHL r,r" (dst == src register) removal: not a no-op -- it shifts
+//     r by r's own value (e.g. R1=2 -> R1 = 2<<2 = 8, not 2).
 // ===================================================================
 
 int peephole_shifts(AsmNode *head)
@@ -52,36 +58,6 @@ int peephole_shifts(AsmNode *head)
                      curr->dst_op.raw, curr->src_op.raw);
             optimizations++;
             curr = next;
-            continue;
-        }
-
-        if (curr->type == OP_SHL)
-        {
-            AsmNode *next_real = skip_other_nodes(curr->next);
-
-            if (next_real && next_real->type == OP_SHL)
-            {
-                // Guard BOTH nodes with is_numeric_immediate
-                if (curr->dst_op.mode == MODE_REG && next_real->dst_op.mode == MODE_REG &&
-                    str_case_eq(curr->dst_op.reg, next_real->dst_op.reg) &&
-                    is_numeric_immediate(&curr->src_op) && is_numeric_immediate(&next_real->src_op) &&
-                    !curr->src_op.is_float && !next_real->src_op.is_float &&
-                    curr->src_op.immediate == -next_real->src_op.immediate &&
-                    curr->src_op.immediate != 0)
-                {
-                    AsmNode *nodes[] = {curr, next_real};
-                    if (remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_SHIFTS)) optimizations += 2;
-                    continue;
-                }
-            }
-        }
-
-        if (curr->type == OP_SHL &&
-            curr->dst_op.mode == MODE_REG && curr->src_op.mode == MODE_REG &&
-            str_case_eq(curr->dst_op.reg, curr->src_op.reg))
-        {
-            AsmNode *nodes[] = {curr};
-            if (remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_SHIFTS)) optimizations++;
             continue;
         }
 

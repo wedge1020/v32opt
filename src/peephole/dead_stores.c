@@ -94,11 +94,23 @@ int peephole_dead_stores(AsmNode *head)
                     char *mem_reg = curr->dst_op.reg;
                     int mem_off   = curr->dst_op.offset;
 
-                    // Did we find an EXACT overwrite of the tracked memory address?
+                    // Did we find an EXACT overwrite of the tracked memory
+                    // address? BUG FIX: only a pure "MOV [loc], x" store
+                    // qualifies. Any OTHER instruction with the same
+                    // indirect destination -- read-modify-write ALU ops
+                    // like "IADD [BP-4], 1" (which READ the old value to
+                    // compute the new one), "PUSH [loc]" (which reads it) --
+                    // must be treated as a clobber instead, or the store
+                    // being proven dead is exactly the value they read.
+                    // Reproduction: "MOV [BP-4], R1 / IADD [BP-4], 1" used
+                    // to have its MOV deleted, leaving the IADD reading
+                    // garbage.
                     if (scan->has_dst && scan->dst_op.mode == MODE_INDIRECT &&
                         str_case_eq(scan->dst_op.reg, mem_reg) && scan->dst_op.offset == mem_off)
                     {
-                        is_dead = true;
+                        if (scan->type == OP_MOV) {
+                            is_dead = true;
+                        }
                         break;
                     }
 
@@ -128,6 +140,13 @@ int peephole_dead_stores(AsmNode *head)
 
                     // D. Broad Memory Modifiers
                     if (scan->type == OP_PUSH || scan->type == OP_POP || scan->type == OP_CALL) {
+                        clobbers = true;
+                    }
+                    // BUG FIX: MOVS/SETS write memory at a dynamically computed
+                    // address (and CMPS reads it) -- they were invisible to
+                    // this scan, so a dynamic write between the store and its
+                    // overwrite could alias the tracked slot.
+                    if (scan->type == OP_MOVS || scan->type == OP_SETS || scan->type == OP_CMPS) {
                         clobbers = true;
                     }
 

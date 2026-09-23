@@ -228,8 +228,8 @@ __function_test_complex:
 __function_test_fp_cancel:
     PUSH BP
     MOV BP, SP
-    FADD R1, 2.5        ; MATCH(33)
-    FSUB R1, 2.5        ; MATCH(34) - Both removed (cancels to 0)
+    FADD R1, 2.5        ; KEEP(33) float math is not associative -- never combined
+    FSUB R1, 2.5        ; KEEP(34) (x+2.5)-2.5 != x in float32 -- never removed
     MOV SP, BP
     POP BP
     RET
@@ -238,8 +238,8 @@ __function_test_fp_cancel:
 __function_test_fp_combine:
     PUSH BP
     MOV BP, SP
-    FADD R1, 1.5        ; MATCH(35)
-    FADD R1, 2.5        ; MATCH(36) → FADD R1, 4.0
+    FADD R1, 1.5        ; KEEP(35) float math is not associative -- never combined
+    FADD R1, 2.5        ; KEEP(36) float math is not associative -- never combined
     MOV SP, BP
     POP BP
     RET
@@ -248,8 +248,8 @@ __function_test_fp_combine:
 __function_test_fp_negative:
     PUSH BP
     MOV BP, SP
-    FADD R1, 3.0        ; MATCH(37)
-    FSUB R1, 5.0        ; MATCH(38) → FSUB R1, 2.0
+    FADD R1, 3.0        ; KEEP(37) float math is not associative -- never combined
+    FSUB R1, 5.0        ; KEEP(38) float math is not associative -- never combined
     MOV SP, BP
     POP BP
     RET

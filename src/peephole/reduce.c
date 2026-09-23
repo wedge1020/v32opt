@@ -13,12 +13,20 @@
 //   - IMUL R, 1 → REMOVE (saves 2 words)
 //   - IMUL R, 2 → IADD R, R (saves 1 word: IMUL+imm → IADD)
 //   - IDIV R, 1 → REMOVE (saves 2 words)
-//   - FMUL R, 0.0 → MOV R, 0.0 (floating-point)
-//   - FMUL R, 1.0 → REMOVE (floating-point)
+//   - FMUL R, 1.0 / FDIV R, 1.0 → REMOVE (exact float identities)
 // //
 // Guards:
 //   - Register operands: IMUL R1, R2 → KEEP (not a constant)
 //   - Non-reducible: IMUL R1, 3 → KEEP
+//
+// FLOAT NOTE: "FMUL R, 0.0 → MOV R, 0.0" is deliberately NOT done:
+// for x = ±Inf or NaN, x * 0.0 is NaN, not 0.0 (and -x * 0.0 = -0.0),
+// so the rewrite is not an identity. x * 1.0 and x / 1.0 ARE exact
+// for every x (the only theoretical caveat, signaling-NaN quieting,
+// does not observable-trap on this CPU), so those two remain.
+// The float branches here used to be unreachable dead code --
+// is_numeric_immediate() rejects every is_float operand -- which is
+// why -fpeephole-reduce never touched FMUL/FDIV before.
 // ===================================================================
 
 // Helper: Check if operand is a numeric immediate (not a label)
@@ -26,6 +34,13 @@ static bool is_numeric_immediate_only(Operand *op) {
     if (!is_numeric_immediate(op)) return false;
     if (op->raw[0] == '_') return false; // Label
     return true;
+}
+
+// Helper: Check if operand is a FLOAT immediate (parsed numeric with a
+// decimal point). Symbolic operands never get is_float set by
+// parse_operand(), so no extra label check is needed here.
+static bool is_float_immediate(Operand *op) {
+    return op->mode == MODE_IMMEDIATE && op->is_float;
 }
 
 int peephole_reduce(AsmNode *head) {
@@ -98,35 +113,26 @@ int peephole_reduce(AsmNode *head) {
             }
         }
 
-        // --- FLOATING-POINT MULTIPLICATION ---
+        // --- FLOATING-POINT MULTIPLICATION (exact identity only) ---
         if (curr->type == OP_FMUL && curr->dst_op.mode == MODE_REG &&
             curr->src_op.mode == MODE_IMMEDIATE &&
-            curr->src_op.is_float &&
-            is_numeric_immediate_only(&curr->src_op)) {
-            
+            is_float_immediate(&curr->src_op)) {
+
             float imm = curr->src_op.float_value;
 
-            if (imm == 0.0f && trigger_allowed()) {
-                insert_debug_comment(curr->prev, OPT_PEEPHOLE_REDUCE, curr->raw);
-                curr->type = OP_MOV;
-                strcpy(curr->mnemonic, "MOV");
-                curr->src_op.float_value = 0.0f;
-                snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "0.0");
-                snprintf(curr->raw, sizeof(curr->raw), "    MOV %s, 0.0", curr->dst_op.raw);
-                optimizations++;
-            } else if (imm == 1.0f) {
+            if (imm == 1.0f) {
                 AsmNode *nodes[] = {curr};
                 if (remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_REDUCE)) optimizations++;
                 continue;
             }
+            // NOTE: imm == 0.0f intentionally not rewritten (see header).
         }
 
-        // --- FLOATING-POINT DIVISION ---
+        // --- FLOATING-POINT DIVISION (exact identity only) ---
         if (curr->type == OP_FDIV && curr->dst_op.mode == MODE_REG &&
             curr->src_op.mode == MODE_IMMEDIATE &&
-            curr->src_op.is_float &&
-            is_numeric_immediate_only(&curr->src_op)) {
-            
+            is_float_immediate(&curr->src_op)) {
+
             float imm = curr->src_op.float_value;
             if (imm == 1.0f) {
                 AsmNode *nodes[] = {curr};

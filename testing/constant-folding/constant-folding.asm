@@ -43,17 +43,17 @@ __function_arith_prop:
     RET
 
 ; ===================================================================
-; ✅ SCENARIO 4: Conditional Branch Propagation
+; ✅ SCENARIO 4: Conditional Branch Propagation (label renamed: _skip is a reserved word)
 ; Constants propagate through JT/JF
 ; ===================================================================
 __function_branch_prop:
     PUSH BP
     MOV BP, SP
     MOV R1, 1
-    JT R1, skip        ; R1=1, so this jumps
+    JT R1, _skip        ; R1=1, so this jumps
     MOV R1, 0
-skip:
-    MOV R2, R1          ; Should become: MOV R2, 0x1 (R1=1 at skip)
+_skip:
+    MOV R2, R1          ; Should become: MOV R2, 0x1 (R1=1 at _skip)
     MOV SP, BP
     POP BP
     RET
@@ -80,8 +80,8 @@ __function_call_invalidate:
     PUSH BP
     MOV BP, SP
     MOV R1, 42
-    CALL some_function  ; R1 becomes VAL_BOTTOM
-    MOV R2, R1          ; Should NOT be folded (R1 unknown after CALL)
+    CALL _some_function  ; KEEP (R1 becomes VAL_BOTTOM)
+    MOV R2, R1          ; KEEP (must NOT be folded: R1 unknown after CALL)
     MOV SP, BP
     POP BP
     RET
@@ -93,8 +93,8 @@ __function_across_blocks:
     PUSH BP
     MOV BP, SP
     MOV R1, 100
-    JMP block2
-block2:
+    JMP _block2
+_block2:
     MOV R2, R1          ; Should become: MOV R2, 0x64
     MOV SP, BP
     POP BP
@@ -191,4 +191,10 @@ __function_mixed:
     MOV R4, R2          ; Should NOT be folded
     MOV SP, BP
     POP BP
+    RET
+
+; ===================================================================
+; Callee stub referenced by SCENARIO 6 (must exist for the assembler)
+; ===================================================================
+_some_function:
     RET

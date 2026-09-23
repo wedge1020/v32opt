@@ -104,6 +104,16 @@ bool modifies_register(AsmNode *node, const char *reg_name)
         if (str_case_eq(reg_name, "SP") || str_case_eq(reg_name, "R15")) return true;
     }
 
+    // BUG FIX: CALL and RET also move SP -- the hardware pushes/pops the
+    // return address -- even though neither names SP as an operand. Any
+    // pass that asks "does this instruction change SP?" across a CALL or
+    // RET was being told "no", which let SP-relative memory reasoning
+    // (e.g. forwarding a store to [SP+k] across a call) silently span a
+    // stack movement. Model them like PUSH/POP for SP/R15.
+    if (node->type == OP_CALL || node->type == OP_RET) {
+        if (str_case_eq(reg_name, "SP") || str_case_eq(reg_name, "R15")) return true;
+    }
+
     if (str_case_eq(node->mnemonic, "CALL")) {
         int idx = get_reg_index(reg_name);
         if (idx >= 0 && idx <= 13) return true;

@@ -31,34 +31,34 @@ __function_with_return_label_return:
     RET
 
 ; ===================================================================
-; ✅ SCENARIO 3: Local Variables (SHOULD ELIMINATE)
-; Uses [BP-N] but not BP register directly
+; ❌ SCENARIO 3: Local Variables (MUST NOT ELIMINATE)
+; [BP-N] is BP-relative addressing -- it needs the frame
 ; ===================================================================
 __function_local_vars:
-    PUSH BP ; MATCH(9)
-    MOV BP, SP ; MATCH(10)
+    PUSH BP ; KEEP(9) (frame needed: [BP-N] is BP-relative)
+    MOV BP, SP ; KEEP(10) (frame needed: [BP-N] is BP-relative)
     MOV [BP-4], R1
     MOV R2, [BP-4]
     MOV [BP-8], R3
     MOV R4, [BP-8]
-    MOV SP, BP ; MATCH(11)
-    POP BP ; MATCH(12)
+    MOV SP, BP ; KEEP(11) (frame needed: [BP-N] is BP-relative)
+    POP BP ; KEEP(12) (frame needed: [BP-N] is BP-relative)
     RET
 
 ; ===================================================================
-; ✅ SCENARIO 4: Multiple Local Variables (SHOULD ELIMINATE)
+; ❌ SCENARIO 4: Multiple Local Variables (MUST NOT ELIMINATE)
 ; ===================================================================
 __function_many_locals:
-    PUSH BP ; MATCH(13)
-    MOV BP, SP ; MATCH(14)
+    PUSH BP ; KEEP(13) (frame needed: [BP-N] is BP-relative)
+    MOV BP, SP ; KEEP(14) (frame needed: [BP-N] is BP-relative)
     MOV [BP-4], R1
     MOV [BP-8], R2
     MOV [BP-12], R3
     MOV R4, [BP-4]
     MOV R5, [BP-8]
     MOV R6, [BP-12]
-    MOV SP, BP ; MATCH(15)
-    POP BP ; MATCH(16)
+    MOV SP, BP ; KEEP(15) (frame needed: [BP-N] is BP-relative)
+    POP BP ; KEEP(16) (frame needed: [BP-N] is BP-relative)
     RET
 
 ; ===================================================================

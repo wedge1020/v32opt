@@ -1,0 +1,571 @@
+.TH V32OPT 1 "September 2026" "v32opt 20260915-dev" "User Commands"
+.SH NAME
+v32opt \- optimize Vircon32 assembly code
+.SH SYNOPSIS
+.B v32opt
+.I input.asm
+.RB [ \-o
+.IR output.asm ]
+.RB [ \-O
+.IR 0 | 1 | 2 | 3 | s ]
+.RB [ \-v ]
+.RB [ \-d ]
+.RB [ \-t ]
+.RB [ \-L
+.IR c | lua ]
+.RB [ \-f name ]
+.RB [ \-fno\- name ]
+.RB [ \-\-dot
+.IR cfg.dot ]
+.RB [ \-\-trigger\-max= N ]
+.br
+.B v32opt
+.B \-\-version
+.br
+.B v32opt
+.B \-\-help
+.SH DESCRIPTION
+.B v32opt
+is a modular, multi-pass optimizer for assembly written for the
+.B Vircon32
+fantasy console. It accepts assembly produced by the Vircon32 C
+compiler,
+.BR v32lua (1),
+or your own hand-written assembly, as well as assembly recovered
+from an already-packed CART with the Vircon32
+.B DevTools
+.IR unpack /
+.I disassemble
+commands, and rewrites it to be smaller and, where it can be,
+cheaper to execute. It is meant to sit
+.I between
+a compiler and the assembler in an ordinary Vircon32 build chain:
+.B v32opt
+reads one
+.I .asm
+file and writes another; it never invokes the assembler,
+.BR packrom (1),
+or any other tool itself.
+.PP
+Optimization is organized as a fixed-point iteration of local
+.I "peephole"
+passes over a sliding window of instructions, followed (at
+.B \-O2
+and above) by whole-program control-flow-graph analysis, and (at
+.B \-O3 )
+by interprocedural function inlining. Passes may be enabled,
+disabled, and capped individually, both for tuning how aggressive
+the optimizer is and for isolating a pass that breaks a particular
+program (see
+.BR \-\-trigger\-max ,
+below).
+.PP
+A note on Vircon32 architecture, and why so much of this tool aims
+at code
+.IR size :
+on the Vircon32 CPU every instruction executes in exactly 1 cycle,
+and there are no instruction-reactive CPU flags (Carry, Zero,
+Overflow) \(em destructive comparisons such as
+.B IEQ
+/ \fBINE\fP directly deposit \(dq1\(dq or \(dq0\(dq in the
+destination register, which conditional jumps
+.RB ( JT / JF )
+test directly. Consequently most algebraic simplifications are
+cycle-neutral;
+.B v32opt
+applies them anyway to shrink the binary, reduce register
+pressure, eliminate memory traffic, and keep the emitted assembly
+idiomatic.
+.PP
+Unless
+.B \-v
+or
+.B \-t
+is given,
+.B v32opt
+produces no output at all on success. The optimized assembly is
+written to
+.IR output.asm ,
+or, when
+.B \-o
+is not given, to the input's own name with its extension (if any)
+replaced by
+.IR Opt.asm ,
+so
+.I game.asm
+becomes
+.IR gameOpt.asm .
+The input file is never modified in place.
+.PP
+The recommended invocation order places the input file first, as
+shown above (the usage banner does the same). This always works;
+some C libraries additionally accept options after the file name,
+but that is not portable, so don't rely on it.
+.SH OPTIONS
+.TP
+.BI \-o " output.asm"
+Write the optimized assembly to
+.IR output.asm
+instead of the default
+.IR <input>Opt.asm .
+.TP
+.BI \-O " level"
+Select a preset optimization level:
+.RS
+.TP
+.B \-O0
+No optimization at all (the default).
+.TP
+.B \-O1
+All thirteen local peephole passes (see
+.BR "OPTIMIZATION LEVELS" ,
+below).
+.TP
+.B \-O2
+.B \-O1
+plus common-subexpression elimination, dead-function elimination,
+global constant propagation and folding over the control-flow
+graph, and frame-pointer elimination in functions that never touch
+.B BP
+(directly or through
+.BR [BP\[+-]N] ).
+.TP
+.B \-O3
+.B \-O2
+plus trivial leaf-function inlining. The most aggressive tier:
+sweeping structural changes, with the highest chance of breaking a
+program.
+.TP
+.B \-Os
+Currently identical to
+.B \-O3
+(a placeholder for a dedicated size-focused tier).
+.RE
+.TP
+.BR \-v ", " \-\-verbose
+Report the enabled passes up front, then per-iteration statistics
+(pass name and hit count) as the fixed-point loop runs, and a
+final total.
+.TP
+.B \-d
+Mark every optimization directly in the output file: each removed
+instruction is reproduced as a
+.RS
+.IP
+.nf
+; [DEBUG <pass>] <original instruction>
+.fi
+.RE
+.IP
+comment at its original position, and each rewritten instruction
+is preceded by its original text. Combine with
+.B \-\-trigger\-max
+to identify exactly which transformation a bisection lands on.
+Unrelated to compiler-style
+.B \-g
+debug info.
+.TP
+.B \-t
+Testing mode: machine-readable summary of the run. Prints one
+.I pass:count
+line per pass that changed something, then
+.IR total : N .
+.TP
+.BR \-L " mode" ", " \-\-langmode " mode"
+Language mode, \(dqc\(dq (the default) or \(dqlua\(dq. Lua mode
+makes passes that track values or eliminate \(dqduplicate\(dq
+computation aware of v32lua's NaN-boxed type system, so that
+BOXED_* tagging/untagging idioms are never folded, forwarded, or
+CSE'd away as ordinary arithmetic (see
+.BR "LUA MODE" ,
+below).
+.TP
+.BI \-\-dot " cfg.dot"
+Export the control-flow graph (basic blocks, their labels and
+instructions, and fall-through / jump / branch / call edges) in
+Graphviz DOT format. May be combined with any optimization level,
+or used alone. The export always reflects the FINAL optimized
+instruction list. Render with, e.g.,
+.B dot \-Tpng cfg.dot \-o cfg.png .
+.TP
+.BI \-f name " / " \-fno\- name
+Enable or disable a single pass by name, overriding the
+.B \-O
+preset. Recognized pass names:
+.RS
+.IP
+.nf
+peephole\-pairs, peephole\-algebra, peephole\-compiler\-myopia,
+peephole\-forwarding, peephole\-jumps, peephole\-movs,
+peephole\-immediates, peephole\-reduce, peephole\-shifts,
+peephole\-dead\-stores, peephole\-loads, peephole\-immediate\-prop,
+peephole\-jmp\-chain, cse, dce, constant\-folding,
+omit\-frame\-pointers, inline, promote\-regs, promote\-leaf,
+promote\-loops
+.fi
+.RE
+.IP
+The three promote-* passes are experimental and are not part of
+any
+.B \-O
+level; enable them explicitly. See
+.BR "OPTIMIZATION LEVELS" .
+.TP
+.BI \-finline\-max= N
+Cap the size of a function still considered inlinable, in body
+instructions. A function whose straight-line body is longer than
+.I N
+instructions is never inlined. The value is clamped to
+0..32 (the candidate-table capacity).
+.IR N ""
+defaults to 8.
+.TP
+.BI \-finline\-call\-limit= N
+Cap the total number of
+.B CALL
+sites inlined across the whole run to
+.I N
+(evaluated in file order); useful for bisecting an inlining
+miscompile. Negative (the default) means no limit.
+.TP
+.BI \-finline\-exclude= name1,name2,...
+Comma-separated list of function label names that must never be
+inlined.
+.TP
+.BI \-fmax\-passes= N
+Cap the iterative local-optimization loop at
+.I N
+fixed-point iterations (default 1000).
+.TP
+.BI \-\-trigger\-max= N
+Global transformation budget, shared by every pass and every
+fixed-point iteration: once a total of
+.I N
+transformations (deleted nodes, in-place rewrites, spliced
+loads/stores) have committed, every later candidate is left
+untouched, exactly as if it had never matched. Negative
+.I N
+(or omitting the flag) means unlimited. This is the primary tool
+for bisecting a miscompile: re-run with increasing
+.I N
+until the output breaks; the
+.IR N th
+transform applied, in program order across all passes, is the one
+to inspect, and
+.B \-d
+will name it in the output. The final
+.B \-v
+report states how many slots were used.
+.TP
+.BR \-\-version ", " \-V
+Print version, author, and project URL, and exit immediately.
+.TP
+.BR \-\-help ", " \-h
+Print a usage summary and exit.
+.SH OPTIMIZATION LEVELS
+.SS "\-O1: local peephole passes"
+Stateless, window-based passes that clean up redundant
+instruction sequences without structural analysis:
+.TP
+.I peephole\-pairs
+Removes adjacent instruction pairs that cancel (double
+.BR BNOT ,
+a
+.B CIB
+immediately following the destructive comparison that already
+produced a clean 0/1, register-preserving
+.BR PUSH / POP
+spans with nothing protective in between, identical XOR pairs).
+.TP
+.I peephole\-algebra
+Removes self-moves and identity arithmetic; strength-reduces
+multiplication by 2 into self-addition.
+.TP
+.I peephole\-compiler\-myopia
+Removes a reload of a value that was just stored from the same
+register to the same memory location.
+.TP
+.I peephole\-forwarding
+Replaces a load from memory with a register move when the value
+was just stored there from that register (read-modify-write
+memory ops, aliasing stores through other base registers, and
+MOVS/SETS all interrupt the match).
+.TP
+.I peephole\-jumps
+Removes jumps to the label that immediately follows, inverts
+branch-over-jump pairs
+.RB ( JF + JMP
+to
+.BR JT ),
+and eliminates code made unreachable by an unconditional jump
+(not for computed targets:
+.B "JMP R0"
+or
+.BR "JMP 0x1000" ).
+.TP
+.I peephole\-movs
+Removes duplicate and mirror
+.B MOV
+pairs (same source and destination twice, or two registers swapped
+back).
+.TP
+.I peephole\-immediates
+Combines consecutive immediate additions/subtractions on the same
+register into one; removes pairs that cancel (integers only \-
+floating-point addition is not associative).
+.TP
+.I peephole\-reduce
+Strength reduction: multiplication by 0/1/2, division by 1, and
+modulus by 1 for integers; the exact \(mu1.0 and \(de1.0 identities
+for floats (float \(mu0.0 is deliberately left alone: Inf/NaN
+times zero is NaN, not zero).
+.TP
+.I peephole\-shifts
+Removes no-op shifts and turns left-shift by 1 into
+self-addition.
+.TP
+.I peephole\-dead\-stores
+Removes stores to registers or memory that are overwritten before
+any possible read (only a pure
+.B MOV
+store counts as an overwriter; read-modify-write instructions
+read the old value and block the match).
+.TP
+.I peephole\-loads
+Replaces a second consecutive load from the same memory address
+with a register move from the first load's destination.
+.TP
+.I peephole\-immediate\-prop
+Folds a constant
+.B MOV
+into a following immediate arithmetic instruction on the same
+register, and merges sequential immediate arithmetic (never
+across a read of the register or a conditional branch).
+.TP
+.I peephole\-jmp\-chain
+Short-circuits jump indirection: a jump to a label that
+immediately begins another unconditional jump is retargeted to
+that jump's destination; the intermediate jump is removed only
+when nothing else can reach its label.
+.SS "\-O2: global analysis"
+.B \-O1
+plus:
+.TP
+.I cse
+Common-subexpression elimination within basic blocks: a repeated
+(register, operation, operand) computation is replaced by a move
+from the first result \em source operands must be unchanged
+between the two occurrences.
+.TP
+.I dce
+Dead-function elimination: reachability from the boot vector,
+entry points, interrupt handlers, and
+.I pointer
+directives; unreached functions are swept away.
+.TP
+.I constant\-folding
+Lattice-based constant propagation over the control-flow graph,
+folding known constants across jumps and invalidating
+conservatively around calls. Note this trades words for immediates
+(a folded
+.B "MOV Rd, const"
+occupies two words where the register form took one), so it can
+grow the assembled binary even as it shrinks the source \em its
+payoff is enabling further immediate-based peepholes.
+.TP
+.I omit\-frame\-pointers
+Strips the
+.BR "PUSH BP" / "MOV BP, SP"
+prologue and
+.BR "MOV SP, BP" / "POP BP"
+epilogue from functions whose bodies never reference
+.B BP
+at all \em directly
+.I or
+through
+.BR [BP\[+-]N] .
+Deliberately a
+.B \-O2
+(not
+.BR \-O1 )
+pass: it erases the frame chain that emulators and debuggers walk
+to produce backtraces, so
+.B \-O1
+stays debug-safe.
+.SS "\-O3: interprocedural"
+.B \-O2
+plus:
+.TP
+.I inline
+Trivial leaf-function inlining: short, branch-free, call-free
+function bodies are spliced directly into their call sites, with
+parameter accesses rewritten from the callee's
+.B [BP+N]
+frame to
+.B [SP+N\-2]
+at the call site (a frame-layout invariant: the callee's BP always
+sits two words below the caller's SP at the call). Candidate
+bodies may not touch SP or BP, and the spliced body runs with SP
+exactly where the
+.B CALL
+would have left it. Control its aggressiveness with
+.BR \-finline\-max ,
+.BR \-finline\-call\-limit ,
+and
+.BR \-finline\-exclude .
+.SS "Experimental (no \-O level)"
+The three memory-to-register promotion passes
+.RI ( promote\-regs ,
+.IR promote\-leaf ,
+.IR promote\-loops )
+rewrite frequently accessed
+.B [BP\-N]
+stack slots into unused general-purpose registers, injecting
+loads and flushes at region boundaries. They are not enabled by
+any preset level while undergoing testing; enable them only
+explicitly, and expect to have to bisect.
+.SH LUA MODE
+When optimizing
+.BR v32lua (1)
+output, pass
+.BR \-L lua .
+v32lua represents Lua values as IEEE-754 NaN-boxed words whose tag
+bits are manipulated with
+.I BOXED_*
+immediate operands (OR to box, AND to unbox, IADD to box a
+boolean). In C mode such instructions look like ordinary
+arithmetic on unknown constants; in Lua mode the value-tracking
+and duplicate-computation passes
+.RI ( cse ,
+.IR constant\-folding ,
+.I peephole\-algebra )
+recognize and protect the boxing idioms, and the algebra pass
+additionally drops the provably-dead \(dqis it Nil?\(dq half of
+the compiler's fixed six-instruction truthiness test after a
+boxed-boolean producer.
+.SH EXIT STATUS
+.TP
+.B 0
+The input was read and the optimized assembly written
+successfully.
+.TP
+.B 1
+No input file was given; an option was unrecognized or malformed;
+the input file could not be opened; or the requested optimization
+level or language mode does not exist.
+.SH EXAMPLES
+Optimize a compiler-emitted file at the safest level, writing
+.IR gameOpt.asm :
+.PP
+.RS
+.nf
+v32opt game.asm \-o gameOpt.asm \-O1
+.fi
+.RE
+.PP
+Full pipeline with per-pass statistics:
+.PP
+.RS
+.nf
+v32opt game.asm \-O2 \-v
+.fi
+.RE
+.PP
+Granular control: global analysis without inlining, but with the
+experimental loop promotion enabled:
+.PP
+.RS
+.nf
+v32opt game.asm \-O2 \-fno\-inline \-fpromote\-loops
+.fi
+.RE
+.PP
+Optimize v32lua output with boxed-type awareness:
+.PP
+.RS
+.nf
+v32lua \-o game.asm game.lua
+v32opt game.asm \-o gameOpt.asm \-O1 \-L lua
+.fi
+.RE
+.PP
+Bisect a miscompile: find the exact Nth transformation that
+breaks the program, then inspect the named culprit in the output:
+.PP
+.RS
+.nf
+v32opt game.asm \-o gameOpt.asm \-O3 \-\-trigger\-max=137 \-d
+.fi
+.RE
+.PP
+Export and render a control-flow graph of the optimized program:
+.PP
+.RS
+.nf
+v32opt game.asm \-O2 \-\-dot cfg.dot
+dot \-Tpng cfg.dot \-o cfg.png
+.fi
+.RE
+.SH FILES
+.TP
+.I *.asm
+Input: Vircon32 assembly, from a compiler, hand-written, or
+disassembled from a packed CART.
+.TP
+.IR <input> Opt.asm
+Default output: the optimized assembly, ready for the Vircon32
+assembler.
+.TP
+.IR *.dot
+Optional, with
+.BR \-\-dot :
+Graphviz control-flow-graph export.
+.PP
+Note for the CART build: your cartridge XML references the
+.I .vbin
+produced from the assembly, so after assembling
+.I gameOpt.asm
+either rename the resulting
+.I .vbin
+or point the XML at it.
+.SH SEE ALSO
+.BR v32lua (1),
+the Vircon32 DevTools documentation
+.RI ( compile ,
+.IR assemble ,
+.IR packrom ,
+and the
+.IR unpack / disassemble
+pair for recovering assembly from packed CARTs).
+.PP
+Project repository:
+.I https://github.com/wedge1020/v32opt
+.SH BUGS
+This is early, actively developed software. The window passes
+model read-modify-write memory instructions, aliasing stores, and
+the dynamic-memory MOVS/SETS operations, but some structural
+assumptions remain: unreachable-code elimination does not reason
+about computed jump targets
+.RB ( "JMP R0" / "JMP 0x1000" ),
+DCE's boundary heuristic can confuse a real function whose name
+ends in
+.BR _return ,
+and the experimental promote-* passes are still undergoing
+testing. Treat
+.B \-O3
+(and the promote-* passes) as genuinely risky, and even
+.BR \-O1 / \-O2
+output as something to verify by assembling, packing, and running
+both the original and optimized CARTs side by side. When a program
+breaks,
+.B \-\-trigger\-max
+plus
+.B \-d
+will isolate the exact offending transformation, and
+.B \-fno\-<name>
+will retire the offending pass.
+.PP
+Report issues, with the input assembly and the exact flags used,
+via the project repository above.
+.SH AUTHOR
+Matthew Haas

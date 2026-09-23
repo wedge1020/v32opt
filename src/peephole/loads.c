@@ -38,7 +38,25 @@ int peephole_loads(AsmNode *head) {
 
                 if (modifies_register(scan, base_reg)) break;
                 if (modifies_register(scan, dst_reg)) break;
-                if (scan->type == OP_MOV && scan->dst_op.mode == MODE_INDIRECT) break;
+                // -------------------------------------------------------
+                // BUG FIX: model every memory write, not just OP_MOV stores.
+                //   - Any indirect destination is a write, including
+                //     read-modify-write ALU ops ("IADD [R2+8], 1") which
+                //     used to pass unnoticed and could change the loaded
+                //     value between the two loads.
+                //   - Same (unmodified) base register + different offset
+                //     is provably a different address -> safe to scan past.
+                //   - Different base register may alias -> stop.
+                //   - MOVS/SETS write memory dynamically (CMPS reads it)
+                //     -> stop.
+                // -------------------------------------------------------
+                if (scan->type == OP_MOVS || scan->type == OP_SETS || scan->type == OP_CMPS) break;
+                if (scan->has_dst && scan->dst_op.mode == MODE_INDIRECT) {
+                    if (!str_case_eq(scan->dst_op.reg, base_reg) ||
+                        scan->dst_op.offset == offset) {
+                        break;
+                    }
+                }
                 if (scan->type == OP_CALL) break;
 
                 if (scan->type == OP_MOV && scan->dst_op.mode == MODE_REG &&

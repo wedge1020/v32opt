@@ -2,6 +2,9 @@
 ; TEST: inline - All Scenarios
 ; Run with: ./v32opt inline.asm -finline -v
 ; ===================================================================
+; CALL below sits BEFORE any label: must not be inlined
+CALL __early_func  ; KEEP (not inlined: before first label)
+
 
 ; ===================================================================
 ; ✅ SCENARIO 1: Basic Inlining (Single Instruction)
@@ -50,7 +53,18 @@ __complex:
     RET            ; KEEP
 
 __helper:
+    ; 9 body instructions: too large to inline by default (-finline-max=8),
+    ; which also prevents the "inline __helper into __complex, making
+    ; __complex leaf" cascade from defeating this scenario's purpose.
     IADD R1, 1     ; KEEP
+    IADD R2, 2     ; KEEP
+    IADD R3, 3     ; KEEP
+    IADD R4, 4     ; KEEP
+    IADD R5, 5     ; KEEP
+    IADD R6, 6     ; KEEP
+    IADD R7, 7     ; KEEP
+    IADD R8, 8     ; KEEP
+    IADD R9, 9     ; KEEP
     RET            ; KEEP
 
 ; ===================================================================
@@ -87,7 +101,10 @@ __local_user:
 ; ===================================================================
 ; ❌ SCENARIO 6: Inlining Before First Label (Skipped)
 ; ===================================================================
-CALL __early_func  ; KEEP (not inlined: before first label)
+; (the CALL itself was moved to the top of this file, above the first
+; label -- in its old spot, dozens of labels preceded it, so the
+; "before first label" guard was never involved and the call was
+; legitimately inlinable)
 
 %define global_var 42
 

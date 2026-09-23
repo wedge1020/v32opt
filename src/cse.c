@@ -40,6 +40,43 @@ static bool is_computable_expression(AsmNode *node) {
     return true;
 }
 
+// ---------------------------------------------------------------
+// BUG FIX helper: might 'node' change the VALUE that operand 'op'
+// currently holds? The original CSE only tracked the DESTINATION
+// register between the two matching expressions; the sources were
+// compared purely textually, so a source register that was modified
+// in between (or memory a source pointed at that was re-written)
+// still "matched", and the second computation was replaced with a
+// move of the now-stale first result.
+//
+// Reproduction:
+//     MOV R1, R4
+//     IADD R1, R6     ; R1 = old R4 + R6
+//     MOV R4, 99      ; <-- source A changed; not detected before
+//     MOV R3, R4
+//     IADD R3, R6     ; was replaced with "MOV R3, R1" (old R4+R6)
+//
+// Rules:
+//   - register operand: clobbered iff the node modifies that register
+//   - indirect operand: clobbered by ANY memory write (any indirect
+//     destination, MOVS/SETS dynamic writes, PUSH/POP/CALL stack
+//     traffic) -- we cannot prove non-aliasing through other bases
+//   - immediate/symbolic operand: never clobbered
+// ---------------------------------------------------------------
+static bool operand_value_clobbered(AsmNode *node, const Operand *op) {
+    if (!node || !op) return false;
+
+    if (op->mode == MODE_REG) {
+        return modifies_register(node, op->reg);
+    }
+    if (op->mode == MODE_INDIRECT) {
+        if (node->has_dst && node->dst_op.mode == MODE_INDIRECT) return true;
+        if (node->type == OP_MOVS || node->type == OP_SETS) return true;
+        if (node->type == OP_PUSH || node->type == OP_POP || node->type == OP_CALL) return true;
+    }
+    return false;
+}
+
 int opt_cse(AsmNode *head) {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;
@@ -64,6 +101,18 @@ int opt_cse(AsmNode *head) {
                     if (is_cf_boundary(scan)) break;
                     if (scan->type == OP_OTHER) { scan = scan->next; continue; }
                     if (modifies_register(scan, rx)) break;
+
+                    // BUG FIX: the sources of the tracked expression must
+                    // survive too. Rx's value at the replacement point is
+                    // "A op B" as computed by op_rx; the second occurrence
+                    // only computes the same thing if A's and B's VALUES
+                    // are unchanged between op_rx and op_ry. (Between the
+                    // candidate MOV and op_ry there can be nothing but
+                    // comments -- op_ry is the next non-OTHER node after
+                    // the candidate -- so checking every node up to and
+                    // including the candidate covers the whole window.)
+                    if (operand_value_clobbered(scan, &curr->src_op)) break;  // A
+                    if (operand_value_clobbered(scan, &op_rx->src_op)) break; // B
 
                     if (scan->type == OP_MOV && scan->dst_op.mode == MODE_REG) {
                         char *ry = scan->dst_op.reg;

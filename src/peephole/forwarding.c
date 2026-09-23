@@ -36,11 +36,40 @@ int peephole_forwarding(AsmNode *head) {
                     // Stop if memory base or source register is modified
                     if (modifies_register(scan, mem_reg) || modifies_register(scan, src_reg)) break;
 
-                    // Stop if we hit a store to the same memory location
-                    if (scan->type == OP_MOV && scan->dst_op.mode == MODE_INDIRECT &&
-                        str_case_eq(scan->dst_op.reg, mem_reg) && scan->dst_op.offset == mem_off) {
-                        break;
+                    // -------------------------------------------------------
+                    // BUG FIX: model EVERY kind of memory write, not just
+                    // "MOV [same base+same off], x":
+                    //   - Any instruction with an indirect destination is a
+                    //     memory write. That includes read-modify-write ALU
+                    //     ops like "IADD [R1+0], 5" (which used to slip
+                    //     through and left the forwarded register value
+                    //     stale by the RMW's delta) and PUSH [mem].
+                    //   - A write through the SAME base register (which the
+                    //     check above guarantees is unmodified) with a
+                    //     DIFFERENT constant offset provably targets a
+                    //     different address, so it is safe to scan past.
+                    //   - A write through a DIFFERENT base register may be
+                    //     the very same address (aliasing) -> stop.
+                    //   - MOVS/SETS write memory at a dynamically computed
+                    //     address (and CMPS reads it) -> stop.
+                    // -------------------------------------------------------
+                    if (scan->type == OP_MOVS || scan->type == OP_SETS || scan->type == OP_CMPS) break;
+                    if (scan->has_dst && scan->dst_op.mode == MODE_INDIRECT) {
+                        if (str_case_eq(scan->dst_op.reg, mem_reg) &&
+                            scan->dst_op.offset == mem_off) {
+                            break;   // exact overwrite of the tracked slot
+                        }
+                        if (!str_case_eq(scan->dst_op.reg, mem_reg)) {
+                            break;   // different base register: may alias
+                        }
+                        // else: same base, different offset -> provably a
+                        // different address; keep scanning.
                     }
+
+                    // A called function can write arbitrary memory through
+                    // pointers (tables, globals), so a store-to-load pair
+                    // may not be forwarded across a CALL.
+                    if (scan->type == OP_CALL) break;
 
                     // --- CASE 1: Register Load from Same Memory (Standard) ---
                     if (scan->type == OP_MOV && scan->dst_op.mode == MODE_REG &&

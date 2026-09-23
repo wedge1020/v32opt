@@ -40,7 +40,7 @@ __function_test_ieq_cib_multiple:
     RET
 
 ; ===================================================================
-; ❌ PATTERN 1 GUARD: IEQ/INE + CIB before JT/JF (MUST NOT REMOVE)
+; ✅ PATTERN 1: IEQ/INE + CIB before JT/JF (CIB redundant -- removed)
 ; ===================================================================
 
 ; --- IEQ + CIB before JT ---
@@ -48,7 +48,7 @@ __function_test_ieq_cib_jt:
     PUSH BP
     MOV BP, SP
     IEQ R1, R2
-    CIB R1     ; KEEP
+    CIB R1     ; MATCH (IEQ/INE already emit 0/1)
     JT R1, _target
 _target:
     MOV SP, BP
@@ -60,7 +60,7 @@ __function_test_ieq_cib_jf:
     PUSH BP
     MOV BP, SP
     IEQ R1, R2
-    CIB R1     ; KEEP
+    CIB R1     ; MATCH (IEQ/INE already emit 0/1)
     JF R1, _target2
 _target2:
     MOV SP, BP
@@ -72,7 +72,7 @@ __function_test_ine_cib_jt:
     PUSH BP
     MOV BP, SP
     INE R1, R2
-    CIB R1     ; KEEP
+    CIB R1     ; MATCH (IEQ/INE already emit 0/1)
     JT R1, _target3
 _target3:
     MOV SP, BP
@@ -107,8 +107,8 @@ __function_test_ineg_pair:
 __function_test_not_pair:
     PUSH BP
     MOV BP, SP
-    NOT R1    ; MATCH
-    NOT R1    ; MATCH
+    NOT R1    ; KEEP (NOT is no involution: NOT NOT x == 0/1, not x)
+    NOT R1    ; KEEP
     MOV SP, BP
     POP BP
     RET

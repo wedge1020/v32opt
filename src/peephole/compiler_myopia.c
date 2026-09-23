@@ -60,6 +60,10 @@ int peephole_compiler_myopia(AsmNode *head)
                 // Note: CALL writes to stack memory and potentially global memory
                 if (scan->has_dst && scan->dst_op.mode == MODE_INDIRECT) clobbers = true;
                 if (scan->type == OP_PUSH || scan->type == OP_CALL) clobbers = true;
+                // BUG FIX: MOVS/SETS write memory at a dynamically computed
+                // address (and CMPS reads it) -- invisible to the two checks
+                // above, yet fully capable of overwriting the tracked slot.
+                if (scan->type == OP_MOVS || scan->type == OP_SETS || scan->type == OP_CMPS) clobbers = true;
 
                 // If state is invalidated, abort the forward scan
                 if (clobbers) {

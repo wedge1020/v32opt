@@ -21,7 +21,7 @@ in action, and improve execution efficiency.
 
 This project and  this documentation - was built with  the help of AI:
 
-  * Google Gemini,  a mix of  its Thinking (3.6)  mid-tier model and  Pro (3.1)
+  * Google Gemini,  a mix of  its Thinking (3.6)  and  Pro (3.1) models
   * Mistral Vibe (Thinking)
   * Anthropic Claude Sonnet 5 (medium)
   * OpenCode Go (GLM 5.2)
@@ -45,7 +45,10 @@ This project and  this documentation - was built with  the help of AI:
 ## Build Instructions
 
 `v32opt` is written in  standard C and is designed to  be easily built on
-any platform using a modern C compiler (`gcc`, `clang`, or MSVC).
+any  platform using  a  modern  C compiler  (`gcc`  or `clang`).  Project
+headers live  in `inc/`  (split by concern:  `v32opt.h` is  the umbrella,
+with  `asm.h`,  `peephole.h`,  `dataflow.h`, `inline.h`,  `stack.h`,  and
+`promote.h` behind it); sources live in `src/` and `src/peephole/`.
 
 ### Using Make (Linux / macOS / MSYS2)
 
@@ -65,8 +68,8 @@ $ make clean
 
 ### Direct Compilation
 
-You can also compile the modular codebase directly using GCC or Clang
-(note that the  peephole  passes live in their own subdirectory, and the
+You can  also compile the  modular codebase  directly using GCC  or Clang
+(note that  the peephole passes live  in their own subdirectory,  and the
 math functions used by several passes need `-lm`):
 
 ```bash
@@ -79,8 +82,8 @@ $ gcc -O3 -Wall -Wextra src/*.c src/peephole/*.c -o v32opt -lm
 $ ./v32opt
 ```
 
-A full command-line  reference is available as a unix manual page in
-`v32opt.1` (view it with `man ./v32opt.1`).
+A  full command-line  reference is  available as  a unix  manual page  in
+`man/v32opt.1` (view it with `man ./man/v32opt.1`).
 
 ---
 
@@ -98,9 +101,9 @@ suite.  There  is  also  (in  development) a  third  party  lua  compiler
 
 ### compile your source code
 
-Either compiler translates it high-level language code/syntax
-into  Vircon32 assembly.  It is  this assembly  you need  before you  can
-proceed with optimization with `v32opt`.
+Either  compiler  translates  it  high-level  language  code/syntax  into
+Vircon32 assembly.  It is this assembly  you need before you  can proceed
+with optimization with `v32opt`.
 
 ```bash
 # compile a C program with the Vircon32 C compiler
@@ -142,12 +145,12 @@ file `gameOpt.asm` (do NOT overwrite the original):
 $ v32opt game.asm -o gameOpt.asm -O1
 ```
 
-NOTE: keep  the  source  assembly  file  first,  followed  by  any  desired
-command-line  arguments,  as  shown  (the  input  file  must  be  the  only
+NOTE:  keep the  source  assembly  file first,  followed  by any  desired
+command-line  arguments,  as shown  (the  input  file  must be  the  only
 non-option  argument).  On  glibc  Linux  and  macOS  option  permutation
-additionally  lets  flags  appear  after  the  file  name  too,  but  that
-behavior  is  libc-specific  (musl,  for  example,  stops  parsing  at  the
-first  non-option),  so  don't  rely  on  it  in  scripts.
+additionally  lets  flags  appear  after  the file  name  too,  but  that
+behavior is libc-specific (musl, for  example, stops parsing at the first
+non-option), so don't rely on it in scripts.
 
 You can also run `v32opt` with the  `-v` argument, and it will give you a
 high-level status report of optimization actions it was able to perform:
@@ -235,12 +238,12 @@ v32opt <input.asm> [-o output.asm] [options]
 | `--dot <file>` | **CFG Export** | Exports the Control Flow Graph to a Graphviz `.dot` file for visualization. |
 | `--trigger-max=<N>` | **Bisection Cap** | Global budget on total committed transformations (see below). |
 
-`-L lua` (long form `--langmode lua`) makes the value-tracking passes
+`-L lua`  (long form  `--langmode lua`)  makes the  value-tracking passes
 aware of `v32lua`'s boxed type system: `BOXED_*` tagging/untagging idioms
-(OR/AND/IADD with a boxed immediate) are never folded, forwarded, or
-CSE'd away as ordinary arithmetic, and the algebra pass drops the
-provably-dead "is it Nil?" half of the compiler's fixed truthiness test
-after a boxed-boolean producer. `-L c` (the default) keeps the plain
+(OR/AND/IADD  with a  boxed immediate)  are never  folded, forwarded,  or
+CSE'd  away  as ordinary  arithmetic,  and  the  algebra pass  drops  the
+provably-dead "is it  Nil?" half of the compiler's  fixed truthiness test
+after  a boxed-boolean  producer. `-L  c` (the  default) keeps  the plain
 C-mode behavior.
 
 ### Optimization Tier Philosophy & Debugging Considerations
@@ -249,14 +252,14 @@ In `v32opt`, optimization  tiers are separated not just by  how much they
 shrink  the binary,  but  by their  computational complexity,  structural
 impact, and debugging ergonomics:
 
-*  **`-O1` (Local  Peepholes):**  Operates on  small sliding  windows  of
-instructions (a few passes scan  further ahead,  bounded by a scan-distance
-cap).  These  are stateless,  linear-time  passes that clean  up
-obvious  compiler  artifacts  with  no  structural  impact  on  the  program
-and  no  effect  on  debugging  ergonomics.  They  are  the  least  risky
-tier,  but  "least  risky"  is  not  "risk-free":  several  window  passes
-make  assumptions  about  indirect  memory  (see  `ISSUES`),  so  it  is
-still  worth  play-testing  the  optimized  build  against  the  original.
+*  **`-O1`  (Local Peepholes):**  Operates  on small  sliding windows  of
+instructions (a few passes scan further ahead, bounded by a scan-distance
+cap).  These are  stateless,  linear-time passes  that  clean up  obvious
+compiler  artifacts with  no  structural  impact on  the  program and  no
+effect  on debugging  ergonomics —  the  least risky  tier. That  said,
+"least risky"  is not "risk-free"  (see `ISSUES` for the  remaining known
+limitations),  so it  is  still worth  play-testing  the optimized  build
+against the original.
 
 * **`-O2`  (Global Analysis  & Structural Cleanup):**  Introduces Control
 Flow  Graphs  (CFG), program-wide  data-flow  tracking,  and stack  frame
@@ -264,7 +267,7 @@ modifications.  These  passes  analyze  entire blocks  and  functions  to
 eliminate  unreachable  code,  fold  constants across  jumps,  and  strip
 redundant overhead.
 
-* **`-O3` (Aggressive  Interprocedural Transformations):** Makes sweeping
+* **`-O3` (Aggressive Interprocedural  Transformations):** Makes sweeping
 architectural  modifications—such  as  function  inlining—that  trade
 binary  size  for  execution   velocity  and  completely  erase  function
 boundaries.
@@ -287,8 +290,8 @@ generate clean  call-stack backtraces during runtime  crashes. By placing
 
 ### Individual Optimization Control
 
-You can enable or disable specific passes granularly using `-f<name>`
-and `-fno-<name>`:
+You can enable or disable specific passes granularly using `-f<name>` and
+`-fno-<name>`:
 
 ```bash
 # Example: Run O2 but disable jump chaining and enable loop register promotion
@@ -357,7 +360,9 @@ leading to reduce cycles per frame.
 
 ### Store-to-Load Forwarding (`peephole-forwarding`)
 
-When a value is stored from a register to memory and immediately loaded back from that exact memory address into another register, the memory read is replaced with a direct register-to-register move.
+When a value  is stored from a register to  memory and immediately loaded
+back from  that exact  memory address into  another register,  the memory
+read is replaced with a direct register-to-register move.
 
 ```vircon32
 ; BEFORE                             ; AFTER
@@ -365,16 +370,16 @@ MOV [R1+4], R2                       MOV [R1+4], R2
 MOV R3, [R1+4]                       MOV R3, R2
 ```
 
-While this may  not offer any distinct performance boost, it should save
+While this may  not offer any distinct performance boost,  it should save
 you 1 word  of space, as the resulting double  registered `MOV` will only
 need  1 word  to  store  the instruction,  where  any indirect  reference
 requires a second, follow-on word for the immediate value/address.
 
 ### Redundant Reload Elimination (`peephole-compiler-myopia`)
 
-Removes a reload of a value that  was  just  stored  from the  same  regis-
-ter to the same memory location, when  nothing  in  between  changed  the
-memory or the registers involved.
+Removes a reload of  a value that was just stored  from the same register
+to the same  memory location, when nothing in between  changed the memory
+or the registers involved.
 
 ```vircon32
 ; BEFORE                             ; AFTER
@@ -382,17 +387,17 @@ MOV [R1+4], R2                       MOV [R1+4], R2
 MOV R2, [R1+4]                       ; (Reload removed: R2 still holds it)
 ```
 
-A common  compiler  artifact:  the  code  generator  writes  a  temporary
-back  to  its  stack  slot  and  then  immediately  reads  it  again  before
-anything  could  have  changed.
+A common compiler artifact: the code generator writes a temporary back to
+its stack slot and then immediately  reads it again before anything could
+have changed.
 
 ### Redundant Jump Elimination (`peephole-jumps`)
 
-Three  local  control-flow  cleanups:  removes  `JMP`/`JT`/`JF`  that
-point  directly  to  the  label  immediately  following  the  instruction;
-inverts  branch-over-jump  pairs  (`JF R, L1; JMP L2; L1:`  becomes
-`JT R, L2; L1:`);  and  eliminates  code  made  unreachable  by  an
-unconditional  `JMP`  (up  to  the  next  label,  which  is  kept).
+Three  local control-flow  cleanups: removes  `JMP`/`JT`/`JF` that  point
+directly  to the  label  immediately following  the instruction;  inverts
+branch-over-jump pairs (`JF R, L1; JMP L2; L1:` becomes `JT R, L2; L1:`);
+and eliminates code made unreachable by an unconditional `JMP` (up to the
+next label, which is kept).
 
 ```vircon32
 ; BEFORE                             ; AFTER
@@ -433,7 +438,10 @@ ISUB R2, 10
 
 Simplifies arithmetic operations  with special constants. Multiplications
 by  `0`  become  `MOV  0`,   multiplications  or  divisions  by  `1`  are
-eliminated, and multiplications by `2` are converted to addition.
+eliminated, and  multiplications by  `2` are  converted to  addition. For
+floating-point forms only  the exact identities (`FMUL r,  1.0`, `FDIV r,
+1.0`) are  applied — `FMUL  r, 0.0`  is deliberately left  alone, since
+`Inf/NaN * 0.0` is `NaN`, not `0.0`.
 
 ```vircon32
 ; BEFORE                             ; AFTER
@@ -509,10 +517,10 @@ Optimization can be as much an art as it is a science.
 
 ### Jump Chain Elimination (`peephole-jmp-chain`)
 
-Short-circuits jump  indirection. If a jump  lands  on  a  label  whose
-first  instruction  is another unconditional  jump, the first  jump is
-retargeted  to  point  directly  at  the  final  destination,  and  the
-intermediate  jump  is  removed.
+Short-circuits jump indirection.  If a jump lands on a  label whose first
+instruction is another  unconditional jump, the first  jump is retargeted
+to point directly at the final  destination, and the intermediate jump is
+removed.
 
 ```vircon32
 ; BEFORE                             ; AFTER
@@ -522,11 +530,12 @@ label_step1:                         label_step1:
 JMP label_final                      ; (Intermediate jump removed)
 ```
 
-NOTE: removing the  intermediate  jump  is  only  safe  when  no  OTHER
-jump  or  branch  still  targets  `label_step1`;  the  current  implemen-
-tation  does  not  check  for  other  users  of  the  label  (a  known
-issue  —  see  `ISSUES`).  Multi-hop  chains  are  only  collapsed  when
-each  jump  sits  immediately  before  its  target  label.
+NOTE: the intermediate  jump is only removed when nothing  else can reach
+its label, and no  other jump or branch targets it, and  no code can fall
+into  it  (the preceding  instruction  must  itself be  an  unconditional
+transfer). Otherwise  it is  kept and still  routes every  remaining user
+correctly. Multi-hop chains collapse one hop per iteration, and only when
+each jump sits immediately before its target label.
 
 ---
 
@@ -537,7 +546,12 @@ perform program-wide data-flow analysis.
 
 ### Common Subexpression Elimination (CSE)
 
-**What it does:** Detects and eliminates redundant computations within basic blocks. When the same operation is applied to the same source operands (after identical `MOV` initializations), the second occurrence is replaced with a `MOV` from the first result register. On Vircon32, where all instructions are 1 cycle, this **reduces code size** by eliminating duplicate word usage.
+**What it  does:** Detects  and eliminates redundant  computations within
+basic  blocks. When  the same  operation is  applied to  the same  source
+operands (after  identical `MOV` initializations), the  second occurrence
+is replaced  with a `MOV`  from the  first result register.  On Vircon32,
+where  all  instructions are  1  cycle,  this  **reduces code  size**  by
+eliminating duplicate word usage.
 
 ---
 
@@ -615,8 +629,11 @@ Scans  entire function  bodies to  verify  if the  Base Pointer  register
 (`BP`)  is ever  referenced or  dereferenced by  instructions within  the
 function. In  functions where `BP`  is never  touched (such as  leaf math
 helpers, getters,  or functions utilizing only  general-purpose registers
-`R0–R15`),  it completely  eliminates  the  standard function  prologue
-(`PUSH BP`, `MOV BP, SP`) and epilogue (`MOV SP, BP`, `POP BP`).
+`R0–R15`), it then completely eliminates the standard function prologue
+(`PUSH BP`,  `MOV BP,  SP`) and  epilogue (`MOV SP,  BP`, `POP  BP`). Any
+BP-relative  reference  counts  as  "touching"  BP  —  parameter  slots
+(`[BP+N]`) AND local-variable slots  (`[BP-N]`) alike, since both address
+memory through the frame pointer.
 
 This  strips  4  redundant  stack  and  memory  instructions  from  every
 invocation, noticeably reducing cycle overhead and shrinking total binary
@@ -771,20 +788,21 @@ local  variable's  memory  address  is  dynamically  computed  or  taken,
 promotion is  automatically aborted  for that  block to  guarantee memory
 safety and prevent aliasing bugs.
 
-*  **Inlining  Stack  Rewriting:**   When  leaf  functions  are  inlined,
-parameter  reads accessing  `[BP+N]`  (where `N  >=  2`)  are  dynamically
+*  **Inlining  Stack  Rewriting:**  When   leaf  functions  are  inlined,
+parameter  reads accessing  `[BP+N]`  (where `N  >=  2`) are  dynamically
 rewritten to `[SP+(N-2)]` at the call site. This allows seamless splicing
 of callee  bodies without corrupting  caller stack frames or  requiring a
 dedicated frame pointer.
 
-*  **These  guardrails  are  not  exhaustive.**  In  particular,  several
-window  passes  do  not  model  memory  writes  whose  addressing  differs
-from  the  pattern  they  matched  (read-modify-write  instructions  like
-`IADD [R1+0], 5`,  stores  through  a  different  base  register  that
-aliases  the  tracked  address,  and  the  dynamic-memory  `MOVS`/`SETS`
-operations),  and  `omit-frame-pointers`  currently  treats  `[BP-N]`
-local-variable  accesses  as  if  they  did  not  depend  on  the  frame.
-Known  soundness  issues  are  tracked  in  the  `ISSUES`  file;  always
+*  **These  guardrails  are  not  exhaustive.**  The  window  passes  now
+model read-modify-write memory instructions  (`IADD [R1+0], 5`), aliasing
+stores  through   different  base   registers,  and   the  dynamic-memory
+`MOVS`/`SETS`/`CMPS` operations,  and `CALL`/`RET` are treated  as moving
+SP (the  hardware return-address  push/pop). Remaining  known limitations
+are  tracked  in  the   `ISSUES`  file  (most  notably:  unreachable-code
+elimination does  not attempt to  reason about computed jump  targets —
+`JMP R0`  / `JMP  0x1000` — and  DCE's `_return:`-suffix  heuristic can
+confuse a real  function whose name happens to end  in `_return`). Always
 verify  optimized  output  by  building  and  running  it  alongside  the
 original.
 
@@ -798,15 +816,16 @@ optimizer behavior:
 
 * **`-finline-max=N`**
 
-Caps the  size  of  a  function  still  considered  inlinable,  in  body
-instructions:  any  function  whose  straight-line  body  is  longer  than
-`N` instructions  is  never  inlined.
+Caps  the  size  of  a  function  still  considered  inlinable,  in  body
+instructions: any  function whose straight-line  body is longer  than `N`
+instructions  is never  inlined. The  value  is clamped  to `0..32`  (the
+candidate-table capacity).
 
 *(Default: `8`).*
 
 * **`-finline-call-limit=N`**
 
-Caps the total  number of `CALL` sites inlined across  the entire run to
+Caps the  total number of `CALL`  sites inlined across the  entire run to
 `N` (evaluated in file order). By  adjusting this number, you can perform
 binary-search bisection on inlined calls to isolate runtime-only bugs.
 
@@ -826,13 +845,13 @@ Limits the iterative local optimization engine to a maximum of `N` passes
 
 * **`--trigger-max=N`**
 
-A  global  transformation  budget  shared  by  EVERY  enabled  pass  and
-every  fixed-point  iteration:  once  a  total  of  `N`  transformations
-(deleted  nodes,  in-place  rewrites,  spliced  loads/stores)  have  been
-committed,  every  later  candidate  is  left  untouched  as  if  it  had
-never  matched.  Omit  (or  pass  a  negative  `N`)  for  unlimited.  The
-primary  tool  for  bisecting  a  miscompile:  re-run  with  increasing
-`N`  until  the  output  breaks  —  the  `N`th  transform  applied,  in
-program  order  across  all  passes,  is  the  one  to  inspect.  Combine
-with  `-d`  to  have  the  culprit  named  right  in  the  output  file,
-and  with  `-v`  for  a  final  report  of  how  many  slots  were  used.
+A global  transformation budget  shared by EVERY  enabled pass  and every
+fixed-point  iteration:  once a  total  of  `N` transformations  (deleted
+nodes,  in-place rewrites,  spliced  loads/stores)  have been  committed,
+every later candidate is left untouched  as if it had never matched. Omit
+(or pass a negative `N`) for  unlimited. The primary tool for bisecting a
+miscompile: re-run  with increasing `N`  until the output breaks  — the
+`N`th transform applied,  in program order across all passes,  is the one
+to inspect.  Combine with  `-d` to  have the culprit  named right  in the
+output file,  and with  `-v` for a  final report of  how many  slots were
+used.

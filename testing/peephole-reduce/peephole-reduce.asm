@@ -133,7 +133,7 @@ __function_test_reduce_mixed:
 __function_test_fmul_zero:
     PUSH BP
     MOV BP, SP
-    FMUL R1, 0.0         ; MATCH(13) → MOV R1, 0.0
+    FMUL R1, 0.0         ; KEEP(13) NOT an identity: Inf/NaN * 0.0 = NaN, -x*0.0 = -0.0
     MOV SP, BP
     POP BP
     RET

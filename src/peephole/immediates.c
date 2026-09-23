@@ -3,15 +3,27 @@
 // ===================================================================
 // PEEPHOLE: Immediate Math Combining (Vircon32-Optimized)
 // //
-// Combines consecutive arithmetic ops with immediate operands on the same register:
+// Combines consecutive INTEGER arithmetic ops with immediate operands
+// on the same register:
 //   - IADD R1, 5; ISUB R1, 3 → IADD R1, 2 (saves 1 word)
-//   - FADD R1, 1.5; FSUB R1, 0.5 → FADD R1, 1.0 (floating-point)
 //   - IADD R1, 5; ISUB R1, 5 → REMOVE BOTH (cancels to 0)
-// //
+//
+// Integer combining is exact: Vircon32 integer arithmetic wraps modulo
+// 2^32, and (x + a) + b == x + (a + b) in modular arithmetic for every
+// a and b, including the a + (-a) == 0 cancellation.
+//
 // Guards:
 //   - Different registers: IADD R1, 5; IADD R2, 3 → KEEP
 //   - Non-consecutive: IADD R1, 5; MOV R2, 10; IADD R1, 3 → KEEP
 //   - Non-immediate: IADD R1, R2; IADD R1, 5 → KEEP
+//
+// NOTE: the FLOAT branch (FADD/FSUB combining) that used to live here
+// was removed. It was unreachable dead code (is_numeric_immediate()
+// rejects every float operand, so the float path could never match),
+// and re-enabling it would be unsound anyway: floating-point addition
+// is not associative, so "(x + a) - b" is NOT "x + (a - b)" in general,
+// and "(x + a) - a" is NOT x (each step rounds). Only bit-exact
+// identities may be applied to float arithmetic.
 // ===================================================================
 
 // Helper: Check if immediate is a non-zero numeric (not label, not zero)
@@ -34,7 +46,7 @@ int peephole_immediates(AsmNode *head) {
             curr->src_op.mode == MODE_IMMEDIATE &&
             !curr->src_op.is_float &&
             is_nonzero_numeric_immediate(&curr->src_op)) {
-            
+
             AsmNode *next_real = skip_other_nodes(curr->next);
             if (next_real && (next_real->type == OP_IADD || next_real->type == OP_ISUB) &&
                 next_real->dst_op.mode == MODE_REG &&
@@ -42,7 +54,7 @@ int peephole_immediates(AsmNode *head) {
                 !next_real->src_op.is_float &&
                 is_nonzero_numeric_immediate(&next_real->src_op) &&
                 str_case_eq(curr->dst_op.reg, next_real->dst_op.reg)) {
-                
+
                 int val1 = (curr->type == OP_IADD) ? curr->src_op.immediate : -curr->src_op.immediate;
                 int val2 = (next_real->type == OP_IADD) ? next_real->src_op.immediate : -next_real->src_op.immediate;
                 int combined = val1 + val2;
@@ -73,52 +85,6 @@ int peephole_immediates(AsmNode *head) {
                     // TRIGGER CAP: budget exhausted -- fall through to the
                     // normal "no match" advancement below instead of
                     // retrying this same, still-unresolved pattern forever.
-                }
-            }
-        }
-
-        // --- FLOATING-POINT OPERATIONS (Non-Zero Only) ---
-        if ((curr->type == OP_FADD || curr->type == OP_FSUB) &&
-            curr->dst_op.mode == MODE_REG &&
-            curr->src_op.mode == MODE_IMMEDIATE &&
-            curr->src_op.is_float &&
-            is_nonzero_numeric_immediate(&curr->src_op)) {
-            
-            AsmNode *next_real = skip_other_nodes(curr->next);
-            if (next_real && (next_real->type == OP_FADD || next_real->type == OP_FSUB) &&
-                next_real->dst_op.mode == MODE_REG &&
-                next_real->src_op.mode == MODE_IMMEDIATE &&
-                next_real->src_op.is_float &&
-                is_nonzero_numeric_immediate(&next_real->src_op) &&
-                str_case_eq(curr->dst_op.reg, next_real->dst_op.reg)) {
-                
-                float val1 = (curr->type == OP_FADD) ? curr->src_op.float_value : -curr->src_op.float_value;
-                float val2 = (next_real->type == OP_FADD) ? next_real->src_op.float_value : -next_real->src_op.float_value;
-                float combined = val1 + val2;
-
-                if (combined == 0.0f) {
-                    AsmNode *nodes[] = {curr, next_real};
-                    if (remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_IMMEDIATES)) optimizations += 2;
-                    continue;
-                } else {
-                    // TRIGGER CAP: same reasoning as the integer case above.
-                    AsmNode *nodes[] = {next_real};
-                    AsmNode *dummy = next_real;
-                    if (remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_IMMEDIATES)) {
-                        if (config.debug) {
-                            insert_debug_comment(curr->prev, OPT_PEEPHOLE_IMMEDIATES, curr->raw);
-                        }
-                        curr->type = (combined > 0) ? OP_FADD : OP_FSUB;
-                        strcpy(curr->mnemonic, (combined > 0) ? "FADD" : "FSUB");
-                        curr->src_op.float_value = fabs(combined);
-                        snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%.6f", fabs(combined));
-                        snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %.6f",
-                                 curr->mnemonic, curr->dst_op.raw, fabs(combined));
-                        optimizations++;
-                        continue;
-                    }
-                    // TRIGGER CAP: budget exhausted -- fall through instead
-                    // of retrying this same pattern forever.
                 }
             }
         }

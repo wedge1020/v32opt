@@ -55,6 +55,81 @@ void promote_operand_to_reg(Operand *op, const char *reg_name) {
 }
 
 // -------------------------------------------------------------------
+// Helper: does this instruction take or destroy the BP register's VALUE
+// in a way that makes a [BP-off] slot's address untrackable?
+//
+// BUG FIX: all three promotion passes used to exclude EVERY MOV from
+// this check (so the prologue/epilogue and ordinary "MOV [BP-off], x"
+// local accesses wouldn't false-positive). But that exclusion also hid
+// "MOV R1, BP" -- which CAPTURES the frame address into a general
+// register, after which a [BP-off] reference and an R1-based reference
+// can alias -- and "MOV BP, x", which destroys the frame. Only the two
+// frame idioms ("MOV BP, SP" / "MOV SP, BP") and indirect [BP-off]
+// accesses are exempt now; a DIRECT BP register operand on any other
+// MOV (or on any non-MOV instruction, as before) blocks promotion.
+// -------------------------------------------------------------------
+static bool bp_value_escapes(AsmNode *n) {
+    if (!n) return false;
+    if (n->type == OP_PUSH || n->type == OP_POP) return false;
+
+    bool dst_is_bp = (n->has_dst && n->dst_op.mode == MODE_REG &&
+                      str_case_eq(n->dst_op.reg, "BP"));
+    bool src_is_bp = (n->has_src && n->src_op.mode == MODE_REG &&
+                      str_case_eq(n->src_op.reg, "BP"));
+
+    if (n->type == OP_MOV) {
+        // exempt the frame idioms
+        if (dst_is_bp && n->has_src && n->src_op.mode == MODE_REG &&
+            str_case_eq(n->src_op.reg, "SP")) {
+            return false;                       // "MOV BP, SP" (prologue)
+        }
+        if (src_is_bp && n->has_dst && n->dst_op.mode == MODE_REG &&
+            str_case_eq(n->dst_op.reg, "SP")) {
+            return false;                       // "MOV SP, BP" (epilogue)
+        }
+        // any other direct BP operand on a MOV escapes/destroys BP;
+        // indirect "MOV [BP-off], x" accesses are fine (that is exactly
+        // the access pattern being promoted).
+        return dst_is_bp || src_is_bp;
+    }
+
+    // Non-MOV instructions: direct OR indirect BP use counts (IADD R1, BP
+    // computes a local's address; indirect via non-BP bases is irrelevant).
+    return dst_is_bp || src_is_bp ||
+           (n->has_dst && n->dst_op.mode == MODE_INDIRECT &&
+            str_case_eq(n->dst_op.reg, "BP")) ||
+           (n->has_src && n->src_op.mode == MODE_INDIRECT &&
+            str_case_eq(n->src_op.reg, "BP"));
+}
+
+// -------------------------------------------------------------------
+// Helper: given a RET node, return the node a stack-slot flush must be
+// inserted BEFORE. BUG FIX: the flush used to be inserted directly
+// before the RET itself -- but a standard epilogue ("MOV SP, BP" /
+// "POP BP" / RET) precedes it, and after "POP BP" the register BP has
+// already been restored to the CALLER's frame, so "[BP-off]" in the
+// flushed store addressed the wrong frame entirely. Back up over the
+// epilogue (POP BP, then MOV SP, BP, skipping comments) so the flush
+// executes while this function's frame is still live.
+// -------------------------------------------------------------------
+static AsmNode *flush_insertion_point(AsmNode *ret_node) {
+    AsmNode *ins = ret_node;
+    AsmNode *p = ret_node->prev;
+    while (p && p->type == OP_OTHER) p = p->prev;
+    if (p && p->type == OP_POP && p->has_dst &&
+        str_case_eq(p->dst_op.reg, "BP")) {
+        ins = p;
+        p = p->prev;
+        while (p && p->type == OP_OTHER) p = p->prev;
+        if (p && p->type == OP_MOV && p->has_dst && p->has_src &&
+            str_case_eq(p->dst_op.reg, "SP") && str_case_eq(p->src_op.reg, "BP")) {
+            ins = p;
+        }
+    }
+    return ins;
+}
+
+// -------------------------------------------------------------------
 // Helper: Extract the branch-target label text from a JMP/JT/JF node.
 //
 // JMP has a single operand (the target), which the parser's "single
@@ -152,15 +227,10 @@ int pass_promote_stack_slots(AsmNode *head) {
                     is_leaf_function = false;
                 }
 
-                // Guardrail: Check if BP is used in arithmetic or indirect mode
-                if (n->type != OP_PUSH && n->type != OP_POP && !str_case_eq(n->mnemonic, "MOV")) {
-                    if ((n->dst_op.mode == MODE_REG && str_case_eq(n->dst_op.reg, "BP")) ||
-                        (n->src_op.mode == MODE_REG && str_case_eq(n->src_op.reg, "BP")) ||
-                        (n->dst_op.mode == MODE_INDIRECT && str_case_eq(n->dst_op.reg, "BP")) ||
-                        (n->src_op.mode == MODE_INDIRECT && str_case_eq(n->src_op.reg, "BP"))) {
-                        address_taken = true;
-                        break;
-                    }
+                // Guardrail: BP's value escapes (address taken or destroyed)
+                if (bp_value_escapes(n)) {
+                    address_taken = true;
+                    break;
                 }
 
                 // Track ALL register usage (direct + indirect)
@@ -379,16 +449,20 @@ int pass_promote_stack_slots(AsmNode *head) {
 
                         for (AsmNode *n = curr->next; n && n != end_of_func->next; n = n->next) {
                             if (str_case_eq(n->mnemonic, "RET")) {
+                                // BUG FIX: insert before the EPILOGUE, not
+                                // before the RET -- after "POP BP" the store's
+                                // [BP-off] would address the caller's frame.
+                                AsmNode *ins = flush_insertion_point(n);
                                 AsmNode *store_node = create_node(store_raw, OP_MOV, "MOV", dst_str, reg_name);
-                                store_node->prev = n->prev;
-                                store_node->next = n;
-                                if (n->prev) n->prev->next = store_node;
-                                n->prev = store_node;
+                                store_node->prev = ins->prev;
+                                store_node->next = ins;
+                                if (ins->prev) ins->prev->next = store_node;
+                                ins->prev = store_node;
                                 optimizations++;
 
                                 char dbg_msg[96];
                                 snprintf(dbg_msg, sizeof(dbg_msg),
-                                         "PROMOTE-LEAF: flush %s back to [BP-%d] before RET",
+                                         "PROMOTE-LEAF: flush %s back to [BP-%d] before epilogue",
                                          reg_name, off);
                                 insert_debug_comment(store_node, OPT_PROMOTE_LEAF, dbg_msg);
                             }
@@ -485,14 +559,9 @@ int pass_promote_regs(AsmNode *head) {
             // segmentation doesn't change this; it's unrelated to leafness.
             bool address_taken = false;
             for (AsmNode *n = curr->next; n && n != end_of_func->next; n = n->next) {
-                if (n->type != OP_PUSH && n->type != OP_POP && !str_case_eq(n->mnemonic, "MOV")) {
-                    if ((n->dst_op.mode == MODE_REG && str_case_eq(n->dst_op.reg, "BP")) ||
-                        (n->src_op.mode == MODE_REG && str_case_eq(n->src_op.reg, "BP")) ||
-                        (n->dst_op.mode == MODE_INDIRECT && str_case_eq(n->dst_op.reg, "BP")) ||
-                        (n->src_op.mode == MODE_INDIRECT && str_case_eq(n->src_op.reg, "BP"))) {
-                        address_taken = true;
-                        break;
-                    }
+                if (bp_value_escapes(n)) {
+                    address_taken = true;
+                    break;
                 }
             }
             if (address_taken) {
@@ -816,16 +885,20 @@ int pass_promote_regs(AsmNode *head) {
 
                         for (AsmNode *m = seg_start; m != seg_limit; m = m->next) {
                             if (str_case_eq(m->mnemonic, "RET")) {
+                                // BUG FIX: insert before the EPILOGUE, not
+                                // before the RET (same frame-lifetime issue
+                                // as pass_promote_stack_slots's flush).
+                                AsmNode *ins = flush_insertion_point(m);
                                 AsmNode *store_node = create_node(store_raw, OP_MOV, "MOV", dst_str, reg_name);
-                                store_node->prev = m->prev;
-                                store_node->next = m;
-                                if (m->prev) m->prev->next = store_node;
-                                m->prev = store_node;
+                                store_node->prev = ins->prev;
+                                store_node->next = ins;
+                                if (ins->prev) ins->prev->next = store_node;
+                                ins->prev = store_node;
                                 optimizations++;
 
                                 char dbg_msg[96];
                                 snprintf(dbg_msg, sizeof(dbg_msg),
-                                         "PROMOTE-REGS: flush %s back to [BP-%d] before RET",
+                                         "PROMOTE-REGS: flush %s back to [BP-%d] before epilogue",
                                          reg_name, off);
                                 insert_debug_comment(store_node, OPT_PROMOTE_REGS, dbg_msg);
                             }
@@ -1047,14 +1120,9 @@ int pass_promote_loop_registers(AsmNode *head) {
                 }
 
                 // Rule 2: No BP Address-Taking (direct or indirect)
-                if (n->type != OP_PUSH && n->type != OP_POP && !str_case_eq(n->mnemonic, "MOV")) {
-                    if ((n->dst_op.mode == MODE_REG && str_case_eq(n->dst_op.reg, "BP")) ||
-                        (n->src_op.mode == MODE_REG && str_case_eq(n->src_op.reg, "BP")) ||
-                        (n->dst_op.mode == MODE_INDIRECT && str_case_eq(n->dst_op.reg, "BP")) ||
-                        (n->src_op.mode == MODE_INDIRECT && str_case_eq(n->src_op.reg, "BP"))) {
-                        loop_safe = false;
-                        break;
-                    }
+                if (bp_value_escapes(n)) {
+                    loop_safe = false;
+                    break;
                 }
 
                 // Rule 3: Verify all branches jump inside loop, to start, or to exit

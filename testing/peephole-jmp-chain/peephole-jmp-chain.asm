@@ -51,13 +51,16 @@ _L9:
 RET
 
 ; ===================================================================
-; ✅ SCENARIO 5: Multiple Chains (SHOULD OPTIMIZE BOTH)
+; ✅ SCENARIO 5: Multiple Chains (one hop per iteration, adjacency required)
+; "JMP _L10" is retargeted to _L11 and the intermediate at _L10 removed;
+; the JMP at _L11 must SURVIVE because the retargeted jump still routes
+; through it (full non-adjacent collapse is deliberately not attempted).
 ; ===================================================================
 JMP _L10 ; MATCH
 _L10:
 JMP _L11 ; MATCH
 _L11:
-JMP _L12 ; MATCH
+JMP _L12 ; KEEP (routes the retargeted jump; not adjacent-collapsible)
 _L12:
 RET
 

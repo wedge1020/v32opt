@@ -94,7 +94,17 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
     }
 
     // Parameterized options
-    if (strncmp(arg, "inline-max=", 11) == 0) { cfg->opt_inline_max_body_ins = atoi(arg + 11); return true; }
+    // BUG FIX: -finline-max is clamped to 0..MAX_BODY_INS. The value feeds
+    // "core_count < config.opt_inline_max_body_ins" in inline.c, whose
+    // core_nodes[] arrays are sized MAX_BODY_INS -- an unclamped value
+    // (e.g. -finline-max=64) overflowed them straight off the stack.
+    if (strncmp(arg, "inline-max=", 11) == 0) {
+        int v = atoi(arg + 11);
+        if (v < 0) v = 0;
+        if (v > MAX_BODY_INS) v = MAX_BODY_INS;
+        cfg->opt_inline_max_body_ins = v;
+        return true;
+    }
     if (strncmp(arg, "inline-call-limit=", 17) == 0) { cfg->opt_inline_call_limit = atoi(arg + 17); g_inline_call_limit = cfg->opt_inline_call_limit; return true; }
     if (strncmp(arg, "inline-exclude=", 15) == 0) { safe_str_copy(g_inline_exclude_name, arg + 15, sizeof(g_inline_exclude_name)); return true; }
     if (strncmp(arg, "max-passes=", 11) == 0) { *max_passes = atoi(arg + 11); return true; }
@@ -163,9 +173,13 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "  inline, cse, dce, constant-folding, promote-regs, promote-leaf,\n");
     fprintf(stdout, "  promote-loops, omit-frame-pointers, peephole-compiler-myopia\n\n");
     fprintf(stdout, "Diagnostic Flags:\n");
-    fprintf(stdout, "  -finline-max=N   Cap the number of inlined CALL sites to N\n");
-    fprintf(stdout, "  -fmax-passes=N   Cap the maximum iterative optimization passes to N\n");
-    fprintf(stdout, "  --trigger-max=N  Global cap: allow at most N total transformations\n");
+    fprintf(stdout, "  -finline-max=N          Cap inlinable function body size, in body\n");
+    fprintf(stdout, "                          instructions (clamped to 0..%d; default 8)\n", MAX_BODY_INS);
+    fprintf(stdout, "  -finline-call-limit=N   Cap the number of inlined CALL sites to N\n");
+    fprintf(stdout, "                          (evaluated in file order; -1 = no limit)\n");
+    fprintf(stdout, "  -finline-exclude=NAMES  Comma-separated function labels never inlined\n");
+    fprintf(stdout, "  -fmax-passes=N          Cap the maximum iterative optimization passes to N\n");
+    fprintf(stdout, "  --trigger-max=N         Global cap: allow at most N total transformations\n");
     fprintf(stdout, "                   to commit across EVERY enabled pass and EVERY\n");
     fprintf(stdout, "                   fixed-point iteration, combined. Once N is reached,\n");
     fprintf(stdout, "                   every later candidate is left untouched, as if it had\n");
@@ -176,8 +190,7 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "                   transform applied (in program order, across all\n");
     fprintf(stdout, "                   passes) is the one to inspect. Combine with -d to see\n");
     fprintf(stdout, "                   exactly which transform that was in the output.\n\n");
-    fprintf(stdout, "NOTE: peephole-dead-stores,\n");
-    fprintf(stdout, "promote-regs, promote-leaf, and promote-loops not yet\n");
+    fprintf(stdout, "NOTE: promote-regs, promote-leaf, and promote-loops are not yet\n");
     fprintf(stdout, "connected to any optimization category. Test and bugfix first\n\n");
 }
 

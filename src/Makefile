@@ -4,7 +4,7 @@ CC = gcc
 
 # --- Flags ---
 CFLAGS = -Wall -Wextra -Wno-format-truncation -g
-CFLAGS += -I.
+CFLAGS += -I. -I../inc
 CLIBS = -lm
 
 # --- Output Executable ---

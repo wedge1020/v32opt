@@ -1,99 +1,134 @@
-v32opt known issues -- verified by audit + repro, Sep 15 2026
-(updated; supersedes earlier notes. "RMW" = read-modify-write to memory,
- e.g. "IADD [R1+0], 5")
+v32opt known issues -- post-bugfix state, Sep 23 2026
+(supersedes the Sep 15 audit list. Everything marked FIXED below was
+fixed, regression-tested against its minimal reproduction, and the
+full unit suite (19/19) passes; see "REMAINING" for what is still
+open. "RMW" = read-modify-write to memory, e.g. "IADD [R1+0], 5")
 
-CONFIRMED MISCOMPILES (each reproduced with a minimal input):
+FIXED -- CONFIRMED MISCOMPILES (from the Sep 15 audit):
 
 -fpeephole-immediate-prop
-  Pattern 2 (MOV + ALU constant folding) scans past reads of the
-  register and past JT/JF branches. "MOV R1,10 / MOV R2,R1 / IADD R1,5"
-  folds to "MOV R1,15 / MOV R2,R1" (R2 now sees 15, not 10); folding
-  across a JT also changes the value seen on the taken path.
+  FIXED: Pattern 2 no longer folds across reads of the register or
+  across JT/JF branches (the rewritten MOV executes on every path
+  that reaches it, including the branch-taken side).
 
 -fpeephole-forwarding
-  Rule 1 treats only "MOV [mem],x" as a memory store. An intervening
-  RMW to the same address ("IADD [R1+0],5") or an aliasing store via a
-  different base register holding the same address is not seen, so the
-  later load is wrongly replaced with a register move. MOVS/SETS also
-  unmodeled. (Likely cause of the old "premature HLT" reports on real
-  v32lua output, which emits RMW loop counters like "IADD [BP-2],1".)
+  FIXED: Rule 1 now models every memory write (RMW ALU ops, aliasing
+  stores through a different base register, MOVS/SETS/CMPS) and no
+  longer forwards across a CALL (a callee can write arbitrary
+  memory through pointers).
 
 -fpeephole-dead-stores
-  Case 2 counts ANY instruction with the same indirect destination as
-  an "exact overwrite". An RMW ("IADD [BP-4],1") READS the slot too, so
-  the feeding store is wrongly deleted. MOVS/SETS also unmodeled.
+  FIXED: only a pure "MOV [loc], x" counts as an overwriter; an RMW
+  ("IADD [BP-4],1") or "PUSH [loc]" READS the slot and blocks the
+  match. MOVS/SETS/CMPS also recognized as memory traffic.
+
+-fpeephole-loads, -fpeephole-compiler-myopia, -fpeephole-movs
+  FIXED: same RMW / aliasing / MOVS-SETS modeling applied to each
+  pass's memory-write and aliasing guards.
 
 -fpeephole-jmp-chain
-  Retargeting a jump past a label is fine, but the pass also DELETES
-  the intermediate JMP even when other branches still target that
-  label; they now fall through into whatever followed it. Also burns
-  2 --trigger-max slots for one transform (bisection off-by-one).
+  FIXED: the intermediate JMP is only removed when nothing else can
+  reach its label (no other branch targets it AND nothing can fall
+  into it). Also consumes exactly one --trigger-max slot per
+  transform (was two).
 
 -fpeephole-shifts
-  "SHL r,N; SHL r,-N" removal is not identity: shifted-out bits are
-  gone, so (x<<N)>>N != x. "SHL r,r" (dst==src register) is removed as
-  a no-op but is a shift by r's own value.
+  FIXED: the unsound rules are gone -- "SHL r,N; SHL r,-N" pairs
+  (bits shifted out are lost; not an identity) and "SHL r,r"
+  (shifts by r's own value) are both kept.
 
 -fpeephole-pairs
-  "NOT r; NOT r" removal is only identity for boolean r; for any other
-  value it computes CIB(r) (0/1), not r. XOR self-cancel pair compares
-  only the base register of indirect destinations, not the offset
-  ("XOR [R1],R2; XOR [R1+4],R2" is deleted).
+  FIXED: NOT removed from the self-inverting list (NOT NOT x ==
+  CIB(x), not x, for non-boolean x); nonexistent "NEG" dropped;
+  XOR/self-inverse pairs match register destinations only (indirect
+  destinations were compared by base register alone, ignoring the
+  offset).
 
 -fomit-frame-pointers
-  [BP-N] accesses are treated as "not using BP" (offset>=0 test), so
-  functions whose locals live at [BP-N] with no other BP/SP use get
-  their frame stripped and their locals redirected into the caller's
-  frame. (Unit test scenario 3/4 encodes this wrong expectation.)
+  FIXED: any [BP+N]/[BP-N] reference now blocks elimination (it is
+  BP-relative addressing and needs the frame). Also fixed: bodies
+  that merely READ SP ("MOV R1, SP") block elimination (SP sits 2
+  words higher without the prologue); CALL is exempt from the SP
+  check (net-zero across a call under both supported compilers).
 
 -fcse
-  Only the destination register is tracked between the two matching
-  expressions. If a SOURCE register (or the memory a source operand
-  points at) is modified in between, the second computation is still
-  replaced by a move of the stale first result.
+  FIXED: source operands are now tracked between the two matching
+  expressions -- a modified source register, or a memory write to a
+  memory-based source, blocks the replacement.
 
--finline (edge cases)
-  Function-end detection stops only at RET / "MOV SP,BP": a body that
-  ends in HLT (noreturn helpers) swallows the following function (and
-  any data directives) into the candidate body. "MOV BP,x" writes are
-  not rejected. [BP+N]->[SP+N-2] rewrite assumes args were pushed
-  immediately before the CALL (no intervening SP moves are verified).
+-finline
+  FIXED: body collection stops at function/data boundary labels and
+  at HLT (a noreturn body used to swallow the following function and
+  any data directives); any direct BP reference (read OR write) and
+  [BP+0]/[BP+1] (saved-BP / return-address slots) disqualify a
+  candidate; -finline-max is clamped to 0..32 (unclamped values
+  overflowed the candidate body arrays straight off the stack).
 
-DEAD CODE / MISSED OPTIMIZATIONS:
+-promote-leaf / -promote-regs / -promote-loops
+  FIXED: "MOV R1, BP" (capturing the frame address) now blocks
+  promotion (the old address-taken check excluded ALL MOVs); the
+  stack-slot flush before RET is now inserted before the epilogue
+  ("MOV SP, BP"), not between "POP BP" and RET where [BP-N] would
+  have addressed the CALLER's frame.
 
--fpeephole-immediates, -fpeephole-reduce
-  All float branches are unreachable: is_numeric_immediate() rejects
-  every is_float operand, so FADD/FSUB combining and FMUL/FDIV by
-  0.0/1.0 never fire. (If re-enabled, note float cancellation
-  "(x+a)-a == x" is NOT exact in float32 -- do not remove such pairs.)
+FIXED -- DEAD CODE / TOOLING:
 
---dot with any node-removing pass (e.g. -O2)
-  CFG was built before Phase-3 cleanup; export walks freed nodes
-  (use-after-free; currently "works" only by allocator luck).
+-fpeephole-immediates
+  The unreachable float branch was REMOVED (FP addition is not
+  associative: "(x+a)-b != x+(a-b)" and "(x+a)-a != x"; only
+  bit-exact identities may touch float arithmetic).
+
+-fpeephole-reduce
+  Float identities are now reachable: FMUL/FDIV by 1.0 are removed
+  (exact for all x); "FMUL r, 0.0" is deliberately NOT rewritten
+  (Inf/NaN * 0.0 = NaN; -x * 0.0 = -0.0).
+
+--dot + any node-removing pass
+  FIXED: the DOT export always rebuilds the CFG from the FINAL
+  instruction list (the old export walked the stale pre-cleanup CFG,
+  i.e. freed nodes).
 
 general
-  CALL/RET move SP (hardware return-address push/pop) but
-  modifies_register() doesn't model it; SP-relative forwarding across
-  a CALL is theoretically wrong (rare in compiler output).
-  main() frees only the list head (whole-program leak; harmless for
-  output correctness).
+  CALL/RET now count as moving SP in modifies_register() (hardware
+  return-address push/pop) for every pass that asks. main() frees
+  the whole instruction list, not just the head node. CFG: runs of
+  up to 16 consecutive labels are attached (was 8, extras silently
+  dropped -> missing edges -> unsound constant propagation); labels
+  at end-of-file get a trailing block; indented labels no longer
+  break jump-target matching (label text is trimmed).
 
-UNIT TESTS (make -C testing), current state:
-  pass: omit-frame-pointers, peephole-algebra, peephole-compiler-myopia,
-        peephole-dead-stores, peephole-immediate-prop, peephole-loads,
-        peephole-movs, primes, promote-loops
-        (earlier notes that movs/loads/dead-stores/forwarding hang or
-        refuse to run are stale -- they run; forwarding's real problems
-        are the RMW/alias holes above)
-  fail (code bugs): cse (source-operand tracking), shifts + pairs
-        (fixtures encode the unsound SHL-cancel / SHL r,r / NOT-NOT
-        expectations -- fixing the pass will "break" these fixtures),
-        immediates + reduce (float dead code)
-  fail (stale/misbuilt fixtures): peephole-forwarding (expects the old
-        immediate-propagation behavior now delegated to
-        peephole-immediate-prop), peephole-jumps (scenarios not
-        separated by labels, so one scenario's dead zone legitimately
-        eats the next; KEEP marks are over-strict), peephole-jmp-chain
-        (expects full multi-hop collapse), inline (cascaded inlining
-        after a callee becomes leaf), constant-folding (fixture uses
-        the reserved word "skip" as a label -- never assembles)
+REMAINING (known, open):
+
+- peephole-jumps pattern 3 (unreachable-code elimination) does not
+  reason about computed jump targets: "JMP R0" / "JMP 0x1000" leaves
+  the following code alone (conservative; deliberate).
+
+- dce's function-boundary heuristic treats any "__function_*_return:"
+  label as internal, so a REAL function whose name ends in "_return"
+  (e.g. Lua "function get_return()") is absorbed into the preceding
+  function. Needs a stronger naming contract from the compilers.
+
+- constant-folding trades register operands for immediates
+  ("MOV Rd, Rs" -> "MOV Rd, const" is 2 words instead of 1), so the
+  assembled .vbin can GROW; its payoff is enabling further
+  immediate-based peepholes, not raw size. (Observed: +10% vbin on
+  the constant-folding fixture.) A post-fold "immediate -> register
+  re-materialization" pass would fix this.
+
+- trigger accounting granularity varies by pass: most passes count
+  one slot per deleted node, omit-frame-pointers one per 4-node
+  group, dce one per swept function, promote-* one per promoted
+  slot. --trigger-max bisection is consistent within a pass but not
+  across passes.
+
+- the promote-* passes remain experimental (opt-in only) and are
+  not covered by the unit suite except promote-loops.
+
+UNIT TESTS: 19/19 pass (make -C testing). Fixtures updated where
+they encoded the old unsound expectations (shifts cancel pairs,
+SHL r,r, NOT-NOT, FMUL 0.0, [BP-N] frame elimination, CIB-before-
+JT/JF carve-out, immediate propagation in peephole-forwarding,
+absolute-address unreachable code) or were misbuilt (constant-
+floating: reserved word "skip" and undefined call target; scenarios
+in cse/peephole-jumps now label-separated so one scenario's dead
+zone cannot legitimately eat the next).

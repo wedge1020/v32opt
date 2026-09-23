@@ -196,7 +196,7 @@ __function_test_copy_prop_imm_pos:
     PUSH BP
     MOV BP, SP
     MOV R1, 42
-    MOV R2, R1         ; MATCH(11) Should become: MOV R2, 42
+    MOV R2, R1         ; KEEP(11) immediate propagation is peephole-immediate-prop's job
     MOV SP, BP
     POP BP
     RET
@@ -206,7 +206,7 @@ __function_test_copy_prop_imm_neg:
     PUSH BP
     MOV BP, SP
     MOV R1, -128
-    MOV R2, R1         ; MATCH(12) Should become: MOV R2, -128
+    MOV R2, R1         ; KEEP(12) reg-only pass: immediates cost an extra word
     MOV SP, BP
     POP BP
     RET
@@ -216,7 +216,7 @@ __function_test_copy_prop_imm_hex:
     PUSH BP
     MOV BP, SP
     MOV R1, 0xFF00
-    MOV R2, R1         ; MATCH(13) Should become: MOV R2, 0xFF00
+    MOV R2, R1         ; KEEP(13) reg-only pass: immediates cost an extra word
     MOV SP, BP
     POP BP
     RET
@@ -226,10 +226,10 @@ __function_test_copy_prop_alu:
     PUSH BP
     MOV BP, SP
     MOV R1, 10
-    IADD R2, R1        ; MATCH(14) Should become: IADD R2, 10
-    ISUB R3, R1        ; MATCH(15) Should become: ISUB R3, 10
-    IMUL R4, R1        ; MATCH(16) Should become: IMUL R4, 10
-    AND R5, R1         ; MATCH(17) Should become: IAND R5, 10
+    IADD R2, R1        ; KEEP(14) immediate propagation is peephole-immediate-prop's job
+    ISUB R3, R1        ; KEEP(15) immediate propagation is peephole-immediate-prop's job
+    IMUL R4, R1        ; KEEP(16) immediate propagation is peephole-immediate-prop's job
+    AND R5, R1         ; KEEP(17) immediate propagation is peephole-immediate-prop's job
     MOV SP, BP
     POP BP
     RET
@@ -343,8 +343,8 @@ __function_test_combined_sequence:
     PUSH BP
     MOV BP, SP
     MOV R1, 25
-    IADD R2, R1        ; MATCH(20) -> IADD R2, 25
-    MOV R3, R1         ; MATCH(21) -> MOV R3, 25
+    IADD R2, R1        ; KEEP(20) immediate propagation is peephole-immediate-prop's job
+    MOV R3, R1         ; KEEP(21) immediate propagation is peephole-immediate-prop's job
     IMUL R4, R3        ; MATCH(22) -> IMUL R4, 25 (via R3->25 propagation)
     MOV SP, BP
     POP BP
@@ -375,7 +375,7 @@ __function_test_fp_copy_prop:
     PUSH BP
     MOV BP, SP
     MOV R1, 3.14          ; Float immediate
-    FADD R2, R1           ; MATCH(23) → FADD R2, 3.14
+    FADD R2, R1           ; KEEP(23) immediate propagation is peephole-immediate-prop's job
     MOV SP, BP
     POP BP
     RET

@@ -32,6 +32,13 @@ static bool has_memory_store(AsmNode *start, AsmNode *end) {
         // the top of this patch for the confirmed real-world reproduction.
         if (check->type == OP_MOVS || check->type == OP_SETS)
             return true;
+        // BUG FIX (same class): read-modify-write ALU ops with an indirect
+        // destination ("IADD [R5+0], 1") also write memory -- only their
+        // destination's base REGISTER is unchanged, the memory itself is
+        // not. A store like that between two identical loads can alias the
+        // loaded address just as well as a MOV store can.
+        if (check->has_dst && check->dst_op.mode == MODE_INDIRECT)
+            return true;
         check = check->next;
     }
     return false;

@@ -361,7 +361,16 @@ int main(int argc, char **argv) {
 
     // --- Export CFG if requested ---
     if (strlen(dotFile) > 0) {
-        if (!cfg) cfg = build_cfg(program_ast);
+        // BUG FIX: if constant-folding already built a CFG, it is STALE by
+        // now -- the Phase 3 cleanup loop above removed nodes that the
+        // blocks' first_ins/last_ins still point at, so exporting it walked
+        // freed memory (it only ever "worked" because the allocator hadn't
+        // reused those chunks yet). Discard it and build a fresh CFG from
+        // the FINAL instruction list.
+        if (cfg) {
+            free_cfg(cfg);
+        }
+        cfg = build_cfg(program_ast);
         export_cfg_to_dot(dotFile, cfg);
         if (config.verbose) {
             printf("CFG exported to '%s'.\n", dotFile);
@@ -398,6 +407,13 @@ int main(int argc, char **argv) {
 
     // --- Cleanup ---
     if (cfg) free_cfg(cfg);
-    free(program_ast);
+    // Free the ENTIRE instruction list, not just the dummy head (the old
+    // "free(program_ast)" leaked every parsed node; harmless for output
+    // correctness, but a whole-program leak on every run).
+    while (program_ast) {
+        AsmNode *next = program_ast->next;
+        free(program_ast);
+        program_ast = next;
+    }
     return 0;
 }

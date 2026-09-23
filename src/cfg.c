@@ -115,7 +115,12 @@ ControlFlowGraph* build_cfg(AsmNode *head) {
     if (!head) return cfg;
 
     BasicBlock *current_block = NULL;
-    char pending_labels[8][128];
+    // Cap matches BasicBlock.labels[][] in inc/dataflow.h: a run of more
+    // than 16 consecutive labels on the same instruction would silently
+    // drop the extras, and a jump to a dropped label would find no block
+    // -- no edge -- which can starve a block of predecessors and make
+    // constant propagation too optimistic (unsound).
+    char pending_labels[16][128];
     int pending_label_count = 0;
 
     // Skip dummy head if present
@@ -130,8 +135,8 @@ ControlFlowGraph* build_cfg(AsmNode *head) {
             char *colon = strchr(lbl, ':');
             if (colon) *colon = '\0';
 
-            if (pending_label_count < 8) {
-                safe_str_copy(pending_labels[pending_label_count++], lbl, sizeof(pending_labels[0]));
+            if (pending_label_count < 16) {
+                safe_str_copy(pending_labels[pending_label_count++], trim(lbl), sizeof(pending_labels[0]));
             }
 
             current_block = NULL; // Force new block creation
@@ -175,6 +180,26 @@ ControlFlowGraph* build_cfg(AsmNode *head) {
         }
 
         curr = curr->next;
+    }
+
+    // BUG FIX: labels at the very end of the file (no instruction follows
+    // them) never got attached to any block, so a jump to such a label
+    // found no target block and produced no CFG edge -- starving the real
+    // destination of predecessors and letting constant propagation draw
+    // overly optimistic conclusions. Register a final empty block to
+    // carry them.
+    if (pending_label_count > 0) {
+        BasicBlock *tail = calloc(1, sizeof(BasicBlock));
+        tail->id = cfg->num_blocks;
+        for (int l = 0; l < pending_label_count; l++) {
+            safe_str_copy(tail->labels[l], pending_labels[l], sizeof(tail->labels[l]));
+        }
+        tail->num_labels = pending_label_count;
+        if (cfg->num_blocks >= cfg->cap_blocks) {
+            cfg->cap_blocks = cfg->cap_blocks == 0 ? 8 : cfg->cap_blocks * 2;
+            cfg->blocks = realloc(cfg->blocks, cfg->cap_blocks * sizeof(BasicBlock*));
+        }
+        cfg->blocks[cfg->num_blocks++] = tail;
     }
 
     // --- PHASE 2: ADD CONTROL FLOW EDGES ---
