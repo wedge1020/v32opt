@@ -81,12 +81,99 @@ static bool is_global_scope_internal_label(const char *lbl) {
     return false;
 }
 
+// ---------------------------------------------------------------
+// Nested function definitions ("skip-around" layout)
+//
+// Lua-mode emits EVERY function body in place, at the point of its
+// definition, wrapped so the enclosing code jumps over it:
+//
+//       JMP   __Regions_define__m0_skip       <- enclosing scope
+//   __function_Regions_define__m0:            <- nested body
+//       ...
+//   __Regions_define__m0_return:
+//       ...
+//       RET
+//   __Regions_define__m0_skip:                <- enclosing scope RESUMES
+//       MOV   R2, __function_Regions_define__m0
+//       OR    R2, BOXED_FUNCTION
+//       ... CALL __builtin_table_set ...      <- registers the method
+//
+// BUG FIX: range discovery assumed a function runs from its label to the
+// next boundary label, so the nested function's range swallowed the
+// "_skip:" continuation -- i.e. the rest of the ENCLOSING scope (for a
+// method defined at top level, the rest of __global_scope_initialization,
+// including every later method's registration). The only reference to
+// the nested function lives in that swallowed continuation, so the
+// function could never be proven reachable, and sweeping it also swept
+// the continuation, and with it every subsequent registration. On
+// nostalgick.asm this removed 77 of 79 functions plus most of global init
+// (61788 -> ~1000 lines, dangling references everywhere).
+//
+// Fix: "__<stem>_skip:" -- where "__function_<stem>:" is a function
+// label in this file -- is a boundary, and the code after it is
+// registered as its own segment named after the skip label. The
+// enclosing scope's "JMP __<stem>_skip" is an ordinary operand
+// reference, so the existing worklist scan marks the continuation
+// reachable exactly when the enclosing code is reachable. This also
+// composes for deeper nesting and for chained skips
+// ("__init_skip: JMP __game_loop_skip").
+// ---------------------------------------------------------------
+static char **g_func_stems      = NULL; // sorted "<stem>" of __function_<stem>:
+static int    g_func_stem_count = 0;
+
+static int cmp_stem(const void *a, const void *b) {
+    return strcasecmp(*(char * const *)a, *(char * const *)b);
+}
+
+static bool is_nested_skip_label(const char *lbl) {
+    if (!g_func_stems || strncmp(lbl, "__", 2) != 0) return false;
+    size_t len = strlen(lbl);
+    if (len < 2 + 1 + 6 || !str_case_eq(lbl + len - 6, "_skip:")) return false;
+    char stem[256];
+    size_t stem_len = len - 2 - 6;
+    if (stem_len == 0 || stem_len >= sizeof(stem)) return false;
+    memcpy(stem, lbl + 2, stem_len);
+    stem[stem_len] = '\0';
+    const char *key = stem;
+    return bsearch(&key, g_func_stems, (size_t)g_func_stem_count,
+                   sizeof(char *), cmp_stem) != NULL;
+}
+
+static void collect_func_stems(AsmNode *head) {
+    int cap = 0;
+    for (AsmNode *n = head; n; n = n->next)
+        if (n->type == OP_LABEL) cap++;
+    g_func_stem_count = 0;
+    g_func_stems = cap ? malloc(sizeof(char *) * (size_t)cap) : NULL;
+    if (!g_func_stems) return;
+    for (AsmNode *n = head; n; n = n->next) {
+        if (n->type != OP_LABEL) continue;
+        char line_copy[512];
+        safe_str_copy(line_copy, n->raw, sizeof(line_copy));
+        char *lbl = trim(line_copy);
+        size_t len = strlen(lbl);
+        if (strncmp(lbl, "__function_", 11) != 0 || len < 13 || lbl[len - 1] != ':') continue;
+        if (len >= 8 && str_case_eq(lbl + len - 8, "_return:")) continue;
+        lbl[len - 1] = '\0';
+        g_func_stems[g_func_stem_count++] = strdup(lbl + 11);
+    }
+    qsort(g_func_stems, (size_t)g_func_stem_count, sizeof(char *), cmp_stem);
+}
+
+static void free_func_stems(void) {
+    for (int i = 0; i < g_func_stem_count; i++) free(g_func_stems[i]);
+    free(g_func_stems);
+    g_func_stems = NULL;
+    g_func_stem_count = 0;
+}
+
 static bool is_function_boundary_label(const char *lbl) {
     size_t lbl_len = strlen(lbl);
     bool is_return_label = (lbl_len >= 8 && str_case_eq(lbl + lbl_len - 8, "_return:"));
     return (strncmp(lbl, "__function_", 11) == 0 && !is_return_label) ||
            strncmp(lbl, "__literal_", 10) == 0 ||
-           (strncmp(lbl, "__global_", 9) == 0 && !is_global_scope_internal_label(lbl));
+           (strncmp(lbl, "__global_", 9) == 0 && !is_global_scope_internal_label(lbl)) ||
+           is_nested_skip_label(lbl);
 }
 
 // -------------------------------------------------------------------
@@ -185,6 +272,8 @@ int opt_dce (AsmNode *head)
     int funcs_cap  = label_count + 1;
     if (!funcs) return 0; // allocation failure: bail out safely, no changes made
 
+    collect_func_stems(head); // enables is_nested_skip_label(); freed on every exit
+
     AsmNode *curr = head ? head->next : NULL;
 
     // ----------------------------------------------------------------
@@ -252,9 +341,13 @@ int opt_dce (AsmNode *head)
             size_t lbl_len = strlen(lbl);
             bool is_return_label = (lbl_len >= 8 && str_case_eq(lbl + lbl_len - 8, "_return:"));
             bool is_global_scope_init = str_case_eq(lbl, "__global_scope_initialization:");
+            // A nested function's "_skip:" continuation is a segment of the
+            // enclosing scope, reached via its "JMP __<stem>_skip".
+            bool is_skip_continuation = is_nested_skip_label(lbl);
 
             // Skip non-function labels (internal control flow, data labels)
-            if ((strncmp(lbl, "__function_", 11) != 0 && !is_global_scope_init) || is_return_label) {
+            if ((strncmp(lbl, "__function_", 11) != 0 && !is_global_scope_init &&
+                 !is_skip_continuation) || is_return_label) {
                 curr = curr->next;
                 continue;
             }
@@ -303,7 +396,7 @@ int opt_dce (AsmNode *head)
         curr = curr->next;
     }
 
-    if (func_count == 0) { free(funcs); return 0; }
+    if (func_count == 0) { free(funcs); free_func_stems(); return 0; }
 
     // ----------------------------------------------------------------
     // 1C. BUILD A NAME-SORTED LOOKUP INDEX
@@ -341,7 +434,7 @@ int opt_dce (AsmNode *head)
     // count instead of a fixed MAX_FUNCTIONS cap.
     char (*worklist)[128] = malloc(sizeof(char[128]) * (size_t)(func_count + 1));
     int worklist_cap = func_count + 1;
-    if (!worklist) { free(funcs); return 0; }
+    if (!worklist) { free(funcs); free(name_idx); free_func_stems(); return 0; }
     int worklist_size = 0;
 
     for (int i = 0; i < func_count; i++) {
@@ -469,6 +562,7 @@ int opt_dce (AsmNode *head)
     free(name_idx);
     free(worklist);
     free(funcs);
+    free_func_stems();
 
     return eliminated_funcs;
 }

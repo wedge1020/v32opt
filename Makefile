@@ -10,7 +10,7 @@ all:
 
 # Clean both the build files in src/ and the generated assembly in testing/
 clean:
-	rm -f err.txt put/*
+	rm -f err.txt put/* *.zip
 	$(MAKE) -C src clean
 	$(MAKE) -C testing clean
 
