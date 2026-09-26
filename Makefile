@@ -41,3 +41,6 @@ monofiles:
 # We explicitly depend on the optimizer binary ('v32opt') being built first!
 tests: $(TARGET)
 	$(MAKE) -C testing
+
+archive: clean
+	zip -r v32opt-project.zip doc ISSUES Makefile man README.md inc lib scripts src testing
