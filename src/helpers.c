@@ -5,14 +5,22 @@
 // ===================================================================
 
 // ---------------------------------------------------------------
-// Skip OP_OTHER nodes (comments and blank lines)
-// Returns the first non-OP_OTHER node after 'start', or NULL
-// Example: skip_other_nodes(comment_node) -> first real instruction
+// Skip nodes that emit nothing into the binary: comments, blank lines
+// and preprocessor directives ("%define ..."). Returns the first node
+// that is an instruction, a label, or a DATA directive.
+//
+// BUG FIX: this used to skip every OP_OTHER node, data directives
+// included, so ~15 adjacency-based patterns could "see through" an
+// "integer"/"string"/"pointer" line. E.g. "JMP L / integer 5 / L:" looked
+// like a jump to the immediately following label, and removing the JMP
+// would make execution fall into the data. Returning the data node
+// (an OP_OTHER that matches no instruction pattern) makes every caller
+// decline, which is the conservative answer.
 // ---------------------------------------------------------------
 AsmNode *skip_other_nodes(AsmNode *start)
 {
     AsmNode *node = start;
-    while (node && node->type == OP_OTHER) {
+    while (node && node->type == OP_OTHER && !is_data_directive_node(node)) {
         node = node->next;
     }
     return node;
@@ -20,14 +28,17 @@ AsmNode *skip_other_nodes(AsmNode *start)
 
 // ---------------------------------------------------------------
 // Skip comment and blank OP_OTHER nodes only
-// Stops at non-comment OP_OTHER (e.g., data directives)
+// Stops at ANY directive (preprocessor or data)
 // Returns the first non-comment/blank node after 'start', or NULL
+//
+// BUG FIX: the old test (raw[0] == ';') missed indented comments
+// ("    ; ...", which is how most emitted comments look) and stopped
+// there as if they were directives.
 // ---------------------------------------------------------------
 AsmNode *skip_comments_and_blanks(AsmNode *start)
 {
     AsmNode *node = start;
-    while (node && node->type == OP_OTHER &&
-           (node->raw[0] == '\0' || node->raw[0] == ';')) {
+    while (node && node->type == OP_OTHER && !is_directive_node(node)) {
         node = node->next;
     }
     return node;

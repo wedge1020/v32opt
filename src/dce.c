@@ -264,6 +264,29 @@ static bool is_function_boundary_label(const char *lbl) {
            is_nested_skip_label(lbl);
 }
 
+// ---------------------------------------------------------------
+// Does this LABEL node name a data block (its next emitting node is a
+// data directive: integer/float/string/pointer/datafile)?
+//
+// BUG FIX (latent): function ranges ran from a function label to the
+// next *named* boundary, so a data table that a compiler/runtime placed
+// directly after a function under an ordinary label (e.g. celeste.asm's
+// "__pico8_palette:" after the __ipairs_iter runtime code) was swept
+// together with that function whenever it was unreachable -- even if
+// live code still referenced the table, leaving an undefined label.
+// A data label now ends the preceding range; the data itself belongs
+// to no function and is never swept. (remove_node() also refuses to
+// delete the directives themselves, but the LABEL is an ordinary node.)
+// ---------------------------------------------------------------
+static bool is_data_label_node(AsmNode *label) {
+    if (!label || label->type != OP_LABEL) return false;
+    AsmNode *n = label->next;
+    while (n && (n->type == OP_LABEL ||
+                 (n->type == OP_OTHER && !is_data_directive_node(n))))
+        n = n->next;
+    return n && is_data_directive_node(n);
+}
+
 // -------------------------------------------------------------------
 // OPTIMIZATION: Dead Code Elimination
 // Removes functions that are never called (unreachable) from the program.
@@ -401,7 +424,7 @@ int opt_dce (AsmNode *head)
                 char line_copy[8192];
                 safe_str_copy(line_copy, look->raw, sizeof(line_copy));
                 char *lbl = trim(line_copy);
-                if (is_function_boundary_label(lbl)) break;
+                if (is_function_boundary_label(lbl) || is_data_label_node(look)) break;
             }
             preamble_end = look;
         }
@@ -433,10 +456,15 @@ int opt_dce (AsmNode *head)
             // A nested function's "_skip:" continuation is a segment of the
             // enclosing scope, reached via its "JMP __<stem>_skip".
             bool is_skip_continuation = is_nested_skip_label(lbl);
+            // A data block (and anything after it up to the next boundary)
+            // is registered as its own always-reachable segment: the data
+            // is never swept, and any code trailing it is still scanned
+            // for references (see is_data_label_node()).
+            bool is_data_segment = is_data_label_node(curr);
 
             // Skip non-function labels (internal control flow, data labels)
             if ((strncmp(lbl, "__function_", 11) != 0 && !is_global_scope_init &&
-                 !is_skip_continuation) || is_return_label) {
+                 !is_skip_continuation && !is_data_segment) || is_return_label) {
                 curr = curr->next;
                 continue;
             }
@@ -462,7 +490,7 @@ int opt_dce (AsmNode *head)
                     // __global_scope_initialization: now stops this scan
                     // like any other real boundary (see the comment on
                     // is_function_boundary_label() above).
-                    if (is_function_boundary_label(next_lbl)) {
+                    if (is_function_boundary_label(next_lbl) || is_data_label_node(scan)) {
                         break;
                     }
                 }
@@ -538,7 +566,8 @@ int opt_dce (AsmNode *head)
             str_case_eq(funcs[i].name, "__global_scope_initialization") ||
             strstr(funcs[i].name, "global_scope") != NULL ||
             strstr(funcs[i].name, "ISR") != NULL ||
-            strstr(funcs[i].name, "interrupt") != NULL)
+            strstr(funcs[i].name, "interrupt") != NULL ||
+            is_data_label_node(funcs[i].start_node))
         {
             funcs[i].reachable = true;
             if (worklist_size < worklist_cap) {

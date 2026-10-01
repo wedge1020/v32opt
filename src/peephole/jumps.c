@@ -160,12 +160,10 @@ int peephole_jumps(AsmNode *head)
                     // be addressed relative to an earlier label.
                     // Blank lines and comments are still swept with the
                     // dead group.
-                    if (scan->type == OP_OTHER)
-                    {
-                        const char *p = scan->raw;
-                        while (*p == ' ' || *p == '\t') p++;
-                        if (*p != '\0' && *p != ';') break;
-                    }
+                    // (remove_node() also refuses to delete directives,
+                    // but stopping here matters: the splice below would
+                    // otherwise unlink a kept directive from the list.)
+                    if (is_directive_node(scan)) break;
 
                     to_remove[remove_count++] = scan;
                     scan = scan->next;

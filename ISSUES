@@ -132,3 +132,28 @@ absolute-address unreachable code) or were misbuilt (constant-
 floating: reserved word "skip" and undefined call target; scenarios
 in cse/peephole-jumps now label-separated so one scenario's dead
 zone cannot legitimately eat the next).
+
+DIRECTIVE SAFETY (assembler directives are never deleted, moved past,
+or duplicated):
+
+- remove_node() refuses to delete any directive node (%define,
+  %include, integer/float/string/pointer/datafile). It is the single
+  choke point for every deleting pass, so this covers all of them.
+  Origin: peephole-jumps pattern 3 deleted celeste.asm's PICO8_*
+  %defines as "unreachable code" after a JMP.
+- skip_other_nodes() no longer sees through DATA directives (it still
+  skips comments, blanks and %-preprocessor lines, which emit nothing),
+  so adjacency patterns cannot match across embedded data.
+- inline: a body containing a directive is never a candidate, and a
+  call site is declined if the body uses a %define that is defined
+  below that call site (defines.c: define_visible_at()).
+- dce: a label followed by data is a range boundary and its segment is
+  always reachable, so a data table is never swept with the function
+  textually before it; code after the data is still scanned.
+- dce relies on Lua-mode naming: "__<stem>_skip:" continuations and
+  "__global_*" helper labels (allowlist + branch-target backstop).
+
+OPEN: defines.c exposes define_numeric_value() but no pass consumes it
+yet (%define value resolution is not implemented).
+OPEN: testing/inline expected output gains one line
+("%define global_var 42" is now preserved).

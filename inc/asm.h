@@ -125,6 +125,17 @@ typedef struct AsmNode {
 Operand  parse_operand (const char *);
 AsmNode *create_node   (const char *, OpType, const char *, const char *, const char *);
 void     remove_node   (AsmNode    *);
+bool     is_directive_node      (const AsmNode *);
+bool     is_preprocessor_node   (const AsmNode *);
+bool     is_data_directive_node (const AsmNode *);
+
+// %define symbol table (defines.c)
+int      defines_build           (AsmNode *head);
+void     defines_free            (void);
+bool     define_exists           (const char *sym);
+bool     define_visible_at       (const char *sym, const AsmNode *site);
+bool     node_defines_visible_at (const AsmNode *node, const AsmNode *site);
+bool     define_numeric_value    (const char *sym, long *ival, float *fval, bool *is_float);
 AsmNode *clone_node    (AsmNode    *);
 
 // ---------------------------------------------------------------------------

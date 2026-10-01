@@ -163,6 +163,9 @@ int main(int argc, char **argv) {
 
     // --- Parse Input Assembly File ---
     AsmNode *program_ast = parse_vircon32_asm(inFile);
+    // %define table. Directive nodes are never deleted (remove_node()
+    // refuses), so one build stays valid for the whole run.
+    defines_build(program_ast);
 
     int passes = 0;
     int total_opts = 0;
@@ -407,6 +410,7 @@ int main(int argc, char **argv) {
 
     // --- Cleanup ---
     if (cfg) free_cfg(cfg);
+    defines_free();
     // Free the ENTIRE instruction list, not just the dummy head (the old
     // "free(program_ast)" leaked every parsed node; harmless for output
     // correctness, but a whole-program leak on every run).

@@ -99,6 +99,7 @@ bool remove_with_debug(AsmNode **curr_ptr, AsmNode *nodes[], int count, OptType 
 
     if (config.debug) {
         for (int i = 0; i < count; i++) {
+            if (is_directive_node(nodes[i])) continue; // kept by remove_node()
             insert_debug_comment(nodes[i]->prev, opt_type, nodes[i]->raw);
         }
     }
@@ -386,7 +387,51 @@ AsmNode* create_node(const char* raw, OpType type, const char* mnem, const char*
 // Removes a node from its linked list and frees its memory.
 //   - node: Node to remove and free
 // ===================================================================
+// ===================================================================
+// ASSEMBLER DIRECTIVES
+//
+// A directive is any OP_OTHER node whose text is not blank and not a
+// comment: preprocessor lines ("%define", "%include") and data lines
+// ("integer", "float", "string", "pointer", "datafile"). They are not
+// executed, so control-flow and data-flow reasoning says nothing about
+// them -- and deleting one silently breaks the program (undefined
+// symbol, shifted data). See remove_node() below.
+// ===================================================================
+static const char *directive_text(const AsmNode *node) {
+    if (!node || node->type != OP_OTHER) return NULL;
+    const char *p = node->raw;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '\0' || *p == ';') return NULL;
+    return p;
+}
+
+bool is_directive_node(const AsmNode *node) {
+    return directive_text(node) != NULL;
+}
+
+// Preprocessor-only ("%define", "%include", ...): emits nothing into the
+// binary, so it is transparent to instruction adjacency.
+bool is_preprocessor_node(const AsmNode *node) {
+    const char *p = directive_text(node);
+    return p && *p == '%';
+}
+
+// Emits words into the binary (integer/float/string/pointer/datafile):
+// NOT transparent -- code on either side of it is not adjacent.
+bool is_data_directive_node(const AsmNode *node) {
+    const char *p = directive_text(node);
+    return p && *p != '%';
+}
+
+// BUG FIX (safety net): remove_node() is the single choke point every
+// deleting pass goes through (directly, or via remove_with_debug()), so
+// it refuses to delete assembler directives. No optimization has a
+// legitimate reason to delete one; a pass whose dead-range logic swept
+// one up (peephole-jumps pattern 3 deleting celeste.asm's PICO8_*
+// %defines; dce sweeping a range containing them) now leaves it in
+// place, unlinked from nothing. Returns without freeing.
 void remove_node(AsmNode *node) {
+    if (is_directive_node(node)) return;
     // Unlink from previous node
     if (node->prev) node->prev->next = node->next;
     // Unlink from next node

@@ -140,7 +140,11 @@ int inline_trivial_functions(AsmNode *head) {
 
             // --- Skip Prologue (PUSH BP; MOV BP, SP) ---
             AsmNode *scan = curr->next;
-            while (scan && (scan->type == OP_OTHER || scan->type == OP_LABEL))
+            // (Stop at directives: skipping one here let it slip past the
+            // body-collection check below when a prior pass -- e.g.
+            // omit-frame-pointers -- had already removed the prologue.)
+            while (scan && ((scan->type == OP_OTHER && !is_directive_node(scan)) ||
+                            scan->type == OP_LABEL))
                 scan = scan->next;
 
             if (scan && scan->type == OP_PUSH && str_case_eq(scan->dst_op.reg, "BP")) {
@@ -176,6 +180,16 @@ int inline_trivial_functions(AsmNode *head) {
                     }
                     scan = scan->next;
                     continue;
+                }
+
+                // BUG FIX: never inline a body containing an assembler
+                // directive. Bodies are cloned into every call site, so a
+                // "%define" would be redefined N times, and a data line
+                // ("integer ...") would be planted in the caller's
+                // instruction stream and executed as code.
+                if (is_directive_node(scan)) {
+                    valid_candidate = false;
+                    break;
                 }
 
                 // --- Epilogue Detection ---
@@ -406,7 +420,31 @@ int inline_trivial_functions(AsmNode *head) {
 
             // --- Find Matching Candidate ---
             for (int c = 0; c < candidate_count; c++) {
-                if (str_case_eq(target_label, candidates[c].name) && trigger_allowed()) {
+                if (!str_case_eq(target_label, candidates[c].name)) continue;
+
+                // BUG FIX: inlining copies the callee's body UP to the call
+                // site. %define is an in-order textual substitution, so if
+                // the callee uses a symbol defined between the call site and
+                // the callee, the copy would reference it before its
+                // definition. Decline this call site in that case.
+                bool defines_ok = true;
+                for (int b = 0; b < candidates[c].body_count && defines_ok; b++)
+                    defines_ok = node_defines_visible_at(candidates[c].body_nodes[b], curr);
+                if (!defines_ok) {
+                    if (config.debug) {
+                        AsmNode *debug_node = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
+                        snprintf(debug_node->raw, sizeof(debug_node->raw),
+                                 "; [DEBUG inline] Skipped CALL %s: body uses a %%define not yet defined here",
+                                 target_label);
+                        debug_node->prev = curr->prev;
+                        debug_node->next = curr;
+                        if (curr->prev) curr->prev->next = debug_node;
+                        curr->prev = debug_node;
+                    }
+                    break;
+                }
+
+                if (trigger_allowed()) {
                     if (config.debug) {
                         AsmNode *debug_node = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
                         snprintf(debug_node->raw, sizeof(debug_node->raw),
