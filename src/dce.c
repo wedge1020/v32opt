@@ -56,6 +56,92 @@
 // (Background_*, Enemies_*, Camera_*, Player_*, ...) that are very much
 // called, via those table-based registrations, from __global_scope_initialization.
 // ---------------------------------------------------------------
+// ---------------------------------------------------------------
+// Branch-target backstop for the "__global_" helper allowlist.
+//
+// BUG FIX (round 2): the Lua compiler added a new top-level helper
+// family, "__global_num_N:" (the skip-over target of the numeric-string
+// coercion guard: "JF R0, __global_num_N / CALL __arith_coerce"). It
+// wasn't in the suffix allowlist, so it was treated as a boundary and
+// __global_scope_initialization's range stopped at the FIRST arithmetic
+// on a possibly-string operand. Everything after that -- including the
+// "JMP __<method>_skip" jumps that lead to every later method's
+// registration -- belonged to no registered segment, was never scanned,
+// and DCE swept 77 of 79 functions (69638 -> 4423 lines).
+//
+// The allowlist is inherently one compiler change behind, so it now has
+// a structural backstop: a "__global_" label that some JMP/JT/JF in the
+// program branches to is an intra-function jump target, i.e. internal.
+// Real boundaries never qualify: __global_scope_initialization is only
+// ever CALLed, and a data label is never a branch target. Labels that
+// are also CALL targets are excluded, to stay conservative.
+// ---------------------------------------------------------------
+static char **g_branch_targets      = NULL; // sorted "__global_*" JMP/JT/JF targets
+static int    g_branch_target_count = 0;
+static char **g_call_targets        = NULL; // sorted "__global_*" CALL targets
+static int    g_call_target_count   = 0;
+
+static int cmp_strp(const void *a, const void *b) {
+    return strcasecmp(*(char * const *)a, *(char * const *)b);
+}
+
+static bool in_sorted_set(char **set, int count, const char *name) {
+    if (!set || count == 0) return false;
+    return bsearch(&name, set, (size_t)count, sizeof(char *), cmp_strp) != NULL;
+}
+
+// lbl includes its trailing colon
+static bool is_global_branch_target(const char *lbl) {
+    char name[256];
+    safe_str_copy(name, lbl, sizeof(name));
+    char *colon = strchr(name, ':');
+    if (colon) *colon = '\0';
+    return in_sorted_set(g_branch_targets, g_branch_target_count, name) &&
+           !in_sorted_set(g_call_targets,  g_call_target_count,   name);
+}
+
+static void add_global_target(char ***set, int *count, int cap, const char *op) {
+    if (!*set || *count >= cap) return;
+    char buf[128];
+    safe_str_copy(buf, op, sizeof(buf));
+    char *t = trim(buf);
+    if (strncmp(t, "__global_", 9) != 0) return;
+    (*set)[(*count)++] = strdup(t);
+}
+
+static void collect_global_targets(AsmNode *head) {
+    int cap = 0;
+    for (AsmNode *n = head; n; n = n->next)
+        if (n->type != OP_LABEL) cap++;
+    g_branch_target_count = g_call_target_count = 0;
+    g_branch_targets = cap ? malloc(sizeof(char *) * (size_t)cap) : NULL;
+    g_call_targets   = cap ? malloc(sizeof(char *) * (size_t)cap) : NULL;
+    for (AsmNode *n = head; n; n = n->next) {
+        if (n->type == OP_LABEL) continue;
+        bool is_branch = str_case_eq(n->mnemonic, "JMP") ||
+                         str_case_eq(n->mnemonic, "JT")  ||
+                         str_case_eq(n->mnemonic, "JF");
+        bool is_call   = str_case_eq(n->mnemonic, "CALL");
+        if (!is_branch && !is_call) continue;
+        char ***set  = is_branch ? &g_branch_targets      : &g_call_targets;
+        int   *count = is_branch ? &g_branch_target_count : &g_call_target_count;
+        if (n->has_dst) add_global_target(set, count, cap, n->dst_op.raw);
+        if (n->has_src) add_global_target(set, count, cap, n->src_op.raw);
+    }
+    if (g_branch_targets)
+        qsort(g_branch_targets, (size_t)g_branch_target_count, sizeof(char *), cmp_strp);
+    if (g_call_targets)
+        qsort(g_call_targets, (size_t)g_call_target_count, sizeof(char *), cmp_strp);
+}
+
+static void free_global_targets(void) {
+    for (int i = 0; i < g_branch_target_count; i++) free(g_branch_targets[i]);
+    for (int i = 0; i < g_call_target_count;   i++) free(g_call_targets[i]);
+    free(g_branch_targets); free(g_call_targets);
+    g_branch_targets = g_call_targets = NULL;
+    g_branch_target_count = g_call_target_count = 0;
+}
+
 static bool is_global_scope_internal_label(const char *lbl) {
     if (strncmp(lbl, "__global_", 9) != 0) return false;
     if (str_case_eq(lbl, "__global_scope_initialization:")) return false;
@@ -66,6 +152,7 @@ static bool is_global_scope_internal_label(const char *lbl) {
         "else", "end_if",
         "for_start", "for_end", "for_gen_start", "for_gen_end",
         "not_end", "not_true",
+        "num",
         NULL
     };
     const char *rest = lbl + 9; // text after "__global_"
@@ -78,7 +165,8 @@ static bool is_global_scope_internal_label(const char *lbl) {
             if (c == ':' || c == '_') return true;
         }
     }
-    return false;
+    // Not a known helper family: fall back to the structural test.
+    return is_global_branch_target(lbl);
 }
 
 // ---------------------------------------------------------------
@@ -272,7 +360,8 @@ int opt_dce (AsmNode *head)
     int funcs_cap  = label_count + 1;
     if (!funcs) return 0; // allocation failure: bail out safely, no changes made
 
-    collect_func_stems(head); // enables is_nested_skip_label(); freed on every exit
+    collect_func_stems(head);     // enables is_nested_skip_label(); freed on every exit
+    collect_global_targets(head); // enables is_global_branch_target(); freed on every exit
 
     AsmNode *curr = head ? head->next : NULL;
 
@@ -396,7 +485,7 @@ int opt_dce (AsmNode *head)
         curr = curr->next;
     }
 
-    if (func_count == 0) { free(funcs); free_func_stems(); return 0; }
+    if (func_count == 0) { free(funcs); free_func_stems(); free_global_targets(); return 0; }
 
     // ----------------------------------------------------------------
     // 1C. BUILD A NAME-SORTED LOOKUP INDEX
@@ -434,7 +523,7 @@ int opt_dce (AsmNode *head)
     // count instead of a fixed MAX_FUNCTIONS cap.
     char (*worklist)[128] = malloc(sizeof(char[128]) * (size_t)(func_count + 1));
     int worklist_cap = func_count + 1;
-    if (!worklist) { free(funcs); free(name_idx); free_func_stems(); return 0; }
+    if (!worklist) { free(funcs); free(name_idx); free_func_stems(); free_global_targets(); return 0; }
     int worklist_size = 0;
 
     for (int i = 0; i < func_count; i++) {
@@ -562,7 +651,7 @@ int opt_dce (AsmNode *head)
     free(name_idx);
     free(worklist);
     free(funcs);
-    free_func_stems();
+    free_func_stems(); free_global_targets();
 
     return eliminated_funcs;
 }

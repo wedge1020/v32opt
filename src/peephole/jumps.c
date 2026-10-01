@@ -145,6 +145,28 @@ int peephole_jumps(AsmNode *head)
                         else break;
                     }
 
+                    // BUG FIX: stop at assembler directives. Only real
+                    // instructions can be "unreachable"; a directive is not
+                    // executed at all, so control flow says nothing about
+                    // it. The scan used to sweep everything up to the next
+                    // label, so a "%define" block sitting after a JMP was
+                    // deleted as dead code, leaving every later use of
+                    // those symbols undefined. Seen in celeste.asm:
+                    // "JMP __ipairs_iter_error" followed by the
+                    // PICO8_* %defines -> assembler error "expected basic
+                    // value" at the first PICO8_SWATCH_REGION_BASE use.
+                    // The same applies to %include and to unlabeled data
+                    // (integer/float/string/pointer/datafile), which may
+                    // be addressed relative to an earlier label.
+                    // Blank lines and comments are still swept with the
+                    // dead group.
+                    if (scan->type == OP_OTHER)
+                    {
+                        const char *p = scan->raw;
+                        while (*p == ' ' || *p == '\t') p++;
+                        if (*p != '\0' && *p != ';') break;
+                    }
+
                     to_remove[remove_count++] = scan;
                     scan = scan->next;
                 }
