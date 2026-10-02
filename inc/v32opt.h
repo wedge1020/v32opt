@@ -17,7 +17,7 @@
 // ---------------------------------------------------------------------------
 // Project metadata
 // ---------------------------------------------------------------------------
-#define  VERSION                      "20261001-dev"
+#define  VERSION                      "20261002-dev"
 #define  AUTHOR                       "Matthew Haas"
 #define  URL                          "https://github.com/wedge1020/v32opt"
 
@@ -109,6 +109,7 @@ typedef struct {
     bool     opt_promote_leaf;
     bool     opt_promote_loops;
     bool     opt_promote_regs;
+    bool     opt_resolve_defines;   // let passes see numeric %define values
     LangMode lang_mode;
 } OptConfig;
 

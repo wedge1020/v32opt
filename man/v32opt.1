@@ -1,4 +1,4 @@
-.TH V32OPT 1 "September 2026" "v32opt 20260915-dev" "User Commands"
+.TH V32OPT 1 "October 2026" "v32opt 20261002-dev" "User Commands"
 .SH NAME
 v32opt \- optimize Vircon32 assembly code
 .SH SYNOPSIS
@@ -256,6 +256,21 @@ to inspect, and
 will name it in the output. The final
 .B \-v
 report states how many slots were used.
+.TP
+.B \-fno\-resolve\-defines
+Treat every
+.B %define
+symbol as an opaque value. By default an operand naming a
+.B %define
+whose value is a single integer literal is seen by its value, so the
+numeric-immediate peepholes and constant folding can fold through it;
+the symbol text is kept unless an instruction is actually rewritten.
+Floats, symbols defined more than once with different values, and (in
+.B \-L lua
+mode) the NaN-boxing tags
+.RB ( BOXED_* ", " NAN_VALUE ,
+and any value carrying the NaN bit pattern) are never resolved. Useful
+for bisecting a miscompile.
 .TP
 .BR \-\-version ", " \-V
 Print version, author, and project URL, and exit immediately.

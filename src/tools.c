@@ -348,6 +348,11 @@ Operand parse_operand(const char *str) {
         op.mode = MODE_IMMEDIATE;  // Treat as address (resolved by assembler)
         op.immediate = 0;
         op.is_float = false;
+        // A symbol naming an integer %define carries its real value
+        // (empty table while the input is first being parsed; main()
+        // resolves those nodes right after defines_build()).
+        int dv;
+        if (define_int_value(str, &dv)) op.immediate = dv;
     }
 
     return op;

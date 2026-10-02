@@ -137,7 +137,16 @@ int peephole_immediate_prop(AsmNode *head)
                 }
 
                 if (folded) {
-                    curr = next;
+                    // BUG FIX (use-after-free): do NOT resume at the saved
+                    // 'next'. When the folded ALU instruction sat directly
+                    // after this MOV, 'next' IS the node that was just
+                    // removed and freed. curr itself is still live (only
+                    // its text changed), so re-examine it: that is safe,
+                    // and also picks up a chain ("MOV / IADD / IADD") in
+                    // one pass. Terminates because every fold deletes a
+                    // node. Exposed once %define resolution made
+                    // "MOV R2, MEMCARD_END / ISUB R2, MEMCARD_DATA_BASE"
+                    // foldable; adjacent literal pairs never occurred.
                     continue;
                 }
             }

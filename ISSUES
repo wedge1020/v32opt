@@ -153,7 +153,27 @@ or duplicated):
 - dce relies on Lua-mode naming: "__<stem>_skip:" continuations and
   "__global_*" helper labels (allowlist + branch-target backstop).
 
-OPEN: defines.c exposes define_numeric_value() but no pass consumes it
-yet (%define value resolution is not implemented).
+%define VALUE RESOLUTION (20261002-dev):
+
+- An operand naming an integer %define carries its real value
+  (defines.c: define_int_value(); filled in by
+  defines_resolve_operands() after parsing and by parse_operand() for
+  nodes created later). is_numeric_immediate() and cfg.c's
+  is_symbolic_immediate() accept such operands, so peephole-algebra,
+  -immediates, -immediate-prop, -reduce, -shifts and constant-folding
+  fold through them. -fno-resolve-defines restores opaque symbols.
+- Never resolved: floats, expressions, symbols redefined with a
+  different value, and in Lua mode the NaN-boxing tags (BOXED_*,
+  NAN_VALUE, CLOSURE_ADDR_MASK, any value with the 0x7F800000 pattern)
+  -- cse/constant-folding recognise boxing idioms by NAME.
+- A folded instruction is emitted with the computed number; the symbol
+  name is lost at that site (readability only).
+- Measured: celeste -8 instructions, nostalgick -1. Small on Lua-mode
+  output, where >90% of %define uses are boxing tag checks.
+- FIXED alongside: peephole-immediate-prop pattern 2 resumed at a saved
+  'next' pointer that was the node it had just freed when the MOV and
+  the folded ALU instruction were adjacent (use-after-free; latent
+  until resolution made such adjacent pairs foldable).
+
 OPEN: testing/inline expected output gains one line
 ("%define global_var 42" is now preserved).

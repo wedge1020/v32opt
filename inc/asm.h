@@ -136,6 +136,8 @@ bool     define_exists           (const char *sym);
 bool     define_visible_at       (const char *sym, const AsmNode *site);
 bool     node_defines_visible_at (const AsmNode *node, const AsmNode *site);
 bool     define_numeric_value    (const char *sym, long *ival, float *fval, bool *is_float);
+bool     define_int_value        (const char *sym, int *out);
+int      defines_resolve_operands(AsmNode *head);
 AsmNode *clone_node    (AsmNode    *);
 
 // ---------------------------------------------------------------------------

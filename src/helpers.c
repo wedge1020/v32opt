@@ -286,7 +286,11 @@ bool is_numeric_immediate(const Operand *op)
     if (isdigit((unsigned char)raw[0])) return true;
     if (raw[0] == '-' && isdigit((unsigned char)raw[1])) return true;
     if (raw[0] == '0' && (raw[1] == 'x' || raw[1] == 'X')) return true;
-    return false;
+    // A symbol naming an integer %define is numeric too, provided its
+    // value is the one this operand carries (re-validated here, so a
+    // rewritten operand can never pass with a stale value).
+    int dv;
+    return define_int_value(raw, &dv) && op->immediate == dv;
 }
 
 // ---------------------------------------------------------------

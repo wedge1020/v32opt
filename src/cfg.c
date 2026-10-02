@@ -327,7 +327,10 @@ RegState merge_reg(RegState a, RegState b) {
 static bool is_symbolic_immediate(const Operand *op) {
     if (!op || op->mode != MODE_IMMEDIATE) return false;
     if (!op->raw[0]) return false;
-    return isalpha((unsigned char)op->raw[0]) || op->raw[0] == '_';
+    if (!(isalpha((unsigned char)op->raw[0]) || op->raw[0] == '_')) return false;
+    // A symbol naming an integer %define has a real, known value.
+    if (is_numeric_immediate(op)) return false;
+    return true;
 }
 
 // ===================================================================
@@ -366,7 +369,7 @@ bool apply_transfer_function(BasicBlock *block) {
             int dst_reg = get_reg_index(node->dst_op.reg);
             if (dst_reg >= 0) {
                 if (node->src_op.mode == MODE_IMMEDIATE && !node->src_op.is_float) {
-                    if (isalpha((unsigned char)node->src_op.raw[0]) || node->src_op.raw[0] == '_') {
+                    if (is_symbolic_immediate(&node->src_op)) {
                         current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
                     } else {
                         current.regs[dst_reg] = (RegState){VAL_CONST, node->src_op.immediate};
@@ -525,7 +528,7 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
             // === FIX: Skip MOV with label immediates ===
             if (node->type == OP_MOV && node->dst_op.mode == MODE_REG &&
                 node->src_op.mode == MODE_IMMEDIATE) {
-                if (isalpha((unsigned char)node->src_op.raw[0]) || node->src_op.raw[0] == '_') {
+                if (is_symbolic_immediate(&node->src_op)) {
                     int dst_reg = get_reg_index(node->dst_op.reg);
                     if (dst_reg >= 0) {
                         current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
@@ -559,7 +562,7 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
                 if (dst_reg >= 0) {
                     if (node->src_op.mode == MODE_IMMEDIATE && !node->src_op.is_float) {
                         // FIX: Don't track labels
-                        if (isalpha((unsigned char)node->src_op.raw[0]) || node->src_op.raw[0] == '_') {
+                        if (is_symbolic_immediate(&node->src_op)) {
                             current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
                         } else {
                             current.regs[dst_reg] = (RegState){VAL_CONST, node->src_op.immediate};

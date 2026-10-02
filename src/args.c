@@ -89,6 +89,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
         else if (strcmp(name, "promote-regs") == 0) cfg->opt_promote_regs = false;
         else if (strcmp(name, "promote-leaf") == 0) cfg->opt_promote_leaf = false;
         else if (strcmp(name, "promote-loops") == 0) cfg->opt_promote_loops = false;
+        else if (strcmp(name, "resolve-defines") == 0) cfg->opt_resolve_defines = false;
         else return false;
         return true;
     }
@@ -107,6 +108,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
     }
     if (strncmp(arg, "inline-call-limit=", 17) == 0) { cfg->opt_inline_call_limit = atoi(arg + 17); g_inline_call_limit = cfg->opt_inline_call_limit; return true; }
     if (strncmp(arg, "inline-exclude=", 15) == 0) { safe_str_copy(g_inline_exclude_name, arg + 15, sizeof(g_inline_exclude_name)); return true; }
+    if (strcmp(arg, "resolve-defines") == 0) { cfg->opt_resolve_defines = true; return true; }
     if (strncmp(arg, "max-passes=", 11) == 0) { *max_passes = atoi(arg + 11); return true; }
 
     // Enable
@@ -179,6 +181,8 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "                          (evaluated in file order; -1 = no limit)\n");
     fprintf(stdout, "  -finline-exclude=NAMES  Comma-separated function labels never inlined\n");
     fprintf(stdout, "  -fmax-passes=N          Cap the maximum iterative optimization passes to N\n");
+    fprintf(stdout, "  -fno-resolve-defines    Treat %%define symbols as opaque (default: operands\n");
+    fprintf(stdout, "                          naming an integer %%define are seen by their value)\n");
     fprintf(stdout, "  --trigger-max=N         Global cap: allow at most N total transformations\n");
     fprintf(stdout, "                   to commit across EVERY enabled pass and EVERY\n");
     fprintf(stdout, "                   fixed-point iteration, combined. Once N is reached,\n");

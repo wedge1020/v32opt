@@ -141,3 +141,58 @@ bool define_numeric_value(const char *sym, long *ival, float *fval, bool *is_flo
     }
     return true;
 }
+
+// ===================================================================
+// VALUE RESOLUTION
+//
+// define_int_value(): the integer value of a %define that passes are
+// allowed to reason about. Deliberately narrow:
+//   - plain integer literal only (floats and expressions stay opaque);
+//   - not poisoned (defined once, or always to the same text);
+//   - resolution enabled (config.opt_resolve_defines);
+//   - in Lua mode, NOT a NaN-boxing tag. CSE / constant folding
+//     recognise the boxing idioms ("OR Rd, BOXED_FUNCTION", "AND Rd,
+//     NAN_VALUE" ...) by NAME via is_boxed_type_operand(); turning a
+//     tag into a bare number would hide it from those guards. Excluded
+//     by name (BOXED_*, NAN_VALUE, CLOSURE_ADDR_MASK) and by value (any
+//     constant carrying the NaN bit pattern 0x7F800000).
+//
+// The operand keeps its symbol text; only Operand.immediate is filled
+// in. is_numeric_immediate() re-validates the symbol against this
+// table on every query, so an operand whose text a pass later rewrites
+// can never be trusted with a stale value.
+// ===================================================================
+bool define_int_value(const char *sym, int *out) {
+    if (!config.opt_resolve_defines) return false;
+    const DefineEntry *e = lookup(sym);
+    if (!e || e->poisoned) return false;
+    const char *v = e->value;
+    if (!is_immediate_string(v) || strchr(v, '.')) return false;
+    char *end = NULL;
+    unsigned long u = (v[0] == '-') ? (unsigned long)strtol(v, &end, 0)
+                                    : strtoul(v, &end, 0);
+    if (!end || *end != '\0') return false;
+    if (is_lua_mode()) {
+        if (strstr(e->name, "BOXED_") || str_case_eq(e->name, "NAN_VALUE") ||
+            str_case_eq(e->name, "CLOSURE_ADDR_MASK"))
+            return false;
+        if ((u & 0x7F800000UL) == 0x7F800000UL) return false;
+    }
+    if (out) *out = (int)u;
+    return true;
+}
+
+// Fill Operand.immediate for every source operand naming a resolvable
+// %define. Returns the number of operands resolved. (Nodes created
+// later go through parse_operand(), which does the same lookup.)
+int defines_resolve_operands(AsmNode *head) {
+    int count = 0;
+    for (AsmNode *n = head; n; n = n->next) {
+        if (n->type == OP_OTHER || n->type == OP_LABEL || !n->has_src) continue;
+        Operand *op = &n->src_op;
+        if (op->mode != MODE_IMMEDIATE || op->is_float) continue;
+        int v;
+        if (define_int_value(op->raw, &v)) { op->immediate = v; count++; }
+    }
+    return count;
+}

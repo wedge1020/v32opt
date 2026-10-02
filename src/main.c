@@ -74,6 +74,7 @@ OptConfig config = {
     .opt_inline                   = false,
     .opt_inline_call_limit        = -1,
     .opt_inline_max_body_ins      = 8,
+    .opt_resolve_defines          = true,
     .opt_promote_leaf             = false,
     .opt_promote_loops            = false,
     .opt_promote_regs             = false
@@ -166,6 +167,14 @@ int main(int argc, char **argv) {
     // %define table. Directive nodes are never deleted (remove_node()
     // refuses), so one build stays valid for the whole run.
     defines_build(program_ast);
+    // Give every "%define NAME <int>" operand its real value, so the
+    // numeric-immediate peepholes and constant folding can see through
+    // the symbol (see defines.c). -fno-resolve-defines turns this off.
+    if (config.opt_resolve_defines) {
+        int resolved = defines_resolve_operands(program_ast);
+        if (config.verbose)
+            printf("Resolved %d operand(s) to numeric %%define values.\n", resolved);
+    }
 
     int passes = 0;
     int total_opts = 0;
