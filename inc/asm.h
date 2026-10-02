@@ -181,6 +181,12 @@ bool     is_dead_store_scan_boundary (AsmNode *);
 bool     is_register_read            (AsmNode *, const char *);
 bool     is_live_out_register        (const char *);
 
+// Control-flow-aware register liveness (liveness.c)
+void     liveness_begin    (AsmNode *head);
+void     liveness_end      (void);
+bool     reg_dead_from     (AsmNode *start, const char *reg);
+bool     reg_dead_at_label (const char *label, const char *reg);
+
 // ---------------------------------------------------------------------------
 // Assembly file parser & writer (tools.c)
 // ---------------------------------------------------------------------------

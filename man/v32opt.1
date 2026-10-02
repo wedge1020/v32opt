@@ -199,9 +199,9 @@ peephole\-pairs, peephole\-algebra, peephole\-compiler\-myopia,
 peephole\-forwarding, peephole\-jumps, peephole\-movs,
 peephole\-immediates, peephole\-reduce, peephole\-shifts,
 peephole\-dead\-stores, peephole\-loads, peephole\-immediate\-prop,
-peephole\-jmp\-chain, cse, dce, constant\-folding,
-omit\-frame\-pointers, inline, promote\-regs, promote\-leaf,
-promote\-loops
+peephole\-jmp\-chain, peephole\-zero\-test, cse, dce,
+constant\-folding, omit\-frame\-pointers, inline, promote\-regs,
+promote\-leaf, promote\-loops
 .fi
 .RE
 .IP
@@ -338,6 +338,23 @@ times zero is NaN, not zero).
 .I peephole\-shifts
 Removes no-op shifts and turns left-shift by 1 into
 self-addition.
+.TP
+.I peephole\-zero\-test
+Folds a comparison with zero into the conditional jump that consumes
+it:
+.B "MOV Ra, Rb / IEQ Ra, 0 / JT Ra, L"
+becomes
+.BR "JF Rb, L" ,
+and likewise for
+.B INE
+and
+.B JF
+and for the in-place form without the copy. Applied only when
+.B Ra
+is proven never to be read again on either side of the branch; the
+proof follows jumps and looks into called functions, and any doubt
+(computed targets, R11\-R15, a callee that may read the register)
+leaves the code alone. Integer compares only.
 .TP
 .I peephole\-dead\-stores
 Removes stores to registers or memory that are overwritten before

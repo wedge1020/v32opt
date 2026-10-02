@@ -175,5 +175,24 @@ or duplicated):
   the folded ALU instruction were adjacent (use-after-free; latent
   until resolution made such adjacent pairs foldable).
 
+PEEPHOLE-ZERO-TEST (new pass, 20261002-dev; on from -O1):
+
+- "MOV Ra,Rb / IEQ|INE Ra,0 / JT|JF Ra,L" -> "JF|JT Rb,L", and the
+  in-place form without the MOV. Requires Ra dead after the jump on
+  both sides, proven by liveness.c (reg_dead_from/reg_dead_at_label):
+  follows JMP/JT/JF, summarises callees (reads-before-write / always
+  overwrites / may pass through), RET uses is_live_out_register().
+  Every unknown answers "live". R0..R10 only.
+- Measured: celeste 44421 -> 42953 instructions (-3.3%), nostalgick
+  54260 -> 52506 (-3.2%). All converted sites re-proven by an
+  independent checker.
+- Counts removed instructions (2 for the copy form, 1 in place); one
+  --trigger-max slot per site.
+- The rewritten jump loses its trailing source comment.
+- liveness.c is reusable; candidates: "MOV Ra,[mem] / MOV Rb,Ra" ->
+  "MOV Rb,[mem]" when Ra is dead, and letting is_register_read()
+  treat POP/IN destinations as pure writes for the other passes.
+- Fixture: testing/peephole-zero-test (13 matches expected).
+
 OPEN: testing/inline expected output gains one line
 ("%define global_var 42" is now preserved).

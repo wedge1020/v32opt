@@ -15,6 +15,7 @@ const char *opt_type_names[]       = {
     [OPT_PEEPHOLE_PAIRS]           = "peephole-pairs",
     [OPT_PEEPHOLE_REDUCE]          = "peephole-reduce",
     [OPT_PEEPHOLE_SHIFTS]          = "peephole-shifts",
+    [OPT_PEEPHOLE_ZERO_TEST]       = "peephole-zero-test",
     [OPT_CONSTANT_FOLDING]         = "constant-folding",
     [OPT_CSE]                      = "cse",
     [OPT_DCE]                      = "dce",

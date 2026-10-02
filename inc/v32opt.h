@@ -21,7 +21,7 @@
 #define  AUTHOR                       "Matthew Haas"
 #define  URL                          "https://github.com/wedge1020/v32opt"
 
-#define  MAX_OPTIMIZATION_ALGORITHMS  21
+#define  MAX_OPTIMIZATION_ALGORITHMS  22
 
 // ---------------------------------------------------------------------------
 // Optimization pass registry -- indices into opt_type_names[] and the
@@ -43,6 +43,7 @@ typedef enum
     OPT_PEEPHOLE_PAIRS,
     OPT_PEEPHOLE_REDUCE,
     OPT_PEEPHOLE_SHIFTS,
+    OPT_PEEPHOLE_ZERO_TEST,
     OPT_CONSTANT_FOLDING,
     OPT_CSE,
     OPT_DCE,
@@ -99,6 +100,7 @@ typedef struct {
     bool     opt_peephole_pairs;
     bool     opt_peephole_reduce;
     bool     opt_peephole_shifts;
+    bool     opt_peephole_zero_test;
     bool     opt_constant_folding;
     bool     opt_cse;
     bool     opt_dce;

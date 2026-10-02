@@ -468,6 +468,34 @@ SHL R1, 0                            ; (Shift by 0 removed)
 SHL R2, 1                            IADD R2, R2
 ```
 
+### Zero-Test Folding (`peephole-zero-test`)
+
+Vircon32's conditional jumps already test a register against zero (`JT`
+jumps when it is non-zero, `JF` when it is zero), so materialising the
+comparison first is redundant. This pass folds the comparison into the
+jump, both when a copy is tested and when the value is tested in place.
+
+```vircon32
+; BEFORE                             ; AFTER
+MOV R0, R4
+IEQ R0, 0
+JT  R0, __slow_path                  JF  R4, __slow_path
+
+INE R5, 0
+JF  R5, __is_zero                    JF  R5, __is_zero
+```
+
+The original leaves the comparison result (0 or 1) in the scratch
+register, so the rewrite is only applied when that register is proven
+never to be read again on **either** side of the branch. The proof
+follows jumps and looks into called functions; anything it cannot
+follow (a computed jump or call, registers `R11`-`R15`, a callee that
+may read the register) leaves the code untouched. Integer compares only:
+`FEQ` treats `-0.0` as zero, while `JF` tests the raw bits.
+
+v32lua emits this shape in every inline table lookup, so on Lua-mode
+programs it removes roughly 3% of all instructions.
+
 ### Dead Store Elimination (`peephole-dead-stores`)
 
 Removes memory  stores that are  immediately overwritten by  a subsequent

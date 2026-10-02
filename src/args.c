@@ -17,6 +17,7 @@ static void set_opt_level(OptConfig *cfg, int level) {
     cfg -> opt_peephole_pairs            = false;
     cfg -> opt_peephole_reduce           = false;
     cfg -> opt_peephole_shifts           = false;
+    cfg -> opt_peephole_zero_test        = false;
     cfg -> opt_cse                       = false;
     cfg -> opt_constant_folding          = false;
     cfg -> opt_dce                       = false;
@@ -44,6 +45,7 @@ static void set_opt_level(OptConfig *cfg, int level) {
     cfg -> opt_peephole_pairs            = true;
     cfg -> opt_peephole_reduce           = true;
     cfg -> opt_peephole_shifts           = true;
+    cfg -> opt_peephole_zero_test        = true;
 
     if (level                           == 1) return;
 
@@ -81,6 +83,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
         else if (strcmp(name, "peephole-loads") == 0) cfg->opt_peephole_loads = false;
         else if (strcmp(name, "peephole-immediate-prop") == 0) cfg->opt_peephole_immediate_prop = false;
         else if (strcmp(name, "peephole-jmp-chain") == 0) cfg->opt_peephole_jmp_chain = false;
+        else if (strcmp(name, "peephole-zero-test") == 0) cfg->opt_peephole_zero_test = false;
         else if (strcmp(name, "cse") == 0) cfg->opt_cse = false;
         else if (strcmp(name, "dce") == 0) cfg->opt_dce = false;
         else if (strcmp(name, "constant-folding") == 0) cfg->opt_constant_folding = false;
@@ -125,6 +128,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
     else if (strcmp(arg, "peephole-loads") == 0) cfg->opt_peephole_loads = true;
     else if (strcmp(arg, "peephole-immediate-prop") == 0) cfg->opt_peephole_immediate_prop = true;
     else if (strcmp(arg, "peephole-jmp-chain") == 0) cfg->opt_peephole_jmp_chain = true;
+    else if (strcmp(arg, "peephole-zero-test") == 0) cfg->opt_peephole_zero_test = true;
     else if (strcmp(arg, "cse") == 0) cfg->opt_cse = true;
     else if (strcmp(arg, "dce") == 0) cfg->opt_dce = true;
     else if (strcmp(arg, "constant-folding") == 0) cfg->opt_constant_folding = true;
@@ -173,7 +177,8 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "  peephole-reduce, peephole-shifts, peephole-dead-stores,\n");
     fprintf(stdout, "  peephole-loads, peephole-immediate-prop, peephole-jmp-chain,\n");
     fprintf(stdout, "  inline, cse, dce, constant-folding, promote-regs, promote-leaf,\n");
-    fprintf(stdout, "  promote-loops, omit-frame-pointers, peephole-compiler-myopia\n\n");
+    fprintf(stdout, "  promote-loops, omit-frame-pointers, peephole-compiler-myopia,\n");
+    fprintf(stdout, "  peephole-zero-test\n\n");
     fprintf(stdout, "Diagnostic Flags:\n");
     fprintf(stdout, "  -finline-max=N          Cap inlinable function body size, in body\n");
     fprintf(stdout, "                          instructions (clamped to 0..%d; default 8)\n", MAX_BODY_INS);

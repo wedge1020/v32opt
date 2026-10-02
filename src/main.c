@@ -67,6 +67,7 @@ OptConfig config = {
     .opt_peephole_pairs           = false,
     .opt_peephole_reduce          = false,
     .opt_peephole_shifts          = false,
+    .opt_peephole_zero_test       = false,
     .opt_constant_folding         = false,
     .opt_cse                      = false,
     .opt_dce                      = false,
@@ -126,6 +127,7 @@ int main(int argc, char **argv) {
             [OPT_PEEPHOLE_IMMEDIATES]      = config.opt_peephole_immediates,
             [OPT_PEEPHOLE_REDUCE]          = config.opt_peephole_reduce,
             [OPT_PEEPHOLE_SHIFTS]          = config.opt_peephole_shifts,
+            [OPT_PEEPHOLE_ZERO_TEST]       = config.opt_peephole_zero_test,
             [OPT_PEEPHOLE_DEAD_STORES]     = config.opt_peephole_dead_stores,
             [OPT_PEEPHOLE_LOADS]           = config.opt_peephole_loads,
             [OPT_PEEPHOLE_IMMEDIATE_PROP]  = config.opt_peephole_immediate_prop,
@@ -251,6 +253,9 @@ int main(int argc, char **argv) {
         if (config.opt_peephole_shifts) {
             opts[OPT_PEEPHOLE_SHIFTS] = peephole_shifts(program_ast);
         }
+        if (config.opt_peephole_zero_test) {
+            opts[OPT_PEEPHOLE_ZERO_TEST] = peephole_zero_test(program_ast);
+        }
 
         // 6. Control Flow & Dead Code Cleanup
         if (config.opt_peephole_jumps) {
@@ -350,6 +355,9 @@ int main(int argc, char **argv) {
         }
         if (config.opt_peephole_shifts) {
             opts[OPT_PEEPHOLE_SHIFTS] = peephole_shifts(program_ast);
+        }
+        if (config.opt_peephole_zero_test) {
+            opts[OPT_PEEPHOLE_ZERO_TEST] = peephole_zero_test(program_ast);
         }
         if (config.opt_omit_frame_pointers) {
             opts[OPT_OMIT_FRAME_POINTERS] = omit_frame_pointers(program_ast);
