@@ -44,3 +44,14 @@ tests: $(TARGET)
 
 archive: clean
 	zip -r v32opt-project.zip doc ISSUES Makefile man README.md inc lib scripts src testing
+
+put: clean
+	@mkdir -p put
+	@rm -f put/*
+	@cp inc/*.h src/*.c README.md put/
+	@cp src/peephole/*.c put/
+	@cp man/v32opt.1  put/v32opt.1.txt
+	@cp Makefile      put/base_Makefile.txt
+	@cp doc/*         put/
+	@cp ISSUES        put/ISSUES.txt
+	@cp src/Makefile  put/src_Makefile.txt
