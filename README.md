@@ -1,12 +1,13 @@
 # v32opt — Vircon32 Assembly Optimizer
 
 `v32opt`  is  a modular,  multi-pass  assembly  optimizer written  in  C,
-specifically  targeting  the  **Vircon32**   fantasy  console.  It  takes
-raw  assembly  output  from  a  Vircon32-targeting  compiler  (C,  C++ by
-way of  `v32c++`, and Lua via  `v32lua`), hand-written assembly,  or (with
-care,  see  below)  disassembled  Vircon32  CARTs,  and applies  iterative local,  structural, data-flow,  and register-promotion
-optimizations to reduce  code size, see the individual  build chain steps
-in action, and improve execution efficiency.
+specifically  targeting the  **Vircon32** fantasy  console. It  takes raw
+assembly  output from  a Vircon32-targeting  compiler (C,  C++ by  way of
+`v32c++`, and  Lua via `v32lua`),  hand-written assembly, or  (with care,
+see  below) disassembled  Vircon32  CARTs, and  applies iterative  local,
+structural,  data-flow, and  register-promotion  optimizations to  reduce
+code size,  see the individual build  chain steps in action,  and improve
+execution efficiency.
 
 > **Note  on   Vircon32  Architecture:**  On  the   Vircon32  CPU,  **all
 > instructions  execute  in  exactly  1   cycle**,  and  there  are  **no
@@ -53,11 +54,11 @@ headers live  in `inc/`  (split by concern:  `v32opt.h` is  the umbrella,
 with  `asm.h`,  `peephole.h`,  `dataflow.h`, `inline.h`,  `stack.h`,  and
 `promote.h` behind it); sources live in `src/` and `src/peephole/`.
 
-There are  two independent ways  to build it:  the base `Makefile`  (the
-everyday developer build), and  CMake (an out-of-tree build  with a system
+There are  two independent  ways to  build it:  the base  `Makefile` (the
+everyday developer build), and CMake  (an out-of-tree build with a system
 install  and packaging  harness, modeled  on the  Vircon32 DevTools'  own
-CMake setup). They never share build products, so both can be used side by
-side.
+CMake setup). They  never share build products, so both  can be used side
+by side.
 
 ### Using Make (Linux / macOS / MSYS2)
 
@@ -84,8 +85,8 @@ $ make clean
 
 ### Using CMake (Linux / macOS / Windows)
 
-CMake  builds  out of  tree,  in  a  `build/` directory  (an  in-source
-`cmake .` is refused, since it would overwrite the base `Makefile`):
+CMake builds out of tree, in a `build/` directory (an in-source `cmake .`
+is refused, since it would overwrite the base `Makefile`):
 
 ```bash
 $ mkdir build && cd build
@@ -100,10 +101,11 @@ $ sudo cmake --install .      # see install locations below
 | Linux, macOS (and other Unix) | `/usr/local/bin/v32opt` | `/usr/local/share/man/man1/v32opt.1` |
 | Windows (MSYS2 + MinGW) | `<Program Files>\Vircon32\DevTools\v32opt.exe` | `<Program Files>\Vircon32\DevTools\docs\v32opt\` (`README.md`, `v32opt.1`) |
 
-On Windows the optimizer is installed next to the Vircon32 DevTools  (the
-`compile.exe`/`assemble.exe` folder the DevTools' own CMake install creates),
-so it is found through the same `PATH` entry. As with the DevTools, build
-it with MSYS2 + MinGW (Visual C++ lacks `getopt_long`); from a MinGW shell:
+On Windows the optimizer is installed  next to the Vircon32 DevTools (the
+`compile.exe`/`assemble.exe`  folder  the  DevTools'  own  CMake  install
+creates),  so it  is found  through the  same `PATH`  entry. As  with the
+DevTools, build it  with MSYS2 + MinGW (Visual  C++ lacks `getopt_long`);
+from a MinGW shell:
 
 ```bash
 $ mkdir build && cd build
@@ -121,14 +123,14 @@ $ cmake --build . --target uninstall             # undo the last install
 $ cpack                                          # .tar.gz (+ .deb/.rpm on Linux, .zip on Windows)
 ```
 
-The `V32OPT_INSTALL_BINDIR`, `V32OPT_INSTALL_MANDIR` and `V32OPT_INSTALL_DOCDIR`
-cache variables override the individual destinations (relative to the
-prefix).
+The       `V32OPT_INSTALL_BINDIR`,      `V32OPT_INSTALL_MANDIR`       and
+`V32OPT_INSTALL_DOCDIR`   cache   variables   override   the   individual
+destinations (relative to the prefix).
 
 ### Direct Compilation
 
 You can  also compile the  modular codebase  directly using GCC  or Clang
-(the headers live in `inc/`, and the peephole passes in their own
+(the  headers live  in  `inc/`,  and the  peephole  passes  in their  own
 subdirectory):
 
 ```bash
@@ -155,13 +157,13 @@ steps (if you're writing in assembly you can start at step 2):
 
 Currently Vircon32  provides a C  compiler (considered stable and  is the
 primary  language of  development  on the  platform)  via its  `DevTools`
-suite.  There  are  also  (in development)  third party  compilers for Lua
-(`v32lua`) and C++ (`v32c++`, which translates C++ into C for the Vircon32
-C compiler).
+suite.  There are  also (in  development) third  party compilers  for Lua
+(`v32lua`)  and  C++ (`v32c++`,  which  translates  C++  into C  for  the
+Vircon32 C compiler).
 
 ### compile your source code
 
-Each  compiler  translates  its  high-level  language  code/syntax  into
+Each  compiler  translates  its   high-level  language  code/syntax  into
 Vircon32 assembly.  It is this assembly  you need before you  can proceed
 with optimization with `v32opt`.
 
@@ -177,18 +179,20 @@ $ v32c++ -o game.c game.cpp
 $ compile -o game.asm game.c
 ```
 
-Which `-L` mode to use (and what to watch for) depends on where the
-assembly came from -- see [Source Languages](#source-languages-c-c-lua-and-assembly).
+Which    `-L`    mode    to    use    (and    what    to    watch    for)
+depends   on   where   the   assembly    came   from   --   see   [Source
+Languages](#source-languages-c-c-lua-and-assembly).
 
 Should you  be writing a Vircon32  program IN assembly language,  you can
 proceed straight to the next step (optimize).
 
-If you want to try and  optimize an existing, packed binary Vircon32 CART
-(perhaps you  do not  have access  to the  source code  to build  it from
-scratch), you can use the `unpackrom` and `disassemble` commands provided by
-the Vircon32 `DevTools` to obtain the disassembled assembly of any CART --
-but read the disassembly caveat under [Source Languages](#source-languages-c-c-lua-and-assembly)
-first: most optimizations break disassembled programs.
+If  you want  to try  and optimize  an existing,  packed binary  Vircon32
+CART  (perhaps  you do  not  have  access to  the  source  code to  build
+it  from  scratch),  you  can   use  the  `unpackrom`  and  `disassemble`
+commands provided by  the Vircon32 `DevTools` to  obtain the disassembled
+assembly  of  any   CART  --  but  read  the   disassembly  caveat  under
+[Source  Languages](#source-languages-c-c-lua-and-assembly)  first:  most
+optimizations break disassembled programs.
 
 Verify you have that resulting  `game.asm` file (and if you're interested
 in noting any  space-savings possible via optimization, take  note of the
@@ -214,10 +218,10 @@ file `gameOpt.asm` (do NOT overwrite the original):
 $ v32opt game.asm -o gameOpt.asm -O1
 ```
 
-NOTE: the input file is the only non-option argument, and it may appear
+NOTE: the input  file is the only non-option argument,  and it may appear
 before, after, or among the options (`v32opt -O1 -o gameOpt.asm game.asm`
-works the same, on every platform). Use `-o` to name the output; without
-it, `game.asm` is written to `gameOpt.asm`. A second file name is an
+works the same, on every platform).  Use `-o` to name the output; without
+it, `game.asm`  is written  to `gameOpt.asm`.  A second  file name  is an
 error rather than being silently ignored.
 
 You can also run `v32opt` with the  `-v` argument, and it will give you a
@@ -288,11 +292,11 @@ play in the Vircon32 emulator.
 
 ## Source Languages: C, C++, Lua, and Assembly
 
-`v32opt` only ever sees assembly,  but how that assembly was produced matters.
-The  passes   recognize  the   code  shapes  and   label  conventions  the
-compilers  emit  (`__function_<name>:`  function  labels,  their  internal
-`..._return:`  labels,  the standard  `PUSH  BP` / `MOV  BP,  SP` frame,
-`pointer` directives for function addresses, `..._start:` loop headers),
+`v32opt`  only ever  sees assembly,  but how  that assembly  was produced
+matters. The passes  recognize the code shapes and  label conventions the
+compilers  emit  (`__function_<name>:`  function labels,  their  internal
+`..._return:`  labels, the  standard  `PUSH  BP` /  `MOV  BP, SP`  frame,
+`pointer` directives for function  addresses, `..._start:` loop headers),
 and the `-L` mode tells the value-tracking passes how to read immediates.
 
 | Source | Toolchain | `-L` mode | Notes |
@@ -305,15 +309,15 @@ and the `-L` mode tells the value-tracking passes how to read immediates.
 
 ### Lua mode (`-L lua`)
 
-`-L lua`  (long form  `--langmode lua`;  the mode  name is  case-insensitive)
-makes the value-tracking passes aware of `v32lua`'s boxed type system:
-`BOXED_*` tagging/untagging idioms (OR/AND/IADD with a boxed immediate)
-are never folded, forwarded, or CSE'd away as ordinary arithmetic, the
-NaN-boxing tags (`BOXED_*`, `NAN_VALUE`, anything with the NaN bit pattern)
-are never resolved through `%define`, and the algebra pass drops the
-provably-dead "is it Nil?" half of the compiler's fixed truthiness test
-after a boxed-boolean producer. `-L c` (the default) keeps the plain
-C-mode behavior. v32lua's internal `__global_*` helper labels inside the
+`-L lua` (long form `--langmode  lua`; the mode name is case-insensitive)
+makes the  value-tracking passes aware  of `v32lua`'s boxed  type system:
+`BOXED_*` tagging/untagging  idioms (OR/AND/IADD with a  boxed immediate)
+are never  folded, forwarded, or  CSE'd away as ordinary  arithmetic, the
+NaN-boxing  tags  (`BOXED_*`,  `NAN_VALUE`,  anything with  the  NaN  bit
+pattern) are never resolved through `%define`, and the algebra pass drops
+the provably-dead  "is it Nil?"  half of the compiler's  fixed truthiness
+test after a boxed-boolean producer. `-L c` (the default) keeps the plain
+C-mode behavior. v32lua's internal  `__global_*` helper labels inside the
 global-scope initializer are understood in either mode.
 
 ### Hand-written assembly
