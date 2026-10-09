@@ -402,7 +402,14 @@ bool apply_transfer_function(BasicBlock *block) {
                 }
 
                 if (dst_st.type == VAL_CONST && src_st.type == VAL_CONST) {
-                    current.regs[dst_reg] = (RegState){VAL_CONST, dst_st.val + src_st.val};
+                    {
+                    // Track the sum only while it stays a writable literal
+                    // (see fits_int_literal); an overflowing add is unknown.
+                    long long sum = (long long)dst_st.val + src_st.val;
+                    current.regs[dst_reg] = fits_int_literal(sum)
+                        ? (RegState){VAL_CONST, (int)sum}
+                        : (RegState){VAL_BOTTOM, 0};
+                }
                 } else {
                     current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
                 }
@@ -544,7 +551,8 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
                     int src_reg = get_reg_index(node->src_op.reg);
                     if (src_reg >= 0) {
                         RegState src_st = current.regs[src_reg];
-                        if (src_st.type == VAL_CONST && trigger_allowed()) {
+                        if (src_st.type == VAL_CONST && fits_int_literal(src_st.val) &&
+                            trigger_allowed()) {
                             node->src_op.mode = MODE_IMMEDIATE;
                             node->src_op.immediate = src_st.val;
                             snprintf(node->src_op.raw, sizeof(node->src_op.raw), "%d", src_st.val);
@@ -592,7 +600,14 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
                         src_st = (RegState){VAL_BOTTOM, 0};
                     }
                     if (dst_st.type == VAL_CONST && src_st.type == VAL_CONST) {
-                        current.regs[dst_reg] = (RegState){VAL_CONST, dst_st.val + src_st.val};
+                        {
+                    // Track the sum only while it stays a writable literal
+                    // (see fits_int_literal); an overflowing add is unknown.
+                    long long sum = (long long)dst_st.val + src_st.val;
+                    current.regs[dst_reg] = fits_int_literal(sum)
+                        ? (RegState){VAL_CONST, (int)sum}
+                        : (RegState){VAL_BOTTOM, 0};
+                }
                     } else {
                         current.regs[dst_reg] = (RegState){VAL_BOTTOM, 0};
                     }

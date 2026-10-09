@@ -1,4 +1,4 @@
-#/usr/bin/env bash
+#!/usr/bin/env bash
 
 # Concatenate the modular sources (and the split inc/ headers, in
 # dependency order) into a single-file v32opt.h / v32opt.c pair under
@@ -15,7 +15,7 @@
 }                                                              >  put/v32opt.h
 
 echo "//"                                                    >  put/v32opt.c
-echo "// v32opt - Vircon32 assembler optiomizer written "    >> put/v32opt.c
+echo "// v32opt - Vircon32 assembler optimizer written "    >> put/v32opt.c
 echo "//          in C"                                      >> put/v32opt.c
 echo "//"                                                    >> put/v32opt.c
 echo "/////////////////////////////////////////////////////" >> put/v32opt.c

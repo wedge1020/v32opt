@@ -196,3 +196,51 @@ PEEPHOLE-ZERO-TEST (new pass, 20261002-dev; on from -O1):
 
 OPEN: testing/inline expected output gains one line
 ("%define global_var 42" is now preserved).
+
+PRE-RELEASE AUDIT (Oct 9 2026; outputs byte-identical to before on the
+unit fixtures and on 35 Vircon32 C-compiler test programs at
+-O1/-O2/-O3/-Os, except where noted):
+
+- FIXED: parse_vircon32_asm() copied the code part of a line with a
+  trailing comment into a 256-byte stack buffer using the code's own
+  length -- any line with more than 255 characters of code before a
+  ';' overflowed the stack (long string/data lines).
+- FIXED: a line whose code part didn't fit AsmNode.raw (1023 chars)
+  was silently truncated in the output (and DCE no longer saw every
+  function named on a long pointer line). Now an error naming the
+  file and line; over-long comments are still merely shortened.
+  ';' inside a "string" literal no longer counts as a comment start
+  for this check.
+- FIXED: constant folds could overflow 32 bits and emit literals the
+  assembler rejects ("MOV R1,100000 / IMUL R1,100000" -> "MOV R1,
+  10000000000"); also signed-int overflow (UB) in peephole-immediates
+  and constant-folding's IADD tracking, and folding a register holding
+  0x80000000 into "MOV Rd, -2147483648" (the assembler's decimal range
+  is -2147483647..2147483647). fits_int_literal() (tools.c) gates them.
+- FIXED: unknown options and missing option arguments exited 1 with no
+  message (opterr = 0 + "getopt already printed error"); --verbose was
+  documented but not accepted; -O20/-Ofast were taken as -O2/-O(f...);
+  -L accepted c/C/lua/LUA but not "Lua"; a second file name was
+  silently ignored; the input may now appear anywhere among the options
+  without relying on libc argv permutation.
+- FIXED: input/output path buffers were 256 bytes (silently truncated
+  long paths); open errors now name the file; a failed write/close of
+  the output file (disk full) is now an error instead of success.
+- FIXED: src/Makefile had no header dependencies (editing VERSION in
+  v32opt.h didn't rebuild main.o/args.o); CLIBS (-lm) wasn't linked;
+  the top-level install/sysinstall/tests targets failed when ./v32opt
+  didn't exist yet, and their "skip" branches ran "@echo" inside a
+  shell command.
+- DOCS: peephole-immediate-prop never substituted a constant register
+  into another instruction (README described that); it folds within a
+  register. peephole-jmp-chain only handles a JMP directly before its
+  own target label.
+
+REMAINING (found in the audit, not changed):
+
+- -d only: the "DEAD CODE ELIMINATED" debug comments peephole-jumps
+  pattern 3 inserts are unlinked again by its "curr->next = resume"
+  fix-up, so they never reach the output and leak (reclaimed at exit).
+- peephole-jmp-chain does not retarget non-adjacent jumps (see DOCS).
+- Disassembled CARTs: ROM data is referenced by absolute address, which
+  v32opt does not relocate, so any size-changing pass breaks them.

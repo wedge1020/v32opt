@@ -152,25 +152,29 @@ static void print_version(const char *prog_name)
 void print_usage(const char *prog_name)
 {
     fprintf(stdout, "Assembly Optimizer for Vircon32 (%s)\n", prog_name);
-    fprintf(stdout, "Usage: %s <input.asm> [-o output.asm] [options]\n", prog_name);
+    fprintf(stdout, "Usage: %s <input.asm> [-o output.asm] [options]\n\n", prog_name);
     fprintf(stdout, "Options:\n");
-    fprintf(stdout, "  --help, -h       Displays this information\n");
-    fprintf(stdout, "  --version, -V    Displays optimizer version\n");
-    fprintf(stdout, "  -v               Verbose output (show pass statistics)\n");
-    fprintf(stdout, "  -d               In-code debugging (mark the hits)\n");
-    fprintf(stdout, "  -t               Testing mode: just display opt:hits\n");
-    fprintf(stdout, "  -L <mode>        Language mode: 'C' (default) or 'lua'\n");
-    fprintf(stdout, "                   Lua mode enables boxed-type awareness\n\n");
-    fprintf(stdout, "  --dot <cfg.dot>  Export Control Flow Graph to DOT format\n");
-    fprintf(stdout, "  -o <file>        Specify output assembly file name\n");
-    fprintf(stdout, "  -O0              Disable all optimizations [default]\n");
-    fprintf(stdout, "  -Os              Enables space-saving optimizations\n");
-    fprintf(stdout, "  -O1              Enables first level optimizations\n");
-    fprintf(stdout, "  -O2              Enables second level optimizations\n");
-    fprintf(stdout, "  -O3              Enables aggressive optimizations (could break):\n");
+    fprintf(stdout, "  -h, --help               Display this information\n");
+    fprintf(stdout, "  -V, --version            Display optimizer version\n");
+    fprintf(stdout, "  -v, --verbose            Verbose output (show pass statistics)\n");
+    fprintf(stdout, "  -d                       In-code debugging (mark the hits)\n");
+    fprintf(stdout, "  -t                       Testing mode: just display opt:hits\n");
+    fprintf(stdout, "  -L, --langmode <mode>    Language mode: 'c' (default) or 'lua'\n");
+    fprintf(stdout, "                           (C, C++ via v32c++, and hand-written assembly\n");
+    fprintf(stdout, "                           use 'c'; 'lua' adds NaN-boxed-type awareness\n");
+    fprintf(stdout, "                           for v32lua output)\n");
+    fprintf(stdout, "  -o <file>                Output assembly file (default: <input>Opt.asm)\n");
+    fprintf(stdout, "  --dot <cfg.dot>          Export Control Flow Graph to DOT format\n\n");
+    fprintf(stdout, "Optimization Levels:\n");
+    fprintf(stdout, "  -O0                      Disable all optimizations [default]\n");
+    fprintf(stdout, "  -O1                      Local peephole passes\n");
+    fprintf(stdout, "  -O2                      -O1 + cse, dce, constant-folding,\n");
+    fprintf(stdout, "                           omit-frame-pointers\n");
+    fprintf(stdout, "  -O3                      -O2 + inline (aggressive; could break)\n");
+    fprintf(stdout, "  -Os                      Currently identical to -O3\n\n");
     fprintf(stdout, "Individual Optimization Toggles:\n");
-    fprintf(stdout, "  -f<name>     Enable specific pass (e.g., -fpeephole-algebra)\n");
-    fprintf(stdout, "  -fno-<name>  Disable specific pass (e.g., -fno-inline)\n\n");
+    fprintf(stdout, "  -f<name>                 Enable specific pass (e.g., -fpeephole-algebra)\n");
+    fprintf(stdout, "  -fno-<name>              Disable specific pass (e.g., -fno-inline)\n\n");
     fprintf(stdout, "Available optimization names:\n");
     fprintf(stdout, "  peephole-pairs, peephole-algebra, peephole-forwarding,\n");
     fprintf(stdout, "  peephole-jumps, peephole-movs, peephole-immediates,\n");
@@ -180,27 +184,28 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "  promote-loops, omit-frame-pointers, peephole-compiler-myopia,\n");
     fprintf(stdout, "  peephole-zero-test\n\n");
     fprintf(stdout, "Diagnostic Flags:\n");
-    fprintf(stdout, "  -finline-max=N          Cap inlinable function body size, in body\n");
-    fprintf(stdout, "                          instructions (clamped to 0..%d; default 8)\n", MAX_BODY_INS);
-    fprintf(stdout, "  -finline-call-limit=N   Cap the number of inlined CALL sites to N\n");
-    fprintf(stdout, "                          (evaluated in file order; -1 = no limit)\n");
-    fprintf(stdout, "  -finline-exclude=NAMES  Comma-separated function labels never inlined\n");
-    fprintf(stdout, "  -fmax-passes=N          Cap the maximum iterative optimization passes to N\n");
-    fprintf(stdout, "  -fno-resolve-defines    Treat %%define symbols as opaque (default: operands\n");
-    fprintf(stdout, "                          naming an integer %%define are seen by their value)\n");
-    fprintf(stdout, "  --trigger-max=N         Global cap: allow at most N total transformations\n");
-    fprintf(stdout, "                   to commit across EVERY enabled pass and EVERY\n");
-    fprintf(stdout, "                   fixed-point iteration, combined. Once N is reached,\n");
-    fprintf(stdout, "                   every later candidate is left untouched, as if it had\n");
-    fprintf(stdout, "                   never matched. Omit (or pass a negative N) for the\n");
-    fprintf(stdout, "                   default, unlimited behavior.\n");
-    fprintf(stdout, "                   Meant for bisecting a miscompile: re-run with\n");
-    fprintf(stdout, "                   increasing N until the output breaks -- the Nth\n");
-    fprintf(stdout, "                   transform applied (in program order, across all\n");
-    fprintf(stdout, "                   passes) is the one to inspect. Combine with -d to see\n");
-    fprintf(stdout, "                   exactly which transform that was in the output.\n\n");
-    fprintf(stdout, "NOTE: promote-regs, promote-leaf, and promote-loops are not yet\n");
-    fprintf(stdout, "connected to any optimization category. Test and bugfix first\n\n");
+    fprintf(stdout, "  -finline-max=N           Cap inlinable function body size, in body\n");
+    fprintf(stdout, "                           instructions (clamped to 0..%d; default 8)\n", MAX_BODY_INS);
+    fprintf(stdout, "  -finline-call-limit=N    Cap the number of inlined CALL sites to N\n");
+    fprintf(stdout, "                           (evaluated in file order; -1 = no limit)\n");
+    fprintf(stdout, "  -finline-exclude=NAMES   Comma-separated function labels never inlined\n");
+    fprintf(stdout, "  -fmax-passes=N           Cap the iterative optimization passes to N\n");
+    fprintf(stdout, "                           (default 1000)\n");
+    fprintf(stdout, "  -fno-resolve-defines     Treat %%define symbols as opaque (default: operands\n");
+    fprintf(stdout, "                           naming an integer %%define are seen by their value)\n");
+    fprintf(stdout, "  --trigger-max=N          Global cap: allow at most N total transformations\n");
+    fprintf(stdout, "                           to commit across EVERY enabled pass and EVERY\n");
+    fprintf(stdout, "                           fixed-point iteration, combined. Once N is reached,\n");
+    fprintf(stdout, "                           every later candidate is left untouched, as if it\n");
+    fprintf(stdout, "                           had never matched. Omit (or pass a negative N) for\n");
+    fprintf(stdout, "                           the default, unlimited behavior.\n");
+    fprintf(stdout, "                           Meant for bisecting a miscompile: re-run with\n");
+    fprintf(stdout, "                           increasing N until the output breaks -- the Nth\n");
+    fprintf(stdout, "                           transform applied (in program order, across all\n");
+    fprintf(stdout, "                           passes) is the one to inspect. Combine with -d to\n");
+    fprintf(stdout, "                           see exactly which transform that was.\n\n");
+    fprintf(stdout, "NOTE: promote-regs, promote-leaf, and promote-loops are experimental and\n");
+    fprintf(stdout, "not part of any -O level; enable them explicitly with -f<name>.\n\n");
 }
 
 // --- Main Argument Processor ----------------------------------------------
@@ -218,6 +223,7 @@ void process_args(int argc, char **argv, OptConfig *cfg,
     // Long options
     static struct option long_opts[] = {
         {"dot",          required_argument, NULL, 'D'},
+        {"verbose",      no_argument,       NULL, 'v'},
         {"langmode",     required_argument, NULL, 'L'},
         {"version",      no_argument,       NULL, 'V'},
         {"help",         no_argument,       NULL, 'h'},
@@ -226,14 +232,36 @@ void process_args(int argc, char **argv, OptConfig *cfg,
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "hVvdto:O:f:L:", long_opts, NULL)) != -1) {
+    // The ':' (after the leading '-') -- getopt reports a missing option argument as ':' and an
+    // unknown option as '?', without printing anything itself (opterr = 0
+    // above); both are reported below.
+    //
+    // The input file may appear anywhere among the options. The leading
+    // '-' in the option string makes getopt_long hand back each non-option
+    // argument, in order, as opt == 1 (optarg = the argument) -- supported
+    // by glibc, musl, the BSDs/macOS, and MinGW -- so "v32opt game.asm -O2"
+    // and "v32opt -O2 game.asm" behave identically without relying on
+    // argv permutation (which POSIXLY_CORRECT turns off). Anything after a
+    // literal "--" is collected after the loop.
+    const char *input_arg = NULL;   // the input file
+    const char *extra_arg = NULL;   // a second positional (an error)
+    while ((opt = getopt_long(argc, argv, "-:hVvdto:O:f:L:", long_opts, NULL)) != -1) {
         switch (opt) {
+            case 1:
+                if      (!input_arg) input_arg = optarg;
+                else if (!extra_arg) extra_arg = optarg;
+                break;
             case 'h': print_usage(argv[0]); exit(0);
             case 'v': cfg->verbose = true; break;
             case 'd': cfg->debug = true; break;
             case 't': cfg->testing = true; break;
             case 'o': safe_str_copy(out_file, optarg, out_size); break;
             case 'O':
+                // exactly one level character: -O2, not -O20 or -Ofast
+                if (optarg[0] != '\0' && optarg[1] != '\0') {
+                    fprintf (stderr, "ERROR: unrecognized optimization level '%s'\n", optarg);
+                    exit (1);
+                }
                 switch (optarg[0])
                 {
                     case '0':
@@ -288,9 +316,9 @@ void process_args(int argc, char **argv, OptConfig *cfg,
                 break;
 
             case 'L':
-                if (strcmp(optarg, "c") == 0 || strcmp(optarg, "C") == 0) {
+                if (str_case_eq(optarg, "c")) {
                     cfg->lang_mode = LANG_C;
-                } else if (strcmp(optarg, "lua") == 0 || strcmp(optarg, "LUA") == 0) {
+                } else if (str_case_eq(optarg, "lua")) {
                     cfg->lang_mode = LANG_LUA;
                 } else {
                     fprintf(stderr, "ERROR: Unknown language mode '%s'. Use 'c' or 'lua'.\n", optarg);
@@ -298,15 +326,40 @@ void process_args(int argc, char **argv, OptConfig *cfg,
                 }
                 break;
 
-            case '?': exit(1); // getopt already printed error
+            case ':':
+                // name the option as typed: a long one by its own text
+                // (optopt holds its internal code letter, e.g. 'D' for --dot)
+                if (strncmp(argv[optind - 1], "--", 2) == 0)
+                    fprintf(stderr, "ERROR: option '%s' requires an argument\n", argv[optind - 1]);
+                else
+                    fprintf(stderr, "ERROR: option '-%c' requires an argument\n", optopt);
+                fprintf(stderr, "Try '%s --help' for more information.\n", argv[0]);
+                exit(1);
+            case '?':
+                // optopt is 0 for an unknown long option
+                if (optopt) fprintf(stderr, "ERROR: unrecognized option '-%c'\n", optopt);
+                else        fprintf(stderr, "ERROR: unrecognized option '%s'\n", argv[optind - 1]);
+                fprintf(stderr, "Try '%s --help' for more information.\n", argv[0]);
+                exit(1);
             default: fprintf(stderr, "ERROR: unknown option '-%c'\n", opt); exit(1);
         }
     }
 
-    // ADD THIS NEW LOGIC:
-    // Positional arg is our input file
-    if (optind < argc) {
-        safe_str_copy(in_file, argv[optind], in_size);
+    for (; optind < argc; optind++) {     // after "--"
+        if      (!input_arg) input_arg = argv[optind];
+        else if (!extra_arg) extra_arg = argv[optind];
+    }
+
+    // Exactly one input file. A second one (e.g. "v32opt game.asm
+    // gameOpt.asm") used to be silently ignored; the output name goes
+    // with -o.
+    if (extra_arg) {
+        fprintf(stderr, "ERROR: unexpected extra argument '%s' (only one input file; "
+                        "use -o to name the output)\n", extra_arg);
+        exit(1);
+    }
+    if (input_arg) {
+        safe_str_copy(in_file, input_arg, in_size);
     } else {
         fprintf(stderr, "ERROR: No input assembly file specified.\n");
         exit(1);

@@ -2,9 +2,9 @@
 
 `v32opt`  is  a modular,  multi-pass  assembly  optimizer written  in  C,
 specifically  targeting  the  **Vircon32**   fantasy  console.  It  takes
-raw   assembly  output   from  a   Vircon32-targeting  compiler   (C  and
-lua),  hand-written   assembly,  or  disassembled  Vircon32   CARTs,  and
-applies  iterative local,  structural, data-flow,  and register-promotion
+raw  assembly  output  from  a  Vircon32-targeting  compiler  (C,  C++ by
+way of  `v32c++`, and Lua via  `v32lua`), hand-written assembly,  or (with
+care,  see  below)  disassembled  Vircon32  CARTs,  and applies  iterative local,  structural, data-flow,  and register-promotion
 optimizations to reduce  code size, see the individual  build chain steps
 in action, and improve execution efficiency.
 
@@ -31,14 +31,17 @@ This project and  this documentation - was built with  the help of AI:
 ## Table of Contents
 
 1. [Build Instructions](#build-instructions)
-2. [Usage & Optimization Levels](#usage--optimization-levels)
-3. [Phase 1: Local Peephole Optimizations (-O1)](#phase-1-local-peephole-optimizations--o1)
-4. [Phase 2: Global Data-Flow & Dead Code (-O2)](#phase-2-global-data-flow--dead-code--o2)
-5. [Phase 3: Interprocedural Inlining (-O3)](#phase-3-interprocedural-inlining--o3)
-6. [Experimental Passes: Memory-to-Register Promotion](#experimental-passes-memory-to-register-promotion)
-7. [CFG Visualization](#cfg-visualization)
-8. [Safety and Correctness Guardrails](#safety-and-correctness-guardrails)
-9. [Diagnostic and Debug Options](#diagnostic-and-debug-options)
+2. [Integrate into CART build process](#integrate-into-cart-build-process)
+3. [Source Languages: C, C++, Lua, and Assembly](#source-languages-c-c-lua-and-assembly)
+4. [Usage & Optimization Levels](#usage--optimization-levels)
+5. [Phase 1: Local Peephole Optimizations (-O1)](#phase-1-local-peephole-optimizations--o1)
+6. [Phase 2: Global Data-Flow & Dead Code (-O2)](#phase-2-global-data-flow--dead-code--o2)
+7. [Phase 3: Interprocedural Inlining (-O3)](#phase-3-interprocedural-inlining--o3)
+8. [Experimental Passes: Memory-to-Register Promotion](#experimental-passes-memory-to-register-promotion)
+9. [CFG Visualization](#cfg-visualization)
+10. [Safety & Correctness Guardrails](#safety--correctness-guardrails)
+11. [Diagnostic and Debug Options](#diagnostic-and-debug-options)
+12. [Releasing (version stamping)](#releasing-version-stamping)
 
 ---
 
@@ -50,31 +53,87 @@ headers live  in `inc/`  (split by concern:  `v32opt.h` is  the umbrella,
 with  `asm.h`,  `peephole.h`,  `dataflow.h`, `inline.h`,  `stack.h`,  and
 `promote.h` behind it); sources live in `src/` and `src/peephole/`.
 
+There are  two independent ways  to build it:  the base `Makefile`  (the
+everyday developer build), and  CMake (an out-of-tree build  with a system
+install  and packaging  harness, modeled  on the  Vircon32 DevTools'  own
+CMake setup). They never share build products, so both can be used side by
+side.
+
 ### Using Make (Linux / macOS / MSYS2)
 
-If your repository includes the standard Makefile, simply run:
-
 ```bash
-# Build the binary
+# Build the binary (written to ./v32opt)
 $ make
 
-# Optionally install to your home bin directory (~/bin, or ~/bin/bin.<arch>
-# if it exists). Use "sudo make sysinstall" for /usr/local/bin instead.
+# Install to your home bin directory (~/bin/bin.<arch> if it exists,
+# otherwise ~/bin); "make uninstall" removes it again
 $ make install
 
-# Clean build artifacts
+# Or install system-wide: v32opt to /usr/local/bin and the manual page to
+# /usr/local/share/man/man1 (PREFIX=... changes the root; DESTDIR=... is
+# honored for staging). "sudo make sysuninstall" removes both.
+$ sudo make sysinstall
+
+# Run the unit-test suite (needs the Vircon32 DevTools -- assemble, packrom
+# -- on your PATH; the primes test additionally needs v32lua)
+$ make tests
+
+# Clean build artifacts ("make distclean" also removes a CMake build/ dir)
 $ make clean
 ```
+
+### Using CMake (Linux / macOS / Windows)
+
+CMake  builds  out of  tree,  in  a  `build/` directory  (an  in-source
+`cmake .` is refused, since it would overwrite the base `Makefile`):
+
+```bash
+$ mkdir build && cd build
+$ cmake ..                    # Release build by default
+$ cmake --build .
+$ ctest                       # quick smoke tests (no Vircon32 tools needed)
+$ sudo cmake --install .      # see install locations below
+```
+
+| Platform | `v32opt` executable | Manual page / docs |
+| --- | --- | --- |
+| Linux, macOS (and other Unix) | `/usr/local/bin/v32opt` | `/usr/local/share/man/man1/v32opt.1` |
+| Windows (MSYS2 + MinGW) | `<Program Files>\Vircon32\DevTools\v32opt.exe` | `<Program Files>\Vircon32\DevTools\docs\v32opt\` (`README.md`, `v32opt.1`) |
+
+On Windows the optimizer is installed next to the Vircon32 DevTools  (the
+`compile.exe`/`assemble.exe` folder the DevTools' own CMake install creates),
+so it is found through the same `PATH` entry. As with the DevTools, build
+it with MSYS2 + MinGW (Visual C++ lacks `getopt_long`); from a MinGW shell:
+
+```bash
+$ mkdir build && cd build
+$ cmake -G "MSYS Makefiles" ..
+$ make
+$ cmake --install .           # from an elevated shell, for Program Files
+```
+
+Other useful knobs:
+
+```bash
+$ cmake -DCMAKE_INSTALL_PREFIX=$HOME/.local ..   # install somewhere else
+$ cmake --install . --prefix /opt/v32opt         # ...or choose at install time
+$ cmake --build . --target uninstall             # undo the last install
+$ cpack                                          # .tar.gz (+ .deb/.rpm on Linux, .zip on Windows)
+```
+
+The `V32OPT_INSTALL_BINDIR`, `V32OPT_INSTALL_MANDIR` and `V32OPT_INSTALL_DOCDIR`
+cache variables override the individual destinations (relative to the
+prefix).
 
 ### Direct Compilation
 
 You can  also compile the  modular codebase  directly using GCC  or Clang
-(note that  the peephole passes live  in their own subdirectory,  and the
-math functions used by several passes need `-lm`):
+(the headers live in `inc/`, and the peephole passes in their own
+subdirectory):
 
 ```bash
 # Compile all source files with optimization enabled
-$ gcc -O3 -Wall -Wextra src/*.c src/peephole/*.c -o v32opt -lm
+$ gcc -O2 -Wall -Wextra -Iinc src/*.c src/peephole/*.c -o v32opt
 
 # Verify  the  build  (running  with  no  arguments  will  display  usage
 # information)
@@ -96,12 +155,13 @@ steps (if you're writing in assembly you can start at step 2):
 
 Currently Vircon32  provides a C  compiler (considered stable and  is the
 primary  language of  development  on the  platform)  via its  `DevTools`
-suite.  There  is  also  (in  development) a  third  party  lua  compiler
-(`v32lua`).
+suite.  There  are  also  (in development)  third party  compilers for Lua
+(`v32lua`) and C++ (`v32c++`, which translates C++ into C for the Vircon32
+C compiler).
 
 ### compile your source code
 
-Either  compiler  translates  it  high-level  language  code/syntax  into
+Each  compiler  translates  its  high-level  language  code/syntax  into
 Vircon32 assembly.  It is this assembly  you need before you  can proceed
 with optimization with `v32opt`.
 
@@ -111,15 +171,24 @@ $ compile -o game.asm game.c
 
 # compile a lua program with the v32lua compiler
 $ v32lua -o game.asm game.lua
+
+# compile a C++ program: v32c++ emits C, which the C compiler then compiles
+$ v32c++ -o game.c game.cpp
+$ compile -o game.asm game.c
 ```
+
+Which `-L` mode to use (and what to watch for) depends on where the
+assembly came from -- see [Source Languages](#source-languages-c-c-lua-and-assembly).
 
 Should you  be writing a Vircon32  program IN assembly language,  you can
 proceed straight to the next step (optimize).
 
 If you want to try and  optimize an existing, packed binary Vircon32 CART
 (perhaps you  do not  have access  to the  source code  to build  it from
-scratch), you can use the `unpack` and `disassemble` commands provided by
-the Vircon32 `DevTools` to obtain the disassembled assembly of any CART.
+scratch), you can use the `unpackrom` and `disassemble` commands provided by
+the Vircon32 `DevTools` to obtain the disassembled assembly of any CART --
+but read the disassembly caveat under [Source Languages](#source-languages-c-c-lua-and-assembly)
+first: most optimizations break disassembled programs.
 
 Verify you have that resulting  `game.asm` file (and if you're interested
 in noting any  space-savings possible via optimization, take  note of the
@@ -141,22 +210,21 @@ To start, try  your assembly file against `-O1`, creating  a new assembly
 file `gameOpt.asm` (do NOT overwrite the original):
 
 ```bash
-# run game.as through v32opt with -O1 optimizations:
+# run game.asm through v32opt with -O1 optimizations:
 $ v32opt game.asm -o gameOpt.asm -O1
 ```
 
-NOTE:  keep the  source  assembly  file first,  followed  by any  desired
-command-line  arguments,  as shown  (the  input  file  must be  the  only
-non-option  argument).  On  glibc  Linux  and  macOS  option  permutation
-additionally  lets  flags  appear  after  the file  name  too,  but  that
-behavior is libc-specific (musl, for  example, stops parsing at the first
-non-option), so don't rely on it in scripts.
+NOTE: the input file is the only non-option argument, and it may appear
+before, after, or among the options (`v32opt -O1 -o gameOpt.asm game.asm`
+works the same, on every platform). Use `-o` to name the output; without
+it, `game.asm` is written to `gameOpt.asm`. A second file name is an
+error rather than being silently ignored.
 
 You can also run `v32opt` with the  `-v` argument, and it will give you a
 high-level status report of optimization actions it was able to perform:
 
 ```bash
-# run game.as through v32opt with -O1 optimizations:
+# run game.asm through v32opt with -O1 optimizations, reporting statistics:
 $ v32opt game.asm -o gameOpt.asm -O1 -v
 ```
 
@@ -218,6 +286,74 @@ play in the Vircon32 emulator.
 
 ---
 
+## Source Languages: C, C++, Lua, and Assembly
+
+`v32opt` only ever sees assembly,  but how that assembly was produced matters.
+The  passes   recognize  the   code  shapes  and   label  conventions  the
+compilers  emit  (`__function_<name>:`  function  labels,  their  internal
+`..._return:`  labels,  the standard  `PUSH  BP` / `MOV  BP,  SP` frame,
+`pointer` directives for function addresses, `..._start:` loop headers),
+and the `-L` mode tells the value-tracking passes how to read immediates.
+
+| Source | Toolchain | `-L` mode | Notes |
+| --- | --- | --- | --- |
+| C | `compile` (Vircon32 DevTools) | `c` (default) | The primary target; every pass is designed around this output. |
+| C++ | `v32c++` → C → `compile` | `c` (default) | The assembly *is* C-compiler output, so everything said for C applies unchanged (vtables become `pointer` tables, which DCE already follows). |
+| Lua | `v32lua` | `lua` | Lets the passes recognize v32lua's NaN-boxed values (below). Running v32lua output in C mode can fold, forward or CSE away boxing/unboxing arithmetic. |
+| Hand-written assembly | — | `c` (default) | Works, with the caveats below. |
+| Disassembled CART | `unpackrom` + `disassemble` | `c` | Only safe without any size-changing pass -- see below. |
+
+### Lua mode (`-L lua`)
+
+`-L lua`  (long form  `--langmode lua`;  the mode  name is  case-insensitive)
+makes the value-tracking passes aware of `v32lua`'s boxed type system:
+`BOXED_*` tagging/untagging idioms (OR/AND/IADD with a boxed immediate)
+are never folded, forwarded, or CSE'd away as ordinary arithmetic, the
+NaN-boxing tags (`BOXED_*`, `NAN_VALUE`, anything with the NaN bit pattern)
+are never resolved through `%define`, and the algebra pass drops the
+provably-dead "is it Nil?" half of the compiler's fixed truthiness test
+after a boxed-boolean producer. `-L c` (the default) keeps the plain
+C-mode behavior. v32lua's internal `__global_*` helper labels inside the
+global-scope initializer are understood in either mode.
+
+### Hand-written assembly
+
+Use the default C mode. Things to know:
+
+* **Function-level passes key off the compiler's naming.** DCE, inlining,
+  frame-pointer elimination and the promote-* passes only treat a label
+  of the form `__function_<name>:` as a function. Code under other labels
+  is simply never considered for removal or inlining -- safe, but those
+  passes will find little to do unless you follow the same convention.
+* **Anything reached only through a computed address is invisible.** A
+  `__function_` routine whose address is only ever formed arithmetically,
+  or jumped to via `JMP R0`/`CALL R0` with no `pointer`/operand reference to
+  its name, can be removed by DCE; code after an unconditional `JMP` that
+  is entered only by a computed jump (no label) is removed by
+  `peephole-jumps`. Referencing the label by name anywhere (`MOV R0,
+  __function_cb`, a `pointer` directive) keeps it alive.
+* **Labels ending in `_start`** are taken as loop headers by the
+  experimental `promote-loops` pass.
+* Assembler directives (`%define`, `%include`, data directives, ...) are
+  never deleted by any pass, and integer `%define` values are seen through
+  unless `-fno-resolve-defines` is given.
+
+### Disassembled CARTs
+
+The Vircon32 `disassemble` tool names jump and call targets (`_label1`,
+`_label2`, ...), but every reference to *data* in the program ROM -- string
+literals, tables, initial values -- stays a hard-coded address
+(`MOV R0, 0x2000002C`). `v32opt` does not relocate such addresses, so **any
+optimization that changes the size of the code moves the data out from under
+them** and the rebuilt CART reads the wrong memory. (Removing a single 4-word
+frame prologue/epilogue is enough to break every string in the program.)
+Treat optimizing disassembled code as an experiment: compare the original and
+optimized CARTs carefully, and expect only programs with no ROM-resident data
+references to survive. Since disassembled functions are `_labelN`, not
+`__function_<name>`, DCE and inlining also find little to do there.
+
+---
+
 ## Usage & Optimization Levels
 
 ```bash
@@ -227,24 +363,23 @@ v32opt <input.asm> [-o output.asm] [options]
 | Flag | Description | Included Passes |
 | --- | --- | --- |
 | `-O0` | **No Optimization** | Disables all optimization passes (default). |
-| `-O1` | **Local Peephole** | Enables all 13 local window peephole optimizations. |
+| `-O1` | **Local Peephole** | Enables all 14 local window peephole optimizations. |
 | `-O2` | **Global Analysis** | Enables all `-O1` passes + **CSE**, **Dead Code Elimination (DCE)**, **Global Constant Folding** & **Frame Pointer Elimination**. |
 | `-O3` | **Aggressive** | Enables all `-O2` passes + **Function Inlining**. |
 | `-Os` | **Space Saving** | Currently identical to `-O3` (a placeholder for a dedicated size-focused tier). |
-| `-v` | **Verbose Mode** | Displays detailed pass statistics and optimization counts per iteration. |
+| `-o <file>` | **Output File** | Where to write the optimized assembly (default: `<input>Opt.asm`). |
+| `-v`, `--verbose` | **Verbose Mode** | Displays detailed pass statistics and optimization counts per iteration. |
 | `-t` | **Testing Mode** | Prints a machine-readable `pass:count` summary (plus a `total:N` line). |
 | `-d` | **Debug Marking** | Marks every optimization inline in the output as `; [DEBUG <pass>] ...` comments. |
-| `-L <c\|lua>` | **Language Mode** | `lua` enables NaN-boxed-type awareness for `v32lua` output (see below). |
+| `-L <c\|lua>`, `--langmode` | **Language Mode** | `lua` enables NaN-boxed-type awareness for `v32lua` output; `c` (default) for C, C++ and assembly (see [Source Languages](#source-languages-c-c-lua-and-assembly)). |
 | `--dot <file>` | **CFG Export** | Exports the Control Flow Graph to a Graphviz `.dot` file for visualization. |
 | `--trigger-max=<N>` | **Bisection Cap** | Global budget on total committed transformations (see below). |
+| `-V`, `--version` / `-h`, `--help` | **Info** | Print the version, or a usage summary, and exit. |
 
-`-L lua`  (long form  `--langmode lua`)  makes the  value-tracking passes
-aware of `v32lua`'s boxed type system: `BOXED_*` tagging/untagging idioms
-(OR/AND/IADD  with a  boxed immediate)  are never  folded, forwarded,  or
-CSE'd  away  as ordinary  arithmetic,  and  the  algebra pass  drops  the
-provably-dead "is it  Nil?" half of the compiler's  fixed truthiness test
-after  a boxed-boolean  producer. `-L  c` (the  default) keeps  the plain
-C-mode behavior.
+`v32opt` is silent on success unless `-v` or `-t` is given, and exits
+with status `1` (and a message on stderr) for a bad option, a missing or
+unreadable input, an unwritable output, or an input line too long to
+process safely.
 
 ### Optimization Tier Philosophy & Debugging Considerations
 
@@ -523,47 +658,55 @@ MOV R3, [R2+8]                       MOV R3, R1
 Again, the `MOV R3,  R1` will end up saving a word as  it doesn't need to
 reference any immediate data.
 
-### Immediate Propagation (`peephole-immediate-prop`)
+### Immediate Folding (`peephole-immediate-prop`)
 
-Propagates  constant  immediate values  loaded  via  `MOV` directly  into
-immediately following arithmetic instructions  or moves that consume that
-register.
+Despite its name, this pass folds  constants *within* a register rather than
+propagating them into other instructions. It does three things with integer
+immediates on a register destination:
+
+* drops identity arithmetic (`IADD`/`ISUB` by `0`, `IMUL`/`IDIV` by `1`);
+* folds a constant `MOV` into a later `IADD`/`ISUB`/`IMUL` of the same register
+  (never across a read or write of that register, a conditional branch, or
+  a label/jump/call boundary);
+* merges adjacent `IADD`/`ISUB` immediates on the same register, removing the
+  pair outright when they cancel.
 
 ```vircon32
 ; BEFORE                             ; AFTER
-MOV R1, 42                           MOV R1, 42
-IADD R2, R1                          IADD R2, 42
+MOV R1, 10                           MOV R1, 15
+IADD R1, 5                           ; (Folded into the MOV)
+
+IADD R2, 5                           IADD R2, 2
+ISUB R2, 3                           ; (Merged)
 ```
 
-In isolation,  this "optimization" would  seem to make things  worse: the
-`IADD`  would  end  up consuming  one  MORE  word  of  space due  to  the
-presence  of immediate  data. However,  in combination  with some  of the
-other optimizations,  doing this  could help enable  further optimization
-possibilities.
-
-Optimization can be as much an art as it is a science.
+A fold whose result would not fit a 32-bit literal (the arithmetic
+overflowed) is left alone. `MOV R1, 42` / `IADD R2, R1` is *not* rewritten
+to `IADD R2, 42` -- that would cost a word, not save one.
 
 ### Jump Chain Elimination (`peephole-jmp-chain`)
 
-Short-circuits jump indirection.  If a jump lands on a  label whose first
-instruction is another  unconditional jump, the first  jump is retargeted
-to point directly at the final  destination, and the intermediate jump is
-removed.
+Short-circuits jump indirection: a `JMP` that sits directly before its own
+target label, whose first instruction is another unconditional `JMP`, is
+retargeted to the final destination, and the intermediate jump is removed.
 
 ```vircon32
 ; BEFORE                             ; AFTER
 JMP label_step1                      JMP label_final
-...                                  ...
 label_step1:                         label_step1:
 JMP label_final                      ; (Intermediate jump removed)
 ```
 
+Only this adjacent shape is handled at present: a jump elsewhere in the
+code that targets `label_step1` is not retargeted (it still reaches
+`label_final` through the intermediate jump, which is then kept).
+
 NOTE: the intermediate  jump is only removed when nothing  else can reach
-its label, and no  other jump or branch targets it, and  no code can fall
-into  it  (the preceding  instruction  must  itself be  an  unconditional
-transfer). Otherwise  it is  kept and still  routes every  remaining user
-correctly. Multi-hop chains collapse one hop per iteration, and only when
-each jump sits immediately before its target label.
+its label: no other jump or branch targets it, and no code can fall into
+it (the preceding instruction must itself be an unconditional transfer).
+Otherwise it is kept and still routes every remaining user correctly.
+Multi-hop chains collapse one hop per iteration, under the same adjacency
+condition.
 
 ---
 
@@ -598,9 +741,13 @@ OP Ry, B     ; -- CSE replaces this with: MOV Ry, Rx
 
 | Before | After | Savings |
 |--------|-------|---------|
-| `MOV R1, R5`<br>`IADD R1, R2`<br>`MOV R3, R5`<br>`IADD R3, R2` | `MOV R1, R5`<br>`IADD R1, R2`<br>`MOV R3, R5`<br>`MOV R3, R1` | 1 word |
-| `MOV R1, R5`<br>`IMUL R1, 42`<br>`MOV R3, R5`<br>`IMUL R3, 42` | `MOV R1, R5`<br>`IMUL R1, 42`<br>`MOV R3, R5`<br>`MOV R3, R1` | **2 words** (IMUL+imm = 2 words, MOV = 1) |
-| `MOV R1, R5`<br>`FADD R1, R2`<br>`MOV R3, R5`<br>`FADD R3, R2` | `MOV R1, R5`<br>`FADD R1, R2`<br>`MOV R3, R5`<br>`MOV R3, R1` | 1 word |
+| `MOV R1, R5`<br>`IADD R1, R2`<br>`MOV R3, R5`<br>`IADD R3, R2` | `MOV R1, R5`<br>`IADD R1, R2`<br>`MOV R3, R5`<br>`MOV R3, R1` | 0 words by itself (1-word op → 1-word `MOV`); see below |
+| `MOV R1, R5`<br>`IMUL R1, 42`<br>`MOV R3, R5`<br>`IMUL R3, 42` | `MOV R1, R5`<br>`IMUL R1, 42`<br>`MOV R3, R5`<br>`MOV R3, R1` | **1 word** (`IMUL` + immediate = 2 words, `MOV` = 1) |
+| `MOV R1, R5`<br>`FADD R1, R2`<br>`MOV R3, R5`<br>`FADD R3, R2` | `MOV R1, R5`<br>`FADD R1, R2`<br>`MOV R3, R5`<br>`MOV R3, R1` | 0 words by itself; see below |
+
+The re-initializing `MOV R3, R5` is now dead (immediately overwritten), and
+at `-O2` `peephole-dead-stores` removes it -- so in a full `-O2` run every
+row above saves one more word.
 
 ---
 
@@ -615,9 +762,14 @@ Works with registers, immediates (including negatives), and respects:
 ### Dead Function Elimination (`dce`)
 
 Performs  a  reachability  analysis  starting from  known  program  roots
-(`__boot_vector`,  `main`,  `_start`,  interrupt  service  routines,  and
-`pointer` directives).  It traces all  function call branches  and sweeps
-away entire functions that can never be reached during execution.
+-- the code before the first function (the boot path), `__function_main`
+/ `main` / `_start` / `start` / `__start`, global-initialization routines
+(`__init_globals`, `__function_init`, v32lua's global-scope initializer),
+labels containing `ISR` or `interrupt`, data labels, and every function
+named in a `pointer` directive. Any function whose name appears as an
+operand of reachable code (a `CALL`, or a `MOV R0, __function_cb` taking
+its address) becomes reachable in turn; functions (labels of the form
+`__function_<name>:`) that are never reached are swept away.
 
 ```vircon32
 ; BEFORE                             ; AFTER
@@ -632,7 +784,7 @@ __function_unused:                   ; (Unreachable function eliminated)
 
 More  for  the  lua  compiler,  as recent  versions  of  the  Vircon32  C
 compiler actually perform a form  of dead function elimination during the
-compilation step.
+compilation step (C++ goes through that same C compiler).
 
 ### Global Constant Propagation & Folding (`constant-folding`)
 
@@ -645,11 +797,15 @@ writes.
 ```vircon32
 ; BEFORE                             ; AFTER
 block_1:                             block_1:
-    MOV R1, 10                           MOV R1, 0xA
+    MOV R1, 10                           MOV R1, 10
     JMP block_2                          JMP block_2
 block_2:                             block_2:
-    MOV R2, R1                           MOV R2, 0xA
+    MOV R2, R1                           MOV R2, 10
 ```
+
+Note this trades words for immediates (`MOV R2, 10` takes two words where
+`MOV R2, R1` took one), so on its own it can *grow* the assembled binary;
+its payoff is in the immediate-based peepholes it enables afterwards.
 
 ### Frame Pointer Elimination (`omit-frame-pointers`)
 
@@ -716,14 +872,19 @@ up  and  tear down  of  a  function). But  it  also  is considered  quite
 > `-O1`/`-O2`/`-O3` optimization levels  while undergoing testing. Enable
 > them explicitly using individual `-f` toggles.
 
-### Stack Slot Promotion (`promote-regs` / `promote-leaf`)
+### Stack Slot Promotion (`promote-leaf` / `promote-regs`)
 
-Performs  scalar  replacement  of  aggregates on  the  stack.  In  **leaf
-functions** (functions that make no `CALL`s and never take the address of
-`BP`),  frequently accessed  local  stack  variables (`[BP-offset]`)  are
-promoted to unused general-purpose  registers (`R1–R13`). The optimizer
-injects pre-header  loads from  the stack  and post-header  stores before
-`RET`.
+Performs  scalar  replacement  of  aggregates on  the  stack: frequently
+accessed  local  stack  variables (`[BP-offset]`)  are promoted to unused
+general-purpose  registers (`R1–R13`), with a load from the stack slot at
+the start of the region and a store back at its end.
+
+* `promote-leaf` works on whole **leaf functions** (functions that make no
+  `CALL`s and never take or overwrite `BP`'s value); the store goes in
+  before the epilogue that precedes `RET`.
+* `promote-regs` applies the same logic to ordinary functions, separately
+  within each `CALL`-free stretch (before the first `CALL`, between calls,
+  after the last), and only where that stretch is single-entry/single-exit.
 
 ```vircon32
 ; BEFORE                 ; AFTER
@@ -804,6 +965,17 @@ rather than parsing them as  integer `0`s. This prevents constant folding
 from silently corrupting floating-point  arguments (such as audio channel
 volumes or physics calculations).
 
+* **Literal Range:** Every constant fold is computed wide and abandoned if
+the result doesn't fit a 32-bit literal the Vircon32 assembler accepts, so an
+overflowing `IMUL`/`IADD` chain is left as written instead of producing an
+out-of-range immediate.
+
+* **Directives Are Never Deleted:** No pass removes an assembler directive
+(`%define`, `%include`, `integer`/`float`/`string`/`pointer`/`datafile` data),
+even when it sits inside a range of dead code being swept away. An
+instruction or data line too long for the optimizer to hold is reported as
+an error rather than silently truncated.
+
 * **Self-Referential Load Protection:** Redundant move elimination deeply
 inspects  indirect memory  loads. Textually  identical instructions  like
 `MOV  R1, [R1]`  followed  by  a second  `MOV  R1,  [R1]` are  recognized
@@ -883,3 +1055,28 @@ miscompile: re-run  with increasing `N`  until the output breaks  — the
 to inspect.  Combine with  `-d` to  have the culprit  named right  in the
 output file,  and with  `-v` for a  final report of  how many  slots were
 used.
+
+---
+
+## Releasing (version stamping)
+
+The version lives in exactly one place: the `VERSION` `#define` in
+`inc/v32opt.h` (the same `YYYYMMDD-status` scheme as `v32lua` and `v32c++`,
+e.g. `20261002-dev`, `20261015-release`). `v32opt --version` prints it, the
+CMake build reads it at configure time (for package names), and
+`make version` stamps it into the manual page:
+
+```bash
+# after editing the #define by hand:
+$ make version
+
+# or let make edit inc/v32opt.h too:
+$ make version VERSION=20261015-release
+
+# then rebuild, so the binary reports the new version
+$ make
+```
+
+`make version` prints the version and the two lines it maintains (the
+header's `#define` and the man page's `.TH` line, which also gets the
+current month and year).

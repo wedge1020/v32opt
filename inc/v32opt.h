@@ -9,15 +9,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>    // strcasecmp/strncasecmp (POSIX; also in MinGW)
 #include <stdbool.h>
 #include <ctype.h>
+#include <errno.h>
 #include <math.h>
 #include <getopt.h>
 
 // ---------------------------------------------------------------------------
 // Project metadata
 // ---------------------------------------------------------------------------
-#define  VERSION                      "20261002-dev"
+// VERSION follows the sibling projects' (v32lua, v32c++) YYYYMMDD +
+// "-status" scheme, typically "-dev" or "-release".
+//
+// This #define is the SINGLE SOURCE of the version. `v32opt --version`
+// reads it directly; the CMake build reads it at configure time (for its
+// package metadata); the man page's .TH header is stamped from it by
+// `make version` in the base Makefile, which parses the line below with
+// sed -- so keep it on one line, in this exact `#define VERSION "..."`
+// shape. To release: edit the string and run `make version`, or run
+// `make version VERSION=YYYYMMDD-release` to have make edit it for you.
+// ---------------------------------------------------------------------------
+#define  VERSION                      "20261009-dev"
 #define  AUTHOR                       "Matthew Haas"
 #define  URL                          "https://github.com/wedge1020/v32opt"
 

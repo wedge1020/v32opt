@@ -476,10 +476,30 @@ AsmNode* clone_node(AsmNode *src) {
 //   - filename: Path to the input .asm file
 // Returns: Dummy head node (first real node is head->next)
 // ===================================================================
+// Where a line's trailing comment starts: the first ';' that is not inside
+// a "double-quoted" string literal (string "a;b" is data, not a comment).
+// Returns a pointer to the terminating NUL when there is no comment.
+static const char *find_comment_start(const char *s)
+{
+    bool in_string = false;
+    for (; *s; s++) {
+        if (in_string) {
+            if (*s == '\\' && s[1] != '\0') s++;      // skip an escaped char
+            else if (*s == '"')            in_string = false;
+        } else if (*s == '"') {
+            in_string = true;
+        } else if (*s == ';') {
+            return s;
+        }
+    }
+    return s;
+}
+
 AsmNode* parse_vircon32_asm(const char *filename) {
     FILE *fp = fopen(filename, "r");
     if (!fp) {
-        perror("Error opening input assembly file");
+        fprintf(stderr, "v32opt: cannot open input file '%s': %s\n",
+                filename, strerror(errno));
         exit(EXIT_FAILURE);
     }
 
@@ -487,8 +507,24 @@ AsmNode* parse_vircon32_asm(const char *filename) {
     AsmNode *dummy_head = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
     AsmNode *tail = dummy_head;
 
+    // Longest line text an AsmNode can hold (node->raw, minus its NUL).
+    const size_t node_raw_max = sizeof(dummy_head->raw) - 1;
+
     char line[8192];
+    long line_no = 0;
     while (fgets(line, sizeof(line), fp)) {
+        line_no++;
+
+        // A line longer than line[] arrives in pieces; swallow the rest of
+        // it so the tail can't come back around as a bogus line of its own.
+        size_t line_len = strlen(line);
+        bool overlong   = (line_len == sizeof(line) - 1 &&
+                           line[line_len - 1] != '\n' && !feof(fp));
+        if (overlong) {
+            int c;
+            while ((c = fgetc(fp)) != EOF && c != '\n') { }
+        }
+
         char raw[8192];
         safe_str_copy(raw, line, sizeof(raw));
         // Remove line endings
@@ -497,18 +533,44 @@ AsmNode* parse_vircon32_asm(const char *filename) {
         char *trimmed = trim(line);
 
         // --- Blank Lines & Comments ---
+        // (A comment longer than a node can hold is merely shortened.)
         if (strlen(trimmed) == 0 || trimmed[0] == ';') {
             AsmNode *node = create_node(raw, OP_OTHER, NULL, NULL, NULL);
             tail->next = node; node->prev = tail; tail = node;
             continue;
         }
 
+        // --- Refuse to silently truncate code ---
+        // node->raw is what gets written back out. If the code part of the
+        // line (everything before any trailing comment) doesn't fit, the
+        // output would be cut mid-instruction or mid-data -- a long string
+        // literal or pointer/integer table -- and DCE would no longer see
+        // every function named on the line. Fail loudly instead.
+        {
+            const char *code_end = find_comment_start(raw);
+            bool cut = (*code_end == '\0' && overlong) ||
+                       (size_t)(code_end - raw) > node_raw_max;
+            if (cut) {
+                fprintf(stderr,
+                        "v32opt: %s:%ld: line too long (code longer than %zu "
+                        "characters); refusing to write truncated output\n",
+                        filename, line_no, node_raw_max);
+                fclose(fp);
+                exit(EXIT_FAILURE);
+            }
+        }
+
         // --- Extract Code (Remove Inline Comments) ---
         char code_part[256] = {0};
         char *comment_ptr = strchr(trimmed, ';');
         if (comment_ptr) {
-            // Copy only the part before the comment
+            // Copy only the part before the comment. Clamp to code_part:
+            // code longer than that (a long data directive) used to be
+            // copied straight past the end of this stack buffer. Only the
+            // mnemonic and operands are parsed from it; the full text is
+            // kept in node->raw.
             size_t len = comment_ptr - trimmed;
+            if (len >= sizeof(code_part)) len = sizeof(code_part) - 1;
             safe_str_copy(code_part, trimmed, len + 1);
         } else {
             safe_str_copy(code_part, trimmed, sizeof(code_part));
@@ -633,7 +695,8 @@ AsmNode* parse_vircon32_asm(const char *filename) {
 void write_vircon32_asm(const char *filename, AsmNode *head) {
     FILE *fp = fopen(filename, "w");
     if (!fp) {
-        perror("Error opening output assembly file");
+        fprintf(stderr, "v32opt: cannot open output file '%s': %s\n",
+                filename, strerror(errno));
         exit(EXIT_FAILURE);
     }
 
@@ -664,7 +727,27 @@ void write_vircon32_asm(const char *filename, AsmNode *head) {
         curr = curr->next;
     }
 
-    fclose(fp);
+    // A full disk or a write error must not look like success.
+    bool write_failed = ferror(fp) != 0;
+    if (fclose(fp) != 0) write_failed = true;
+    if (write_failed) {
+        fprintf(stderr, "v32opt: error writing output file '%s'\n", filename);
+        exit(EXIT_FAILURE);
+    }
+}
+
+// ===================================================================
+// INTEGER LITERAL RANGE CHECK
+// Whether a folded integer result can be written back out as a decimal
+// literal the Vircon32 assembler accepts: -2147483647..2147483647. (Its
+// lexer rejects anything wider than 32 bits, and also -2147483648, since
+// it reads the magnitude before applying the sign.) Folding passes skip a
+// transform whose result falls outside this range: the arithmetic
+// overflowed, and emitting it would either fail to assemble or bake in a
+// value the hardware would never have computed.
+// ===================================================================
+bool fits_int_literal(long long v) {
+    return v >= -2147483647LL && v <= 2147483647LL;
 }
 
 // ===================================================================

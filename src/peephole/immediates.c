@@ -55,11 +55,17 @@ int peephole_immediates(AsmNode *head) {
                 is_nonzero_numeric_immediate(&next_real->src_op) &&
                 str_case_eq(curr->dst_op.reg, next_real->dst_op.reg)) {
 
-                int val1 = (curr->type == OP_IADD) ? curr->src_op.immediate : -curr->src_op.immediate;
-                int val2 = (next_real->type == OP_IADD) ? next_real->src_op.immediate : -next_real->src_op.immediate;
-                int combined = val1 + val2;
+                // Summed wide: the int sum could overflow (undefined
+                // behavior), and a result outside the assembler's literal
+                // range can't be written back as one instruction.
+                long long val1 = (curr->type == OP_IADD) ? (long long)curr->src_op.immediate : -(long long)curr->src_op.immediate;
+                long long val2 = (next_real->type == OP_IADD) ? (long long)next_real->src_op.immediate : -(long long)next_real->src_op.immediate;
+                long long wide = val1 + val2;
+                int combined = (int)wide;
 
-                if (combined == 0) {
+                if (!fits_int_literal(wide)) {
+                    // overflowed: keep both instructions
+                } else if (combined == 0) {
                     AsmNode *nodes[] = {curr, next_real};
                     if (remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_IMMEDIATES)) optimizations += 2;
                     continue;

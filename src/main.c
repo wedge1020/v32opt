@@ -95,14 +95,18 @@ int main(int argc, char **argv) {
     }
 
     // --- Initialize defaults ---
-    char     inFile[256]                         = {0};
-    char     outFile[256]                        = {0};
-    char     dotFile[256]                        = {0};
+    // Path buffers sized for real-world paths (were 256, which silently
+    // truncated a long path and then opened/wrote the WRONG file).
+    char     inFile[4096]                        = {0};
+    char     outFile[4096]                       = {0};
+    char     dotFile[4096]                       = {0};
     int      max_passes                          = 1000;
-    OptType  tally[MAX_OPTIMIZATION_ALGORITHMS]  = { 0 };
+    // Per-pass hit counts (indexed by OptType; the counts themselves are
+    // plain ints -- they were declared OptType, which only worked because
+    // an enum is an int underneath).
+    int      tally[MAX_OPTIMIZATION_ALGORITHMS]  = { 0 };
 
     // --- Process command-line arguments ---
-    // Update the call to include inFile and sizeof(inFile)
     process_args(argc, argv, &config,
                  inFile, sizeof(inFile),
                  outFile, sizeof(outFile),
@@ -192,7 +196,7 @@ int main(int argc, char **argv) {
     int pass_count = 0;
     do {
         opts_in_pass = 0;
-        OptType opts[MAX_OPTIMIZATION_ALGORITHMS] = {0};
+        int opts[MAX_OPTIMIZATION_ALGORITHMS] = {0};
         pass_count++;
 
         // 1. Interprocedural & Structural
@@ -317,7 +321,7 @@ int main(int argc, char **argv) {
     int cleanup_opts;
     do {
         cleanup_opts = 0;
-        OptType opts[MAX_OPTIMIZATION_ALGORITHMS] = {0};
+        int opts[MAX_OPTIMIZATION_ALGORITHMS] = {0};
 
         // compiler myopia
         if (config.opt_peephole_compiler_myopia) {

@@ -1,24 +1,22 @@
 #include "v32opt.h"
 
 // ===================================================================
-// PEEPHOLE: Immediate Propagation
-// Propagates immediate values through registers:
-//   - MOV R1, 42; ... OP R2, R1 → OP R2, 42 (if R1 not modified)
-//   - IADD R1, 10; ISUB R2, R1 → ISUB R2, 10 (if R1 not modified)
-//   - Handles arithmetic operations with immediate operands
+// PEEPHOLE: Immediate Folding (-fpeephole-immediate-prop)
+// Handles (integer immediates only; register destinations only):
+//   1. Identity math elimination:   IADD/ISUB R, 0   and  IMUL/IDIV R, 1
+//   2. Constant folding (MOV + ALU): MOV R1, 10 ... IADD R1, 5
+//                                    -> MOV R1, 15
+//      (IADD/ISUB/IMUL; never across a read of R1, a write to it, a
+//      conditional branch, or a control-flow boundary)
+//   3. Sequential math combining:   IADD R1, 5 / ISUB R1, 3 -> IADD R1, 2
+//      (adjacent; a pair that cancels is removed entirely)
+// A fold whose result would not fit a 32-bit decimal literal
+// (fits_int_literal) is skipped.
 //
-// Examples:
-//   MOV R1, 42    ->  (kept)
-//   IADD R2, R1   ->  IADD R2, 42  (R1 replaced with immediate 42)
+// NOTE: despite the pass name, it does NOT substitute a constant
+// register into another instruction's operand ("MOV R1, 42 / IADD R2,
+// R1" is left alone).
 // ===================================================================
-// ===================================================================
-// PEEPHOLE: Immediate Propagation & Folding
-// Handles:
-//   1. Identity math elimination (IADD R, 0, IMUL R, 1, etc.)
-//   2. Constant folding (MOV R1, val1 + ALU R1, val2 -> MOV R1, new_val)
-//   3. Sequential math combining (ALU R1, val1 + ALU R1, val2 -> combined ALU)
-// ===================================================================
-
 int peephole_immediate_prop(AsmNode *head)
 {
     int optimizations = 0;
@@ -78,13 +76,20 @@ int peephole_immediate_prop(AsmNode *head)
                         scan->dst_op.mode == MODE_REG && str_case_eq(scan->dst_op.reg, def_reg) &&
                         is_numeric_immediate(&scan->src_op) && !scan->src_op.is_float)
                     {
-                        long v1 = curr->src_op.immediate;
-                        long v2 = scan->src_op.immediate;
-                        long result = 0;
+                        long long v1 = curr->src_op.immediate;
+                        long long v2 = scan->src_op.immediate;
+                        long long result = 0;
 
                         if (scan->type == OP_IADD) result = v1 + v2;
                         else if (scan->type == OP_ISUB) result = v1 - v2;
                         else if (scan->type == OP_IMUL) result = v1 * v2;
+
+                        // An overflowing fold ("MOV R1,100000 / IMUL R1,
+                        // 100000") used to emit an out-of-range literal the
+                        // assembler rejects. Leave such pairs alone.
+                        if (!fits_int_literal(result)) {
+                            break;
+                        }
 
                         // TRIGGER CAP: this fold is one atomic transform --
                         // curr's rewrite and scan's removal must both happen
@@ -99,9 +104,9 @@ int peephole_immediate_prop(AsmNode *head)
                         AsmNode *dummy = scan;
                         if (remove_with_debug(&dummy, nodes, 1, OPT_PEEPHOLE_IMMEDIATE_PROP)) {
                             insert_debug_comment(curr->prev, OPT_PEEPHOLE_IMMEDIATE_PROP, curr->raw);
-                            curr->src_op.immediate = result;
-                            snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%ld", result);
-                            snprintf(curr->raw, sizeof(curr->raw), "    MOV %s, %ld", curr->dst_op.raw, result);
+                            curr->src_op.immediate = (int)result;
+                            snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%lld", result);
+                            snprintf(curr->raw, sizeof(curr->raw), "    MOV %s, %lld", curr->dst_op.raw, result);
                             optimizations++;
                             folded = true;
                         }
@@ -165,11 +170,15 @@ int peephole_immediate_prop(AsmNode *head)
                 str_case_eq(curr->dst_op.reg, next_real->dst_op.reg) &&
                 is_numeric_immediate(&next_real->src_op) && !next_real->src_op.is_float)
             {
-                long val1 = (curr->type == OP_IADD) ? curr->src_op.immediate : -curr->src_op.immediate;
-                long val2 = (next_real->type == OP_IADD) ? next_real->src_op.immediate : -next_real->src_op.immediate;
+                long val1 = (curr->type == OP_IADD) ? (long)curr->src_op.immediate : -(long)curr->src_op.immediate;
+                long val2 = (next_real->type == OP_IADD) ? (long)next_real->src_op.immediate : -(long)next_real->src_op.immediate;
                 long combined = val1 + val2;
 
-                if (combined == 0)
+                if (!fits_int_literal(combined))
+                {
+                    // overflowed: no single literal says it -- keep both
+                }
+                else if (combined == 0)
                 {
                     AsmNode *nodes[] = {curr, next_real};
                     if (remove_with_debug(&curr, nodes, 2, OPT_PEEPHOLE_IMMEDIATE_PROP)) optimizations += 2;

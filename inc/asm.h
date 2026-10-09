@@ -107,7 +107,7 @@ typedef struct {
 
 typedef struct AsmNode {
     OpType type;
-    char raw[1024];              // was: char raw[8192];
+    char raw[1024];              // longer code lines are rejected by the parser
     char mnemonic[32];
 
     Operand dst_op;
@@ -149,6 +149,7 @@ bool  str_case_eq             (const char *, const char *);
 void  strip_comment_from_line (char *, const char    *, size_t);
 void  normalize_whitespace    (char *, const char    *, size_t);
 bool  is_power_of_two         (int);
+bool  fits_int_literal        (long long);
 int   get_log2                (int);
 
 // ---------------------------------------------------------------------------

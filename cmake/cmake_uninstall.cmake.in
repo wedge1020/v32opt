@@ -1,0 +1,24 @@
+# Removes every file listed in install_manifest.txt (written by the last
+# `cmake --install`). Generated into the build directory by CMakeLists.txt;
+# run as `cmake --build . --target uninstall`.
+
+set(MANIFEST "@CMAKE_CURRENT_BINARY_DIR@/install_manifest.txt")
+
+if(NOT EXISTS "${MANIFEST}")
+    message(FATAL_ERROR "Cannot find install manifest: ${MANIFEST} "
+                        "(nothing has been installed from this build directory)")
+endif()
+
+file(STRINGS "${MANIFEST}" files)
+foreach(file ${files})
+    set(file "$ENV{DESTDIR}${file}")
+    if(IS_SYMLINK "${file}" OR EXISTS "${file}")
+        message(STATUS "Uninstalling: ${file}")
+        file(REMOVE "${file}")
+        if(IS_SYMLINK "${file}" OR EXISTS "${file}")
+            message(FATAL_ERROR "Could not remove ${file} (permissions?)")
+        endif()
+    else()
+        message(STATUS "Not installed (skipping): ${file}")
+    endif()
+endforeach()

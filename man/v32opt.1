@@ -29,12 +29,14 @@ v32opt \- optimize Vircon32 assembly code
 is a modular, multi-pass optimizer for assembly written for the
 .B Vircon32
 fantasy console. It accepts assembly produced by the Vircon32 C
-compiler,
+compiler (including C++ translated to C by
+.BR v32c++ (1)),
 .BR v32lua (1),
-or your own hand-written assembly, as well as assembly recovered
-from an already-packed CART with the Vircon32
+or your own hand-written assembly, as well as (with the caveats under
+.BR "SOURCE LANGUAGES" )
+assembly recovered from an already-packed CART with the Vircon32
 .B DevTools
-.IR unpack /
+.IR unpackrom /
 .I disassemble
 commands, and rewrites it to be smaller and, where it can be,
 cheaper to execute. It is meant to sit
@@ -97,10 +99,10 @@ becomes
 .IR gameOpt.asm .
 The input file is never modified in place.
 .PP
-The recommended invocation order places the input file first, as
-shown above (the usage banner does the same). This always works;
-some C libraries additionally accept options after the file name,
-but that is not portable, so don't rely on it.
+Exactly one input file is accepted. It may appear before, after, or
+among the options; everything after a literal
+.B \-\-
+is taken as a file name.
 .SH OPTIONS
 .TP
 .BI \-o " output.asm"
@@ -117,7 +119,7 @@ Select a preset optimization level:
 No optimization at all (the default).
 .TP
 .B \-O1
-All thirteen local peephole passes (see
+All fourteen local peephole passes (see
 .BR "OPTIMIZATION LEVELS" ,
 below).
 .TP
@@ -172,7 +174,14 @@ line per pass that changed something, then
 .IR total : N .
 .TP
 .BR \-L " mode" ", " \-\-langmode " mode"
-Language mode, \(dqc\(dq (the default) or \(dqlua\(dq. Lua mode
+Language mode, \(dqc\(dq (the default) or \(dqlua\(dq (either case).
+Use \(dqc\(dq for C, for C++ compiled through
+.BR v32c++ (1),
+and for hand-written assembly; \(dqlua\(dq for
+.BR v32lua (1)
+output (see
+.BR "SOURCE LANGUAGES" ).
+Lua mode
 makes passes that track values or eliminate \(dqduplicate\(dq
 computation aware of v32lua's NaN-boxed type system, so that
 BOXED_* tagging/untagging idioms are never folded, forwarded, or
@@ -368,17 +377,26 @@ Replaces a second consecutive load from the same memory address
 with a register move from the first load's destination.
 .TP
 .I peephole\-immediate\-prop
-Folds a constant
+Immediate folding within a register: removes identity arithmetic
+.RB ( IADD / ISUB
+by 0,
+.BR IMUL / IDIV
+by 1), folds a constant
 .B MOV
-into a following immediate arithmetic instruction on the same
-register, and merges sequential immediate arithmetic (never
-across a read of the register or a conditional branch).
+into a following
+.BR IADD / ISUB / IMUL
+immediate on the same register (never across a read or write of the
+register, a conditional branch, or a label/jump/call boundary), and
+merges adjacent immediate additions/subtractions. Despite the name, a
+constant is not substituted into other instructions' operands. A fold
+whose result would not fit a 32-bit literal is skipped.
 .TP
 .I peephole\-jmp\-chain
-Short-circuits jump indirection: a jump to a label that
-immediately begins another unconditional jump is retargeted to
-that jump's destination; the intermediate jump is removed only
-when nothing else can reach its label.
+Short-circuits jump indirection: a jump sitting directly before
+its own target label, where that label immediately begins another
+unconditional jump, is retargeted to that jump's destination; the
+intermediate jump is removed only when nothing else can reach its
+label. (Jumps to the label from elsewhere are not retargeted.)
 .SS "\-O2: global analysis"
 .B \-O1
 plus:
@@ -386,14 +404,20 @@ plus:
 .I cse
 Common-subexpression elimination within basic blocks: a repeated
 (register, operation, operand) computation is replaced by a move
-from the first result \em source operands must be unchanged
+from the first result \(em source operands must be unchanged
 between the two occurrences.
 .TP
 .I dce
-Dead-function elimination: reachability from the boot vector,
-entry points, interrupt handlers, and
+Dead-function elimination: reachability from the boot path, entry
+points, global initializers, interrupt handlers, data labels, and
 .I pointer
-directives; unreached functions are swept away.
+directives, following every function named as an operand
+.RB ( CALL ,
+or
+.B MOV
+of its address); unreached
+.BI __function_ name :
+functions are swept away.
 .TP
 .I constant\-folding
 Lattice-based constant propagation over the control-flow graph,
@@ -402,7 +426,7 @@ conservatively around calls. Note this trades words for immediates
 (a folded
 .B "MOV Rd, const"
 occupies two words where the register form took one), so it can
-grow the assembled binary even as it shrinks the source \em its
+grow the assembled binary even as it shrinks the source \(em its
 payoff is enabling further immediate-based peepholes.
 .TP
 .I omit\-frame\-pointers
@@ -412,7 +436,7 @@ prologue and
 .BR "MOV SP, BP" / "POP BP"
 epilogue from functions whose bodies never reference
 .B BP
-at all \em directly
+at all \(em directly
 .I or
 through
 .BR [BP\[+-]N] .
@@ -456,11 +480,59 @@ stack slots into unused general-purpose registers, injecting
 loads and flushes at region boundaries. They are not enabled by
 any preset level while undergoing testing; enable them only
 explicitly, and expect to have to bisect.
+.SH SOURCE LANGUAGES
+.TP
+.B C
+Output of the Vircon32 C compiler
+.RB ( compile );
+the primary target. Use the default
+.BR "\-L c" .
+.TP
+.B C++
+.BR v32c++ (1)
+translates C++ into C, which the Vircon32 C compiler then compiles,
+so the assembly is ordinary C-compiler output: use
+.BR "\-L c" ;
+everything said for C applies.
+.TP
+.B Lua
+Output of
+.BR v32lua (1):
+use
+.B "\-L lua"
+(see
+.BR "LUA MODE" ).
+.TP
+.B Hand-written assembly
+Use
+.BR "\-L c" .
+Function-level passes (dce, inline, omit-frame-pointers, promote-*)
+only recognize labels of the compilers' form
+.BI __function_ name :
+as functions; code under other labels is never removed or inlined.
+Code reached only through a computed address (\fBJMP R0\fP,
+\fBCALL R0\fP) without its label being named anywhere can be
+removed by dce or by peephole-jumps; naming the label (a
+.I pointer
+directive, \fBMOV R0, __function_cb\fP) keeps it alive. Labels ending
+in
+.I _start
+are treated as loop headers by promote-loops.
+.TP
+.B Disassembled CARTs
+.B disassemble
+names jump and call targets, but references to data in the program
+ROM (strings, tables) remain hard-coded addresses, which
+.B v32opt
+does not relocate. Any optimization that changes the size of the
+code therefore moves that data out from under its references and
+breaks the rebuilt CART. Treat optimizing disassembled code as an
+experiment.
 .SH LUA MODE
 When optimizing
 .BR v32lua (1)
 output, pass
-.BR \-L lua .
+.BR "\-L lua" .
 v32lua represents Lua values as IEEE-754 NaN-boxed words whose tag
 bits are manipulated with
 .I BOXED_*
@@ -482,9 +554,11 @@ The input was read and the optimized assembly written
 successfully.
 .TP
 .B 1
-No input file was given; an option was unrecognized or malformed;
-the input file could not be opened; or the requested optimization
-level or language mode does not exist.
+No input file (or more than one) was given; an option was
+unrecognized or malformed; the requested optimization level or
+language mode does not exist; the input file could not be opened, or
+contains an instruction or data line too long to process without
+truncating it; or the output file could not be written.
 .SH EXAMPLES
 Optimize a compiler-emitted file at the safest level, writing
 .IR gameOpt.asm :
@@ -562,12 +636,13 @@ either rename the resulting
 or point the XML at it.
 .SH SEE ALSO
 .BR v32lua (1),
+.BR v32c++ (1),
 the Vircon32 DevTools documentation
 .RI ( compile ,
 .IR assemble ,
 .IR packrom ,
 and the
-.IR unpack / disassemble
+.IR unpackrom / disassemble
 pair for recovering assembly from packed CARTs).
 .PP
 Project repository:
@@ -582,8 +657,10 @@ about computed jump targets
 DCE's boundary heuristic can confuse a real function whose name
 ends in
 .BR _return ,
-and the experimental promote-* passes are still undergoing
-testing. Treat
+the experimental promote-* passes are still undergoing
+testing, and optimized disassembly is generally broken by moved ROM
+data (see
+.BR "SOURCE LANGUAGES" ). Treat
 .B \-O3
 (and the promote-* passes) as genuinely risky, and even
 .BR \-O1 / \-O2
