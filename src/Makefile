@@ -14,7 +14,7 @@ DEPFLAGS = -MMD -MP
 CLIBS = -lm
 
 # --- Output Executable ---
-TARGET = ../v32opt
+TARGET = ../bin/v32opt
 
 # --- Object Files ---
 
@@ -35,6 +35,7 @@ DEPS = $(OBJS:.o=.d)
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
+	@mkdir -p ../bin
 	$(CC) $(CFLAGS) -o $@ $^ $(CLIBS)
 
 # Rule for standard C files

@@ -31,13 +31,13 @@ MONTH   := $(shell LC_ALL=C date +"%B %Y")
 # install` could install a stale binary -- and with no ./v32opt at all
 # it failed with "No rule to make target".
 .PHONY: all clean distclean install uninstall sysinstall sysuninstall \
-        tests version monofiles archive put $(TARGET)
+        tests version monofiles archive put bin/$(TARGET)
 
 # Default target: build the optimizer executable (src/Makefile writes it
 # to ./v32opt)
-all: $(TARGET)
+all: bin/$(TARGET)
 
-$(TARGET):
+bin/$(TARGET):
 	$(MAKE) -C src
 
 # Clean both the build files in src/ and the generated assembly in testing/
@@ -50,13 +50,13 @@ clean:
 distclean: clean
 	rm -rf build
 
-install: $(TARGET)
+install: bin/$(TARGET)
 	@if [ -d ~/bin/bin.$(ARCH) ]; then \
 		echo "Installing $(TARGET) to ~/bin/bin.$(ARCH)/"; \
-		install -m 755 $(TARGET) ~/bin/bin.$(ARCH)/$(TARGET); \
+		install -m 755 bin/$(TARGET) ~/bin/bin.$(ARCH)/$(TARGET); \
 	elif [ -d ~/bin ]; then \
 		echo "Installing $(TARGET) to ~/bin/"; \
-		install -m 755 $(TARGET) ~/bin/$(TARGET); \
+		install -m 755 bin/$(TARGET) ~/bin/$(TARGET); \
 	else \
 		echo "Skipping: neither ~/bin/bin.$(ARCH) nor ~/bin exist"; \
 	fi
@@ -66,9 +66,9 @@ uninstall:
 
 # System-wide install: the binary to $(BINDIR), the manual page to
 # $(MANDIR). May need sudo.
-sysinstall: $(TARGET)
+sysinstall: bin/$(TARGET)
 	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(MANDIR)
-	install -m 755 $(TARGET) $(DESTDIR)$(BINDIR)/$(TARGET)
+	install -m 755 bin/$(TARGET) $(DESTDIR)$(BINDIR)/$(TARGET)
 	install -m 644 man/v32opt.1 $(DESTDIR)$(MANDIR)/v32opt.1
 	@echo "Installed $(TARGET) to $(BINDIR) and its manual page to $(MANDIR)"
 
@@ -94,7 +94,7 @@ monofiles:
 
 # Run the test compilations.
 # We explicitly depend on the optimizer binary ('v32opt') being built first!
-tests: $(TARGET)
+tests: bin/$(TARGET)
 	$(MAKE) -C testing
 
 archive: clean
