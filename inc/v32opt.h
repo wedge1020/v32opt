@@ -30,7 +30,7 @@
 // shape. To release: edit the string and run `make version`, or run
 // `make version VERSION=YYYYMMDD-release` to have make edit it for you.
 // ---------------------------------------------------------------------------
-#define  VERSION                      "20261009-dev"
+#define  VERSION                      "20261010-dev"
 #define  AUTHOR                       "Matthew Haas"
 #define  URL                          "https://github.com/wedge1020/v32opt"
 

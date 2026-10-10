@@ -114,6 +114,8 @@ typedef struct AsmNode {
     Operand src_op;
     bool has_dst;
     bool has_src;
+    bool debug_note;             // a "; [DEBUG <pass>] ..." comment that -d
+                                 // inserted (not part of the input program)
 
     struct AsmNode *prev;
     struct AsmNode *next;

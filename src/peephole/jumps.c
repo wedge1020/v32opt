@@ -133,17 +133,14 @@ int peephole_jumps(AsmNode *head)
             {
                 AsmNode *to_remove[256];
                 int remove_count = 0;
+                int instr_count  = 0;
                 AsmNode *scan = curr->next;
 
                 while (scan && remove_count < 256)
                 {
-                    if (scan->type == OP_LABEL)
-                    {
-                        char lbl_name[128];
-                        get_label_name(scan, lbl_name, sizeof(lbl_name));
-                        if (str_case_eq(lbl_name, target_label)) break;
-                        else break;
-                    }
+                    // The dead range ends at the next label: that is where
+                    // control can enter again.
+                    if (scan->type == OP_LABEL) break;
 
                     // BUG FIX: stop at assembler directives. Only real
                     // instructions can be "unreachable"; a directive is not
@@ -158,61 +155,56 @@ int peephole_jumps(AsmNode *head)
                     // The same applies to %include and to unlabeled data
                     // (integer/float/string/pointer/datafile), which may
                     // be addressed relative to an earlier label.
-                    // Blank lines and comments are still swept with the
-                    // dead group.
                     // (remove_node() also refuses to delete directives,
-                    // but stopping here matters: the splice below would
-                    // otherwise unlink a kept directive from the list.)
+                    // but stopping here matters: the group below must be
+                    // exactly the nodes that really get unlinked.)
                     if (is_directive_node(scan)) break;
 
+                    // -d annotations (this pass's own markers from an
+                    // earlier round, or another pass's) are not program
+                    // text: step over them and leave them where they are.
+                    // Collecting them used to re-wrap them in new markers
+                    // on every visit -- an infinite loop -- which had been
+                    // "fixed" by splicing them out of the list unfreed, so
+                    // -d output never showed the dead-code markers.
+                    if (scan->debug_note) {
+                        scan = scan->next;
+                        continue;
+                    }
+
+                    // Ordinary comments and blank lines in the dead range
+                    // are swept with it (as they always have been).
                     to_remove[remove_count++] = scan;
+                    if (scan->type != OP_OTHER) instr_count++;
                     scan = scan->next;
                 }
 
-                if (remove_count > 0)
+                // TRIGGER CAP: the whole group is ONE transform, gated by
+                // exactly one trigger slot; if the budget is exhausted the
+                // code is left exactly as found (no banner, no removal).
+                if (remove_count > 0 && trigger_allowed())
                 {
-                    // TRIGGER CAP: check up front, before writing the banner
-                    // comment below -- if the budget is exhausted this whole
-                    // elimination is skipped, so nothing about it (comment
-                    // included) should appear either. remove_with_debug()
-                    // itself still re-checks the cap (it's the shared choke
-                    // point for every pass), but bailing here too avoids
-                    // committing the banner comment for a removal that then
-                    // doesn't happen.
-                    if (trigger_allowed()) {
-                        // Refund the slot remove_with_debug() is about to
-                        // consume again for the SAME group of nodes -- this
-                        // call already spent one just to decide "yes, do
-                        // this whole group", and remove_with_debug() spends
-                        // its own on top of that; without the refund a
-                        // single dead-code-elimination group would cost 2
-                        // triggers instead of 1, breaking the "Nth transform"
-                        // bisection this flag exists for.
-                        g_trigger_count--;
-
-                        // This custom structural comment is fine to keep as a banner
+                    // One banner per eliminated group, directly after the
+                    // JMP, then a marker in place of each removed
+                    // instruction (removed comments/blank lines get none --
+                    // a marker for a blank line would just be noise).
+                    if (instr_count > 0) {
                         insert_debug_comment(curr, OPT_PEEPHOLE_JUMPS, "DEAD CODE ELIMINATED");
-                        // Unlike the peephole/movs.c call sites, this one genuinely
-                        // needs curr->next updated to the real next_after: did_optimize
-                        // is true here, so the outer loop does NOT advance curr, and
-                        // on the very next iteration pattern-3 re-scans starting at
-                        // curr->next. If that scan re-discovers the just-inserted
-                        // debug comments (because curr->next still threads through
-                        // them instead of skipping to real code), it would re-wrap
-                        // them in new comments forever -- a reproduced infinite loop.
-                        // So the write-through IS required here; do it explicitly,
-                        // after remove_with_debug() has returned (no race with its
-                        // internal splice), and fix up BOTH directions of the link --
-                        // the original code only ever wrote curr->next, never
-                        // resume->prev, which is exactly the asymmetry described in
-                        // tools.c.patch.c.
-                        AsmNode *resume;
-                        remove_with_debug(&resume, to_remove, remove_count, OPT_PEEPHOLE_JUMPS);
-                        curr->next = resume;
-                        if (resume) resume->prev = curr;
-                        optimizations += remove_count;
-                        did_optimize = true;
                     }
+                    for (int i = 0; i < remove_count; i++) {
+                        if (to_remove[i]->type != OP_OTHER) {
+                            insert_debug_comment(to_remove[i]->prev, OPT_PEEPHOLE_JUMPS,
+                                                 to_remove[i]->raw);
+                        }
+                        remove_node(to_remove[i]);
+                    }
+                    optimizations += remove_count;
+
+                    // curr is NOT advanced (did_optimize): with the dead code
+                    // gone, pattern 1 may now apply ("JMP L / L:"). The
+                    // re-scan of pattern 3 finds nothing but the -d markers
+                    // just inserted (stepped over above), so it terminates.
+                    did_optimize = true;
                 }
             }
         }

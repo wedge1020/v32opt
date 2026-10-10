@@ -145,7 +145,7 @@ void normalize_whitespace(char *dest, const char *src, size_t dest_size) {
 }
 
 void insert_debug_comment(AsmNode *after, OptType opt_type, const char *original_instr) {
-    if (!config.debug) return;
+    if (!config.debug || !after) return;   // nowhere to link it: don't leak it
 
     // Validate opt_type is in bounds
     const char *pass_name = "unknown";
@@ -177,6 +177,7 @@ void insert_debug_comment(AsmNode *after, OptType opt_type, const char *original
 
     AsmNode *comment = calloc(1, sizeof(AsmNode));
     comment->type = OP_OTHER;
+    comment->debug_note = true;
 
     char debug_prefix[128];
     snprintf(debug_prefix, sizeof(debug_prefix), "; [DEBUG %s] ", safe_pass_name);

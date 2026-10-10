@@ -233,14 +233,38 @@ unit fixtures and on 35 Vircon32 C-compiler test programs at
   shell command.
 - DOCS: peephole-immediate-prop never substituted a constant register
   into another instruction (README described that); it folds within a
-  register. peephole-jmp-chain only handles a JMP directly before its
-  own target label.
+  register.
+
+FOLLOW-UP (Oct 10 2026):
+
+- FIXED (-d only): the "DEAD CODE ELIMINATED" debug comments that
+  peephole-jumps pattern 3 inserts were unlinked again by its
+  "curr->next = resume" fix-up, so they never reached the output and
+  leaked. Root cause: the dead-range scan collected -d annotations
+  (debug comments) as dead code, re-wrapping them in new markers on
+  every revisit -- the infinite loop the fix-up papered over. -d
+  comments are now flagged (AsmNode.debug_note) and stepped over by the
+  scan, the fix-up and the refund-a-trigger-slot dance are gone, and the
+  group is gated by exactly one trigger_allowed(). insert_debug_comment()
+  also no longer leaks a comment when given no node to link after.
+  Output without -d is byte-identical; -d output differs only by the
+  restored markers (code lines identical, -t counts identical).
+- FIXED: peephole-jmp-chain rewritten. Any JMP/JT/JF whose target label
+  leads (past further labels, comments, blanks) straight to a "JMP
+  <label>" is retargeted to the end of the chain in one step; cycles,
+  duplicate labels, computed final hops and directives stop resolution.
+  Intermediate JMPs are removed, cascading along the chain, only when no
+  label in the run above them is referenced ANYWHERE in the program text
+  (the old check counted only JMP/JT/JF/CALL operands, so a label whose
+  address was taken with "MOV R0, label" or "pointer label" could lose
+  its JMP) and nothing falls into them (a JMP at program start -- the
+  boot entry point -- now counts as reachable; it didn't). One trigger
+  slot per retargeted jump, including the removals it enables.
+  Fixture: testing/peephole-jmp-chain scenario 5 now expects the full
+  collapse; scenarios 8-11 added (non-adjacent and conditional jumps,
+  address taken, fall-through, self-loop / computed jump).
 
 REMAINING (found in the audit, not changed):
 
-- -d only: the "DEAD CODE ELIMINATED" debug comments peephole-jumps
-  pattern 3 inserts are unlinked again by its "curr->next = resume"
-  fix-up, so they never reach the output and leak (reclaimed at exit).
-- peephole-jmp-chain does not retarget non-adjacent jumps (see DOCS).
 - Disassembled CARTs: ROM data is referenced by absolute address, which
   v32opt does not relocate, so any size-changing pass breaks them.

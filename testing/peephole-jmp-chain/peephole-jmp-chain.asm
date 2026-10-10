@@ -51,16 +51,15 @@ _L9:
 RET
 
 ; ===================================================================
-; ✅ SCENARIO 5: Multiple Chains (one hop per iteration, adjacency required)
-; "JMP _L10" is retargeted to _L11 and the intermediate at _L10 removed;
-; the JMP at _L11 must SURVIVE because the retargeted jump still routes
-; through it (full non-adjacent collapse is deliberately not attempted).
+; ✅ SCENARIO 5: Multiple Chains (followed to the end in one step)
+; "JMP _L10" is retargeted straight to _L12; with no other users left,
+; the intermediate JMPs at _L10 and _L11 are both removed.
 ; ===================================================================
 JMP _L10 ; MATCH
 _L10:
 JMP _L11 ; MATCH
 _L11:
-JMP _L12 ; KEEP (routes the retargeted jump; not adjacent-collapsible)
+JMP _L12 ; MATCH
 _L12:
 RET
 
@@ -84,3 +83,50 @@ _L14:
 JMP _L15 ; MATCH
 _L15:
 RET
+
+; ===================================================================
+; ✅ SCENARIO 8: Non-Adjacent Jumps (SHOULD OPTIMIZE)
+; Jumps anywhere in the file are retargeted, conditional ones included;
+; once every user is retargeted the intermediate JMP goes too.
+; ===================================================================
+JT R0, _L16 ; MATCH (conditional, not adjacent)
+MOV R5, 1
+JMP _L16 ; MATCH (not adjacent)
+RET
+_L16:
+JMP _L17 ; MATCH (no users left, preceded by RET)
+_L17:
+RET
+
+; ===================================================================
+; ✅ SCENARIO 9: Address Taken (RETARGET, KEEP INTERMEDIATE)
+; ===================================================================
+JMP _L18 ; MATCH (retargeted to _L19)
+MOV R6, _L18 ; KEEP (takes _L18's address)
+RET
+_L18:
+JMP _L19 ; KEEP (still reachable through that address)
+_L19:
+RET
+
+; ===================================================================
+; ✅ SCENARIO 10: Fall-Through (RETARGET, KEEP INTERMEDIATE)
+; ===================================================================
+JF R1, _L20 ; MATCH (retargeted to _L21)
+MOV R7, 3   ; KEEP (falls into _L20)
+_L20:
+JMP _L21 ; KEEP (reachable by fall-through)
+_L21:
+RET
+
+; ===================================================================
+; ❌ SCENARIO 11: Self-Loop and Computed Jump (MUST NOT OPTIMIZE)
+; ===================================================================
+JMP _L22 ; KEEP (target loops on itself)
+RET
+_L22:
+JMP _L22 ; KEEP
+JMP _L24 ; KEEP (chain ends in a computed jump)
+RET
+_L24:
+JMP R0 ; KEEP

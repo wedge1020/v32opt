@@ -1,4 +1,4 @@
-.TH V32OPT 1 "October 2026" "v32opt 20261009-dev" "User Commands"
+.TH V32OPT 1 "October 2026" "v32opt 20261010-dev" "User Commands"
 .SH NAME
 v32opt \- optimize Vircon32 assembly code
 .SH SYNOPSIS
@@ -392,11 +392,20 @@ constant is not substituted into other instructions' operands. A fold
 whose result would not fit a 32-bit literal is skipped.
 .TP
 .I peephole\-jmp\-chain
-Short-circuits jump indirection: a jump sitting directly before
-its own target label, where that label immediately begins another
-unconditional jump, is retargeted to that jump's destination; the
-intermediate jump is removed only when nothing else can reach its
-label. (Jumps to the label from elsewhere are not retargeted.)
+Short-circuits jump indirection: any
+.BR JMP ,
+.B JT
+or
+.B JF
+whose target label leads straight to another unconditional jump to
+a label is retargeted to the end of the chain, however many hops
+long (self-loops are left alone; a chain ending in a computed jump is
+followed to its last label). An intermediate jump is removed once
+nothing can reach it any more: no label above it is referenced
+anywhere (jump, call,
+.BR "MOV R0, label" ,
+.IR pointer ,
+\&...), and the preceding instruction is an unconditional transfer.
 .SS "\-O2: global analysis"
 .B \-O1
 plus:

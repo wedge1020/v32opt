@@ -708,28 +708,36 @@ rewritten to `IADD R2, 42` -- that would cost a word, not save one.
 
 ### Jump Chain Elimination (`peephole-jmp-chain`)
 
-Short-circuits jump  indirection: a `JMP`  that sits directly  before its
-own target label, whose first instruction is another unconditional `JMP`,
-is  retargeted to  the final  destination, and  the intermediate  jump is
-removed.
+Short-circuits jump indirection. Every `JMP`, `JT` or `JF` -- wherever it
+sits in the program -- whose target label leads straight to another
+unconditional `JMP <label>` is retargeted to the end of the chain, however
+many hops long. Once the last user of an intermediate jump's label has
+been retargeted, that intermediate jump is removed.
 
 ```vircon32
 ; BEFORE                             ; AFTER
+JT  R0, label_step1                  JT  R0, label_final
+...                                  ...
 JMP label_step1                      JMP label_final
+...                                  ...
 label_step1:                         label_step1:
+JMP label_step2                      ; (Intermediate jump removed)
+label_step2:                         label_step2:
 JMP label_final                      ; (Intermediate jump removed)
 ```
 
-Only this adjacent  shape is handled at present: a  jump elsewhere in the
-code  that targets  `label_step1`  is not  retargeted  (it still  reaches
-`label_final` through the intermediate jump, which is then kept).
+"Leads straight to" allows further labels, comments and blank lines
+between the label and its `JMP`; any directive ends the search. A chain
+that loops back on itself (`L: JMP L`) is left alone, and one ending in a
+computed jump (`JMP R0`) is followed only as far as its last label.
 
-NOTE: the intermediate  jump is only removed when nothing  else can reach
-its label: no other jump or branch  targets it, and no code can fall into
-it (the preceding instruction must  itself be an unconditional transfer).
-Otherwise it  is kept  and still routes  every remaining  user correctly.
-Multi-hop chains collapse one hop per iteration, under the same adjacency
-condition.
+NOTE: an intermediate jump is only removed when nothing else can reach it:
+no label directly above it is referenced anywhere in the program (as a
+jump or call target, by `MOV R0, label` taking its address, by a `pointer`
+directive, ...), and no code can fall into it (the preceding instruction
+must itself be an unconditional transfer; a jump at the very start of the
+program is the boot entry point and always stays). Otherwise it is kept
+and still routes its remaining users correctly.
 
 ---
 
