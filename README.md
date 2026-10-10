@@ -709,10 +709,10 @@ rewritten to `IADD R2, 42` -- that would cost a word, not save one.
 ### Jump Chain Elimination (`peephole-jmp-chain`)
 
 Short-circuits jump indirection. Every `JMP`, `JT` or `JF` -- wherever it
-sits in the program -- whose target label leads straight to another
-unconditional `JMP <label>` is retargeted to the end of the chain, however
-many hops long. Once the last user of an intermediate jump's label has
-been retargeted, that intermediate jump is removed.
+sits  in the  program --  whose target  label leads  straight to  another
+unconditional  `JMP <label>`  is  retargeted  to the  end  of the  chain,
+however many  hops long.  Once the  last user  of an  intermediate jump's
+label has been retargeted, that intermediate jump is removed.
 
 ```vircon32
 ; BEFORE                             ; AFTER
@@ -726,18 +726,18 @@ label_step2:                         label_step2:
 JMP label_final                      ; (Intermediate jump removed)
 ```
 
-"Leads straight to" allows further labels, comments and blank lines
-between the label and its `JMP`; any directive ends the search. A chain
+"Leads  straight to"  allows  further labels,  comments  and blank  lines
+between the label  and its `JMP`; any directive ends  the search. A chain
 that loops back on itself (`L: JMP L`) is left alone, and one ending in a
 computed jump (`JMP R0`) is followed only as far as its last label.
 
-NOTE: an intermediate jump is only removed when nothing else can reach it:
-no label directly above it is referenced anywhere in the program (as a
-jump or call target, by `MOV R0, label` taking its address, by a `pointer`
-directive, ...), and no code can fall into it (the preceding instruction
-must itself be an unconditional transfer; a jump at the very start of the
-program is the boot entry point and always stays). Otherwise it is kept
-and still routes its remaining users correctly.
+NOTE: an  intermediate jump is only  removed when nothing else  can reach
+it: no label directly above it  is referenced anywhere in the program (as
+a  jump or  call target,  by `MOV  R0, label`  taking its  address, by  a
+`pointer` directive,  ...), and no code  can fall into it  (the preceding
+instruction must itself be an unconditional  transfer; a jump at the very
+start of the program is the boot entry point and always stays). Otherwise
+it is kept and still routes its remaining users correctly.
 
 ---
 
@@ -796,14 +796,14 @@ respects:
 
 ### Dead Function Elimination (`dce`)
 
-Performs  a  reachability  analysis  starting from  known  program  roots
--- the code before the first function (the boot path), `__function_main`
-/ `main` / `_start` / `start` / `__start`, global-initialization routines
+Performs a reachability analysis starting from known program roots -- the
+code  before the  first  function (the  boot  path), `__function_main`  /
+`main` /  `_start` / `start` /  `__start`, global-initialization routines
 (`__init_globals`, `__function_init`, v32lua's global-scope initializer),
-labels containing `ISR` or `interrupt`, data labels, and every function
-named in a `pointer` directive. Any function whose name appears as an
-operand of reachable code (a `CALL`, or a `MOV R0, __function_cb` taking
-its address) becomes reachable in turn; functions (labels of the form
+labels containing `ISR`  or `interrupt`, data labels,  and every function
+named in  a `pointer` directive.  Any function  whose name appears  as an
+operand of reachable code (a `CALL`,  or a `MOV R0, __function_cb` taking
+its address)  becomes reachable  in turn; functions  (labels of  the form
 `__function_<name>:`) that are never reached are swept away.
 
 ```vircon32
@@ -909,10 +909,10 @@ up  and  tear down  of  a  function). But  it  also  is considered  quite
 
 ### Stack Slot Promotion (`promote-leaf` / `promote-regs`)
 
-Performs  scalar  replacement  of  aggregates on  the  stack: frequently
-accessed  local  stack  variables (`[BP-offset]`)  are promoted to unused
-general-purpose  registers (`R1–R13`), with a load from the stack slot at
-the start of the region and a store back at its end.
+Performs  scalar  replacement  of  aggregates on  the  stack:  frequently
+accessed  local stack  variables (`[BP-offset]`)  are promoted  to unused
+general-purpose registers (`R1–R13`),  with a load from  the stack slot
+at the start of the region and a store back at its end.
 
 * `promote-leaf` works  on whole **leaf functions**  (functions that make
   no `CALL`s and never take or overwrite `BP`'s value); the store goes in
@@ -1115,6 +1115,6 @@ $ make version VERSION=20261015-release
 $ make
 ```
 
-`make version` prints the version and the two lines it maintains (the
-header's `#define` and the man page's `.TH` line, which also gets the
+`make version`  prints the version  and the  two lines it  maintains (the
+header's `#define`  and the man  page's `.TH`  line, which also  gets the
 current month and year).
