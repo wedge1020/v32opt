@@ -20,12 +20,25 @@ execution efficiency.
 > decrease register  pressure, eliminate memory bottlenecks,  and enforce
 > clean, idiomatic assembly.
 
-This project and  this documentation - was built with  the help of AI:
 
-  * Google Gemini,  a mix of  its Thinking (3.6)  and  Pro (3.1) models
-  * Mistral Vibe (Thinking)
-  * Anthropic Claude Sonnet 5 (medium)
-  * OpenCode Go (GLM 5.2)
+## AI Collaboration
+
+This tool was developed in heavy  collaboration with AI. I am hesitant to
+call it  "vibe-coded", as I have  some knowledge and experience  with the
+basics (of  assembly, of code  optimization). But, I certainly  would not
+have achieved this level  of functionality in so short a  time had AI not
+been actively  involved. I feel like  I took more of  a "project manager"
+role,  dictating  direction,  troubleshooting problems,  debugging  where
+needed.
+
+While I may  not know every inch of  code as well as if  I had personally
+wrote it  entirely myself, I  do appreciate  the leverage it  provides in
+establishing  new tools  I  can  use in  the  classroom,  share with  the
+community, and realize fruition of ideas more quickly.
+
+I know  this may be or  cross a line of  dubious fuzziness/acceptableness
+for some. But, as a niche tool in  a niche environment, may it be just as
+easy to ignore.
 
 ---
 
@@ -99,13 +112,12 @@ $ sudo cmake --install .      # see install locations below
 | Platform | `v32opt` executable | Manual page / docs |
 | --- | --- | --- |
 | Linux, macOS (and other Unix) | `/usr/local/bin/v32opt` | `/usr/local/share/man/man1/v32opt.1` |
-| Windows (MSYS2 + MinGW) | `<Program Files>\Vircon32\DevTools\v32opt.exe` | `<Program Files>\Vircon32\DevTools\docs\v32opt\` (`README.md`, `v32opt.1`) |
+| Windows (MSYS2 + MinGW) | `<Program Files>\Vircon32\v32tools\v32opt.exe` | `<Program Files>\Vircon32\v32tools\docs\v32opt\` (`README.md`, `v32opt.1`) |
 
-On Windows the optimizer is installed  next to the Vircon32 DevTools (the
-`compile.exe`/`assemble.exe`  folder  the  DevTools'  own  CMake  install
-creates),  so it  is found  through the  same `PATH`  entry. As  with the
-DevTools, build it  with MSYS2 + MinGW (Visual  C++ lacks `getopt_long`);
-from a MinGW shell:
+On  Windows  the  optimizer  is   installed  with  the  default  Vircon32
+installation directory tree, under a `v32tools/` directory therein, so be
+sure to establish the proper `PATH` entry. As with the DevTools, build it
+with MSYS2 + MinGW (Visual C++ lacks `getopt_long`); from a MinGW shell:
 
 ```bash
 $ mkdir build && cd build
@@ -325,36 +337,40 @@ global-scope initializer are understood in either mode.
 Use the default C mode. Things to know:
 
 * **Function-level passes key off the compiler's naming.** DCE, inlining,
-  frame-pointer elimination and the promote-* passes only treat a label
+  frame-pointer elimination and  the promote-* passes only  treat a label
   of the form `__function_<name>:` as a function. Code under other labels
-  is simply never considered for removal or inlining -- safe, but those
+  is simply never  considered for removal or inlining --  safe, but those
   passes will find little to do unless you follow the same convention.
-* **Anything reached only through a computed address is invisible.** A
+
+* **Anything reached  only through a  computed address is  invisible.** A
   `__function_` routine whose address is only ever formed arithmetically,
-  or jumped to via `JMP R0`/`CALL R0` with no `pointer`/operand reference to
-  its name, can be removed by DCE; code after an unconditional `JMP` that
-  is entered only by a computed jump (no label) is removed by
-  `peephole-jumps`. Referencing the label by name anywhere (`MOV R0,
+  or jumped to via `JMP R0`/`CALL R0` with no `pointer`/operand reference
+  to its name,  can be removed by DCE; code  after an unconditional `JMP`
+  that  is entered  only by  a  computed jump  (no label)  is removed  by
+  `peephole-jumps`.  Referencing the  label  by name  anywhere (`MOV  R0,
   __function_cb`, a `pointer` directive) keeps it alive.
-* **Labels ending in `_start`** are taken as loop headers by the
+
+* **Labels  ending  in  `_start`**  are  taken as  loop  headers  by  the
   experimental `promote-loops` pass.
-* Assembler directives (`%define`, `%include`, data directives, ...) are
-  never deleted by any pass, and integer `%define` values are seen through
-  unless `-fno-resolve-defines` is given.
+
+* Assembler directives (`%define`, `%include`,  data directives, ...) are
+  never  deleted by  any  pass,  and integer  `%define`  values are  seen
+  through unless `-fno-resolve-defines` is given.
 
 ### Disassembled CARTs
 
-The Vircon32 `disassemble` tool names jump and call targets (`_label1`,
-`_label2`, ...), but every reference to *data* in the program ROM -- string
-literals, tables, initial values -- stays a hard-coded address
-(`MOV R0, 0x2000002C`). `v32opt` does not relocate such addresses, so **any
-optimization that changes the size of the code moves the data out from under
-them** and the rebuilt CART reads the wrong memory. (Removing a single 4-word
-frame prologue/epilogue is enough to break every string in the program.)
-Treat optimizing disassembled code as an experiment: compare the original and
-optimized CARTs carefully, and expect only programs with no ROM-resident data
-references to survive. Since disassembled functions are `_labelN`, not
-`__function_<name>`, DCE and inlining also find little to do there.
+The Vircon32 `disassemble`  tool names jump and  call targets (`_label1`,
+`_label2`, ...),  but every  reference to  *data* in  the program  ROM --
+string literals,  tables, initial  values --  stays a  hard-coded address
+(`MOV R0,  0x2000002C`). `v32opt`  does not  relocate such  addresses, so
+**any optimization that  changes the size of the code  moves the data out
+from under them** and the rebuilt  CART reads the wrong memory. (Removing
+a  single  4-word  frame  prologue/epilogue  is  enough  to  break  every
+string  in  the  program.)  Treat  optimizing  disassembled  code  as  an
+experiment:  compare  the original  and  optimized  CARTs carefully,  and
+expect only  programs with  no ROM-resident  data references  to survive.
+Since disassembled functions are  `_labelN`, not `__function_<name>`, DCE
+and inlining also find little to do there.
 
 ---
 
@@ -380,9 +396,9 @@ v32opt <input.asm> [-o output.asm] [options]
 | `--trigger-max=<N>` | **Bisection Cap** | Global budget on total committed transformations (see below). |
 | `-V`, `--version` / `-h`, `--help` | **Info** | Print the version, or a usage summary, and exit. |
 
-`v32opt` is silent on success unless `-v` or `-t` is given, and exits
-with status `1` (and a message on stderr) for a bad option, a missing or
-unreadable input, an unwritable output, or an input line too long to
+`v32opt` is  silent on success  unless `-v` or  `-t` is given,  and exits
+with status `1` (and a message on  stderr) for a bad option, a missing or
+unreadable input,  an unwritable  output, or  an input  line too  long to
 process safely.
 
 ### Optimization Tier Philosophy & Debugging Considerations
@@ -406,7 +422,7 @@ modifications.  These  passes  analyze  entire blocks  and  functions  to
 eliminate  unreachable  code,  fold  constants across  jumps,  and  strip
 redundant overhead.
 
-* **`-O3` (Aggressive Interprocedural  Transformations):** Makes sweeping
+* **`-O3` (Aggressive  Interprocedural Transformations):** Makes sweeping
 architectural  modifications—such  as  function  inlining—that  trade
 binary  size  for  execution   velocity  and  completely  erase  function
 boundaries.
@@ -609,9 +625,9 @@ SHL R2, 1                            IADD R2, R2
 
 ### Zero-Test Folding (`peephole-zero-test`)
 
-Vircon32's conditional jumps already test a register against zero (`JT`
-jumps when it is non-zero, `JF` when it is zero), so materialising the
-comparison first is redundant. This pass folds the comparison into the
+Vircon32's conditional jumps  already test a register  against zero (`JT`
+jumps when  it is non-zero, `JF`  when it is zero),  so materialising the
+comparison first  is redundant. This  pass folds the comparison  into the
 jump, both when a copy is tested and when the value is tested in place.
 
 ```vircon32
@@ -624,15 +640,15 @@ INE R5, 0
 JF  R5, __is_zero                    JF  R5, __is_zero
 ```
 
-The original leaves the comparison result (0 or 1) in the scratch
-register, so the rewrite is only applied when that register is proven
-never to be read again on **either** side of the branch. The proof
-follows jumps and looks into called functions; anything it cannot
-follow (a computed jump or call, registers `R11`-`R15`, a callee that
-may read the register) leaves the code untouched. Integer compares only:
-`FEQ` treats `-0.0` as zero, while `JF` tests the raw bits.
+The  original leaves  the  comparison  result (0  or  1)  in the  scratch
+register, so  the rewrite is  only applied  when that register  is proven
+never  to be  read again  on  **either** side  of the  branch. The  proof
+follows jumps and looks into  called functions; anything it cannot follow
+(a computed jump  or call, registers `R11`-`R15`, a callee  that may read
+the register)  leaves the  code untouched.  Integer compares  only: `FEQ`
+treats `-0.0` as zero, while `JF` tests the raw bits.
 
-v32lua emits this shape in every inline table lookup, so on Lua-mode
+v32lua emits  this shape  in every  inline table  lookup, so  on Lua-mode
 programs it removes roughly 3% of all instructions.
 
 ### Dead Store Elimination (`peephole-dead-stores`)
@@ -664,16 +680,18 @@ reference any immediate data.
 
 ### Immediate Folding (`peephole-immediate-prop`)
 
-Despite its name, this pass folds  constants *within* a register rather than
-propagating them into other instructions. It does three things with integer
-immediates on a register destination:
+Despite its  name, this pass  folds constants *within* a  register rather
+than propagating them into other  instructions. It does three things with
+integer immediates on a register destination:
 
 * drops identity arithmetic (`IADD`/`ISUB` by `0`, `IMUL`/`IDIV` by `1`);
-* folds a constant `MOV` into a later `IADD`/`ISUB`/`IMUL` of the same register
-  (never across a read or write of that register, a conditional branch, or
-  a label/jump/call boundary);
-* merges adjacent `IADD`/`ISUB` immediates on the same register, removing the
-  pair outright when they cancel.
+
+* folds a  constant `MOV` into  a later `IADD`/`ISUB`/`IMUL` of  the same
+  register (never across a read or  write of that register, a conditional
+  branch, or a label/jump/call boundary);
+
+* merges adjacent `IADD`/`ISUB` immediates on the same register, removing
+  the pair outright when they cancel.
 
 ```vircon32
 ; BEFORE                             ; AFTER
@@ -684,15 +702,16 @@ IADD R2, 5                           IADD R2, 2
 ISUB R2, 3                           ; (Merged)
 ```
 
-A fold whose result would not fit a 32-bit literal (the arithmetic
-overflowed) is left alone. `MOV R1, 42` / `IADD R2, R1` is *not* rewritten
-to `IADD R2, 42` -- that would cost a word, not save one.
+A  fold whose  result  would not  fit a  32-bit  literal (the  arithmetic
+overflowed)  is  left alone.  `MOV  R1,  42` /  `IADD  R2,  R1` is  *not*
+rewritten to `IADD R2, 42` -- that would cost a word, not save one.
 
 ### Jump Chain Elimination (`peephole-jmp-chain`)
 
-Short-circuits jump indirection: a `JMP` that sits directly before its own
-target label, whose first instruction is another unconditional `JMP`, is
-retargeted to the final destination, and the intermediate jump is removed.
+Short-circuits jump  indirection: a `JMP`  that sits directly  before its
+own target label, whose first instruction is another unconditional `JMP`,
+is  retargeted to  the final  destination, and  the intermediate  jump is
+removed.
 
 ```vircon32
 ; BEFORE                             ; AFTER
@@ -701,14 +720,14 @@ label_step1:                         label_step1:
 JMP label_final                      ; (Intermediate jump removed)
 ```
 
-Only this adjacent shape is handled at present: a jump elsewhere in the
-code that targets `label_step1` is not retargeted (it still reaches
+Only this adjacent  shape is handled at present: a  jump elsewhere in the
+code  that targets  `label_step1`  is not  retargeted  (it still  reaches
 `label_final` through the intermediate jump, which is then kept).
 
 NOTE: the intermediate  jump is only removed when nothing  else can reach
-its label: no other jump or branch targets it, and no code can fall into
-it (the preceding instruction must itself be an unconditional transfer).
-Otherwise it is kept and still routes every remaining user correctly.
+its label: no other jump or branch  targets it, and no code can fall into
+it (the preceding instruction must  itself be an unconditional transfer).
+Otherwise it  is kept  and still routes  every remaining  user correctly.
 Multi-hop chains collapse one hop per iteration, under the same adjacency
 condition.
 
@@ -749,16 +768,20 @@ OP Ry, B     ; -- CSE replaces this with: MOV Ry, Rx
 | `MOV R1, R5`<br>`IMUL R1, 42`<br>`MOV R3, R5`<br>`IMUL R3, 42` | `MOV R1, R5`<br>`IMUL R1, 42`<br>`MOV R3, R5`<br>`MOV R3, R1` | **1 word** (`IMUL` + immediate = 2 words, `MOV` = 1) |
 | `MOV R1, R5`<br>`FADD R1, R2`<br>`MOV R3, R5`<br>`FADD R3, R2` | `MOV R1, R5`<br>`FADD R1, R2`<br>`MOV R3, R5`<br>`MOV R3, R1` | 0 words by itself; see below |
 
-The re-initializing `MOV R3, R5` is now dead (immediately overwritten), and
-at `-O2` `peephole-dead-stores` removes it -- so in a full `-O2` run every
-row above saves one more word.
+The re-initializing `MOV  R3, R5` is now  dead (immediately overwritten),
+and at `-O2` `peephole-dead-stores` removes it  -- so in a full `-O2` run
+every row above saves one more word.
 
 ---
 
 #### **Supported Operations**
+
 All arithmetic, logical, and floating-point ops:
-`IADD`, `ISUB`, `IMUL`, `IDIV`, `AND`, `OR`, `XOR`, `FADD`, `FSUB`, `FMUL`, etc.
-Works with registers, immediates (including negatives), and respects:
+
+`IADD`,  `ISUB`,  `IMUL`, `IDIV`,  `AND`,  `OR`,  `XOR`, `FADD`,  `FSUB`,
+`FMUL`, etc. Works with  registers, immediates (including negatives), and
+respects:
+
 - ✅ Control flow boundaries (`JMP`, `JT`, `JF`, `CALL`, `RET`, labels)
 - ✅ Register modifications between expressions
 - ✅ Different operations (e.g., `IADD` ≠ `ISUB`)
@@ -883,12 +906,14 @@ accessed  local  stack  variables (`[BP-offset]`)  are promoted to unused
 general-purpose  registers (`R1–R13`), with a load from the stack slot at
 the start of the region and a store back at its end.
 
-* `promote-leaf` works on whole **leaf functions** (functions that make no
-  `CALL`s and never take or overwrite `BP`'s value); the store goes in
+* `promote-leaf` works  on whole **leaf functions**  (functions that make
+  no `CALL`s and never take or overwrite `BP`'s value); the store goes in
   before the epilogue that precedes `RET`.
-* `promote-regs` applies the same logic to ordinary functions, separately
-  within each `CALL`-free stretch (before the first `CALL`, between calls,
-  after the last), and only where that stretch is single-entry/single-exit.
+
+* `promote-regs`   applies  the   same  logic   to  ordinary   functions,
+  separately within  each `CALL`-free  stretch (before the  first `CALL`,
+  between  calls,  after  the  last),  and only  where  that  stretch  is
+  single-entry/single-exit.
 
 ```vircon32
 ; BEFORE                 ; AFTER
@@ -969,16 +994,17 @@ rather than parsing them as  integer `0`s. This prevents constant folding
 from silently corrupting floating-point  arguments (such as audio channel
 volumes or physics calculations).
 
-* **Literal Range:** Every constant fold is computed wide and abandoned if
-the result doesn't fit a 32-bit literal the Vircon32 assembler accepts, so an
-overflowing `IMUL`/`IADD` chain is left as written instead of producing an
-out-of-range immediate.
+* **Literal Range:**  Every constant fold is computed  wide and abandoned
+if  the  result doesn't  fit  a  32-bit  literal the  Vircon32  assembler
+accepts, so an overflowing `IMUL`/`IADD` chain is left as written instead
+of producing an out-of-range immediate.
 
-* **Directives Are Never Deleted:** No pass removes an assembler directive
-(`%define`, `%include`, `integer`/`float`/`string`/`pointer`/`datafile` data),
-even when it sits inside a range of dead code being swept away. An
-instruction or data line too long for the optimizer to hold is reported as
-an error rather than silently truncated.
+*      **Directives      Are      Never      Deleted:**      No      pass
+removes     an     assembler    directive     (`%define`,     `%include`,
+`integer`/`float`/`string`/`pointer`/`datafile` data), even  when it sits
+inside a range of dead code being swept away. An instruction or data line
+too long for  the optimizer to hold  is reported as an  error rather than
+silently truncated.
 
 * **Self-Referential Load Protection:** Redundant move elimination deeply
 inspects  indirect memory  loads. Textually  identical instructions  like
@@ -1064,11 +1090,11 @@ used.
 
 ## Releasing (version stamping)
 
-The version lives in exactly one place: the `VERSION` `#define` in
-`inc/v32opt.h` (the same `YYYYMMDD-status` scheme as `v32lua` and `v32c++`,
-e.g. `20261002-dev`, `20261015-release`). `v32opt --version` prints it, the
-CMake build reads it at configure time (for package names), and
-`make version` stamps it into the manual page:
+The  version lives  in  exactly  one place:  the  `VERSION` `#define`  in
+`inc/v32opt.h`  (the  same  `YYYYMMDD-status`   scheme  as  `v32lua`  and
+`v32c++`,  e.g. `20261002-dev`,  `20261015-release`). `v32opt  --version`
+prints  it, the  CMake  build reads  it at  configure  time (for  package
+names), and `make version` stamps it into the manual page:
 
 ```bash
 # after editing the #define by hand:

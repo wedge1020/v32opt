@@ -1,11 +1,10 @@
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 #   CMake build for v32opt, the Vircon32 assembly optimizer
 #
-#   Laid out after the Vircon32 DevTools' own CMake setup
-#   (ComputerSoftware/DevelopmentTools/CMakeLists.txt).
-#   This is an ALTERNATIVE to the base Makefile, which
-#   keeps working exactly as before; the two never share
-#   build products. Build out of tree:
+#   Laid   out   after   the   Vircon32   DevTools'   own   CMake   setup
+#   (ComputerSoftware/DevelopmentTools/CMakeLists.txt).   This    is   an
+#   ALTERNATIVE  to the  base Makefile,  which keeps  working exactly  as
+#   before; the two never share build products. Build out of tree:
 #
 #       mkdir build && cd build
 #       cmake ..                 (MSYS2/MinGW: cmake -G "MSYS Makefiles" ..)
@@ -13,20 +12,20 @@
 #       cmake --install .        (may need sudo / an elevated shell)
 #
 #   Default install locations:
-#       Linux / macOS : /usr/local/bin/v32opt
-#                       /usr/local/share/man/man1/v32opt.1
-#       Windows       : <Program Files>/Vircon32/DevTools/v32opt.exe
-#                       (next to compile.exe / assemble.exe, the folder
-#                        the Vircon32 DevTools install to), with the
-#                        README and manual page in DevTools/docs/v32opt
+#       Linux / macOS: /usr/local/bin/v32opt
+#                      /usr/local/share/man/man1/v32opt.1
+#       Windows      : <Program Files>/Vircon32/v32tools/v32opt.exe
+#                       with the README and manual page in
+#                       v32tools/docs/v32opt
 #   Change the root with -DCMAKE_INSTALL_PREFIX=<dir> (or
 #   `cmake --install . --prefix <dir>`).
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 
 cmake_minimum_required(VERSION 3.13...3.31)
 
-# Refuse an in-source build: CMake's generated Makefile would overwrite
+# Refuse an  in-source build: CMake's generated  Makefile would overwrite
 # the project's own hand-written base Makefile.
+#
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
     message(FATAL_ERROR
         "v32opt: in-source CMake builds are not supported -- they would "
@@ -37,18 +36,20 @@ endif()
 
 # By default, project configuration will be Release
 # (must be done before project() statement)
+#
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING
         "Choose the type of build (Debug, Release, RelWithDebInfo, MinSizeRel)" FORCE)
 endif()
 
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 #   VERSION (single source: inc/v32opt.h)
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 
-# The full version string, e.g. "20261002-dev", read from the same
-# #define that `v32opt --version` prints and `make version` stamps into
+# The  full  version string,  e.g.  "20261009-dev",  read from  the  same
+# #define that `v32opt  --version` prints and `make  version` stamps into
 # the man page. Re-run configuration automatically when it changes.
+#
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/inc/v32opt.h" V32OPT_VERSION_LINE
      REGEX "^#define[ \t]+VERSION[ \t]+\"[^\"]*\"")
 string(REGEX REPLACE "^#define[ \t]+VERSION[ \t]+\"([^\"]*)\".*" "\\1"
@@ -59,17 +60,18 @@ endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
              "${CMAKE_CURRENT_SOURCE_DIR}/inc/v32opt.h")
 
-# project() only takes a numeric version: derive YYYY.MM.DD from the
+# project()  only takes  a numeric  version: derive  YYYY.MM.DD from  the
 # leading date (the "-dev"/"-release" status is kept in V32OPT_VERSION).
+#
 if(V32OPT_VERSION MATCHES "^([0-9][0-9][0-9][0-9])([0-9][0-9])([0-9][0-9])")
     set(V32OPT_NUMERIC_VERSION "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}.${CMAKE_MATCH_3}")
 else()
     set(V32OPT_NUMERIC_VERSION "0.0.0")
 endif()
 
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 #   DEFINE THE PROJECT
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 
 project(v32opt
         VERSION ${V32OPT_NUMERIC_VERSION}
@@ -77,9 +79,9 @@ project(v32opt
         HOMEPAGE_URL "https://github.com/wedge1020/v32opt"
         LANGUAGES C)
 
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 #   IDENTIFY HOST ENVIRONMENT
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     set(TARGET_BITS "64")
@@ -97,9 +99,10 @@ else()
     set(TARGET_OS "${CMAKE_SYSTEM_NAME}")
 endif()
 
-# v32opt uses getopt_long() and strcasecmp(), which MinGW, glibc, musl,
-# macOS and the BSDs all provide but Visual C++ does not. The Vircon32
+# v32opt uses  getopt_long() and strcasecmp(), which  MinGW, glibc, musl,
+# macOS and  the BSDs all provide  but Visual C++ does  not. The Vircon32
 # DevTools are likewise built with MSYS2 + MinGW on Windows.
+#
 include(CheckIncludeFile)
 check_include_file(getopt.h V32OPT_HAVE_GETOPT_H)
 if(NOT V32OPT_HAVE_GETOPT_H)
@@ -110,18 +113,19 @@ if(NOT V32OPT_HAVE_GETOPT_H)
         "    cmake -G \"MSYS Makefiles\" ..")
 endif()
 
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 #   INSTALL LOCATIONS
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 
-# On Windows, CMake's default prefix would be "<Program Files>/v32opt".
-# Install alongside the Vircon32 DevTools instead ("<Program Files>/
+# On Windows,  CMake's default prefix would  be "<Program Files>/v32opt".
+# Install  alongside the  Vircon32  DevTools  instead ("<Program  Files>/
 # Vircon32/DevTools", their default location), so v32opt.exe sits next to
-# compile.exe and assemble.exe and is found on the same PATH entry.
-# An explicit -DCMAKE_INSTALL_PREFIX always wins.
-# (Only when the default has the usual "<Program Files>/v32opt" shape --
-# the parent is then whichever of "Program Files" or "Program Files (x86)"
-# CMake picked for this toolchain, exactly as for the DevTools.)
+# compile.exe and  assemble.exe and is found  on the same PATH  entry. An
+# explicit -DCMAKE_INSTALL_PREFIX always wins. (Only when the default has
+# the  usual  "<Program  Files>/v32opt"  shape  --  the  parent  is  then
+# whichever of "Program Files" or  "Program Files (x86)" CMake picked for
+# this toolchain, exactly as for the DevTools.)
+#
 if(TARGET_OS STREQUAL "windows" AND CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
     get_filename_component(V32OPT_PREFIX_NAME   "${CMAKE_INSTALL_PREFIX}" NAME)
     get_filename_component(V32OPT_PROGRAM_FILES "${CMAKE_INSTALL_PREFIX}" DIRECTORY)
@@ -134,9 +138,9 @@ endif()
 include(GNUInstallDirs)   # bin, share/man (CMAKE_INSTALL_PREFIX defaults to /usr/local on Unix)
 
 if(TARGET_OS STREQUAL "windows")
-    set(V32OPT_DEFAULT_BINDIR "DevTools")
-    set(V32OPT_DEFAULT_MANDIR "DevTools/docs/v32opt")
-    set(V32OPT_DEFAULT_DOCDIR "DevTools/docs/v32opt")
+    set(V32OPT_DEFAULT_BINDIR "v32tools")
+    set(V32OPT_DEFAULT_MANDIR "v32tools/docs/v32opt")
+    set(V32OPT_DEFAULT_DOCDIR "v32tools/docs/v32opt")
 else()
     set(V32OPT_DEFAULT_BINDIR "${CMAKE_INSTALL_BINDIR}")
     set(V32OPT_DEFAULT_MANDIR "${CMAKE_INSTALL_MANDIR}/man1")
@@ -150,12 +154,13 @@ set(V32OPT_INSTALL_MANDIR "${V32OPT_DEFAULT_MANDIR}" CACHE STRING
 set(V32OPT_INSTALL_DOCDIR "${V32OPT_DEFAULT_DOCDIR}" CACHE STRING
     "Where README.md is installed (relative to CMAKE_INSTALL_PREFIX; empty = not installed)")
 
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 #   SOURCE FILES
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 
-# Same set the base Makefile builds (src/Makefile's CORE_SRCS plus every
+# Same set the base Makefile  builds (src/Makefile's CORE_SRCS plus every
 # src/peephole/*.c). CONFIGURE_DEPENDS re-globs when a pass is added.
+#
 set(V32OPT_CORE_SRC
     src/main.c
     src/args.c
@@ -175,9 +180,9 @@ file(GLOB V32OPT_PEEPHOLE_SRC CONFIGURE_DEPENDS
 
 file(GLOB V32OPT_HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/inc/*.h")
 
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 #   EXECUTABLE
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 
 add_executable(v32opt ${V32OPT_CORE_SRC} ${V32OPT_PEEPHOLE_SRC} ${V32OPT_HEADERS})
 
@@ -185,14 +190,16 @@ target_include_directories(v32opt PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/inc"
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
-# C99 with the platform's extensions (gnu99): strcasecmp/strdup are
+# C99  with  the  platform's extensions  (gnu99):  strcasecmp/strdup  are
 # declared by the system headers in that mode.
+#
 set_target_properties(v32opt PROPERTIES
     C_STANDARD 99
     C_STANDARD_REQUIRED ON
     C_EXTENSIONS ON)
 
 # Warning flags, matching src/Makefile where the compiler supports them
+#
 include(CheckCCompilerFlag)
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(v32opt PRIVATE -Wall -Wextra)
@@ -203,20 +210,22 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # libm, where it is a separate library (src/Makefile links -lm too)
+#
 if(UNIX AND NOT APPLE)
     target_link_libraries(v32opt PRIVATE m)
 endif()
 
-# MinGW: link the C runtime support statically, so the installed
+# MinGW:  link  the  C  runtime  support  statically,  so  the  installed
 # v32opt.exe needs no MinGW DLLs next to it.
+#
 option(V32OPT_STATIC_MINGW "Statically link MinGW runtime libraries" ON)
 if(MINGW AND V32OPT_STATIC_MINGW)
     target_link_options(v32opt PRIVATE -static)
 endif()
 
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 #   SHOW BUILD INFORMATION IN PRETTY FORMAT
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 
 message(STATUS "******** v32opt ********")
 message(STATUS "Version: ${V32OPT_VERSION}")
@@ -238,9 +247,9 @@ if(V32OPT_INSTALL_DOCDIR)
     message(STATUS " * README      -> ${V32OPT_INSTALL_DOCDIR}")
 endif()
 
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 #   DEFINE THE INSTALL PROCESS
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 
 install(TARGETS v32opt
         RUNTIME DESTINATION "${V32OPT_INSTALL_BINDIR}"
@@ -256,9 +265,10 @@ if(V32OPT_INSTALL_DOCDIR)
             COMPONENT documentation)
 endif()
 
-# `cmake --build . --target uninstall` removes whatever the last install
-# put down (CMake has no built-in uninstall; this replays
+# `cmake  --build  .  --target   uninstall`  removes  whatever  the  last
+# install  put  down  (CMake  has no  built-in  uninstall;  this  replays
 # install_manifest.txt).
+#
 if(NOT TARGET uninstall)
     configure_file(
         "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmake_uninstall.cmake.in"
@@ -269,15 +279,16 @@ if(NOT TARGET uninstall)
         COMMENT "Uninstalling v32opt")
 endif()
 
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 #   SMOKE TESTS (ctest)
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 
-# Light checks that need no Vircon32 tools: the binary reports the
+# Light  checks that  need  no  Vircon32 tools:  the  binary reports  the
 # expected version, and every unit-test input under testing/ optimizes at
-# -O3 in both language modes without error. The full unit suite (which
-# assembles and packs both versions with the Vircon32 DevTools) is still
+# -O3 in  both language modes without  error. The full unit  suite (which
+# assembles and packs both versions  with the Vircon32 DevTools) is still
 # `make tests` in the base Makefile.
+#
 option(BUILD_TESTING "Define the ctest smoke tests" ON)
 if(BUILD_TESTING)
     enable_testing()
@@ -300,14 +311,15 @@ if(BUILD_TESTING)
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/testing")
 endif()
 
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 #   DEFINE THE PACKAGE CREATION WITH CPACK
-# -----------------------------------------------------
+# ----------------------------------------------------------------------------
 
-# `cpack` (from the build directory) makes binary packages, as the
-# Vircon32 DevTools do: .deb/.rpm/.tar.gz on Linux, .tar.gz on macOS,
-# .zip on Windows. Packages carry the full version string in their file
+# `cpack`  (from  the build  directory)  makes  binary packages,  as  the
+# Vircon32  DevTools do:  .deb/.rpm/.tar.gz on  Linux, .tar.gz  on macOS,
+# .zip on Windows.  Packages carry the full version string  in their file
 # name; the package-manager version is the numeric YYYY.MM.DD date.
+#
 set(CPACK_PACKAGE_NAME "v32opt")
 set(CPACK_PACKAGE_VENDOR "Matthew Haas")
 set(CPACK_PACKAGE_CONTACT "Matthew Haas")
