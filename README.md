@@ -1,5 +1,7 @@
 # v32opt — Vircon32 Assembly Optimizer
 
+[Spanish version / en español](README.es.md) | [French version / en français](README.fr.md)
+
 `v32opt`  is  a modular,  multi-pass  assembly  optimizer written  in  C,
 specifically  targeting the  **Vircon32** fantasy  console. It  takes raw
 assembly  output from  a Vircon32-targeting  compiler (C,  C++ by  way of
@@ -76,7 +78,7 @@ by side.
 ### Using Make (Linux / macOS / MSYS2)
 
 ```bash
-# Build the binary (written to ./v32opt)
+# Build the binary (written to bin/v32opt; bin/v32opt.exe on Windows)
 $ make
 
 # Install to your home bin directory (~/bin/bin.<arch> if it exists,
@@ -87,6 +89,9 @@ $ make install
 # /usr/local/share/man/man1 (PREFIX=... changes the root; DESTDIR=... is
 # honored for staging). "sudo make sysuninstall" removes both.
 $ sudo make sysinstall
+
+# ...with the Spanish (es) or French (fr) manual page instead of English
+$ sudo make sysinstall DEST_LANG=es
 
 # Run the unit-test suite (needs the Vircon32 DevTools -- assemble, packrom
 # -- on your PATH; the primes test additionally needs v32lua)
@@ -132,6 +137,7 @@ Other useful knobs:
 $ cmake -DCMAKE_INSTALL_PREFIX=$HOME/.local ..   # install somewhere else
 $ cmake --install . --prefix /opt/v32opt         # ...or choose at install time
 $ cmake --build . --target uninstall             # undo the last install
+$ cmake -DDEST_LANG=fr ..                        # French (fr) or Spanish (es) docs
 $ cpack                                          # .tar.gz (+ .deb/.rpm on Linux, .zip on Windows)
 ```
 
@@ -157,6 +163,27 @@ $ ./v32opt
 
 A  full command-line  reference is  available as  a unix  manual page  in
 `man/v32opt.1` (view it with `man ./man/v32opt.1`).
+
+### Documentation languages
+
+This README and the manual page are available in English, Spanish and
+French: `README.md` / `README.es.md` / `README.fr.md`, and `man/v32opt.1`
+/ `man/v32opt.es.1` / `man/v32opt.fr.1` (`man ./man/v32opt.es.1` to read
+one in place). Both builds install the English manual page by default;
+`DEST_LANG=es` or `DEST_LANG=fr` (`make sysinstall DEST_LANG=es`, `cmake
+-DDEST_LANG=es ..`) installs that translation instead, under the plain name
+`v32opt.1`, so `man v32opt` simply shows it. Where CMake also installs the
+README (Windows), the translated one is installed as `README.md`.
+
+### Prebuilt binaries
+
+The `Generate Global Binaries` GitHub Actions workflow
+(`.github/workflows/release-builds.yml`, run by hand from the Actions tab)
+builds zipped binaries for Linux (x86_64, arm64, Raspberry Pi armv7/armv8),
+macOS (x86_64, arm64) and Windows (x86_64, arm64), plus -- as optional
+extras that never hold up a release -- OpenBSD (x86_64, arm64) and Haiku
+(x86_64). Each zip holds the binary, the READMEs and the manual pages; a
+`release` run collects them into a draft GitHub release.
 
 ---
 
@@ -1102,7 +1129,7 @@ The  version lives  in  exactly  one place:  the  `VERSION` `#define`  in
 `inc/v32opt.h`  (the  same  `YYYYMMDD-status`   scheme  as  `v32lua`  and
 `v32c++`,  e.g. `20261002-dev`,  `20261015-release`). `v32opt  --version`
 prints  it, the  CMake  build reads  it at  configure  time (for  package
-names), and `make version` stamps it into the manual page:
+names), and `make version` stamps it into the manual pages:
 
 ```bash
 # after editing the #define by hand:
@@ -1115,6 +1142,7 @@ $ make version VERSION=20261015-release
 $ make
 ```
 
-`make version`  prints the version  and the  two lines it  maintains (the
-header's `#define`  and the man  page's `.TH`  line, which also  gets the
-current month and year).
+`make version` prints the version and the lines it maintains: the header's
+`#define` and the `.TH` line of each manual page (English, Spanish and
+French), which also gets the current month and year, in that page's
+language.

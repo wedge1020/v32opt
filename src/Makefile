@@ -3,7 +3,7 @@
 CC = gcc
 
 # --- Flags ---
-CFLAGS = -Wall -Wextra -Wno-format-truncation -g
+CFLAGS = -Wall -Wextra -Wno-format-truncation -O2
 CFLAGS += -I. -I../inc
 # -MMD -MP: each object also writes a .d file listing the headers it
 # actually included (pulled in by the -include at the bottom). Without it
@@ -14,7 +14,13 @@ DEPFLAGS = -MMD -MP
 CLIBS = -lm
 
 # --- Output Executable ---
-TARGET = ../bin/v32opt
+# Written to bin/ at the project root. On Windows (MSYS2/MinGW, where make
+# sees OS=Windows_NT) the compiler names the file v32opt.exe; naming the
+# target the same way keeps make from relinking it on every run.
+ifeq ($(OS),Windows_NT)
+EXE = .exe
+endif
+TARGET = ../bin/v32opt$(EXE)
 
 # --- Object Files ---
 

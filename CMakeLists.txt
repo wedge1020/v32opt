@@ -18,7 +18,8 @@
 #                       with the README and manual page in
 #                       v32tools/docs/v32opt
 #   Change the root with -DCMAKE_INSTALL_PREFIX=<dir> (or
-#   `cmake --install . --prefix <dir>`).
+#   `cmake --install . --prefix <dir>`). -DDEST_LANG=es|fr installs the
+#   Spanish or French manual page (and README) instead of the English one.
 # ----------------------------------------------------------------------------
 
 cmake_minimum_required(VERSION 3.13...3.31)
@@ -118,11 +119,11 @@ endif()
 # ----------------------------------------------------------------------------
 
 # On Windows,  CMake's default prefix would  be "<Program Files>/v32opt".
-# Install  alongside the  Vircon32  DevTools  instead ("<Program  Files>/
-# Vircon32/DevTools", their default location), so v32opt.exe sits next to
-# compile.exe and  assemble.exe and is found  on the same PATH  entry. An
-# explicit -DCMAKE_INSTALL_PREFIX always wins. (Only when the default has
-# the  usual  "<Program  Files>/v32opt"  shape  --  the  parent  is  then
+# Install into the Vircon32 tree instead ("<Program Files>/Vircon32", the
+# DevTools' own  default root), under  v32tools/ -- the folder  the other
+# community tools  (v32lua, v32c++) share, next  to the official DevTools/.
+# An explicit  -DCMAKE_INSTALL_PREFIX always wins. (Only when the default
+# has the  usual "<Program  Files>/v32opt" shape  -- the  parent is  then
 # whichever of "Program Files" or  "Program Files (x86)" CMake picked for
 # this toolchain, exactly as for the DevTools.)
 #
@@ -153,6 +154,35 @@ set(V32OPT_INSTALL_MANDIR "${V32OPT_DEFAULT_MANDIR}" CACHE STRING
     "Where the v32opt.1 manual page is installed (relative to CMAKE_INSTALL_PREFIX)")
 set(V32OPT_INSTALL_DOCDIR "${V32OPT_DEFAULT_DOCDIR}" CACHE STRING
     "Where README.md is installed (relative to CMAKE_INSTALL_PREFIX; empty = not installed)")
+
+# Language of the installed documentation: en (default), es or fr. The
+# translated files (man/v32opt.es.1, README.es.md, ...) are installed
+# under the plain names (v32opt.1, README.md), so `man v32opt` shows the
+# chosen language. Same setting as the base Makefile's DEST_LANG=; a
+# DEST_LANG environment variable at first configure is honored too.
+#
+if(DEFINED ENV{DEST_LANG} AND NOT "$ENV{DEST_LANG}" STREQUAL "")
+    set(V32OPT_DEFAULT_LANG "$ENV{DEST_LANG}")
+else()
+    set(V32OPT_DEFAULT_LANG "en")
+endif()
+set(DEST_LANG "${V32OPT_DEFAULT_LANG}" CACHE STRING
+    "Language of the installed manual page and README: en, es or fr")
+set_property(CACHE DEST_LANG PROPERTY STRINGS en es fr)
+if(DEST_LANG STREQUAL "")
+    set(DEST_LANG "en" CACHE STRING
+        "Language of the installed manual page and README: en, es or fr" FORCE)
+endif()
+if(NOT DEST_LANG MATCHES "^(en|es|fr)$")
+    message(FATAL_ERROR "v32opt: DEST_LANG must be en, es or fr (got '${DEST_LANG}')")
+endif()
+if(DEST_LANG STREQUAL "en")
+    set(V32OPT_MAN_SOURCE    "man/v32opt.1")
+    set(V32OPT_README_SOURCE "README.md")
+else()
+    set(V32OPT_MAN_SOURCE    "man/v32opt.${DEST_LANG}.1")
+    set(V32OPT_README_SOURCE "README.${DEST_LANG}.md")
+endif()
 
 # ----------------------------------------------------------------------------
 #   SOURCE FILES
@@ -242,7 +272,7 @@ else()
 endif()
 message(STATUS "Install prefix: ${CMAKE_INSTALL_PREFIX}")
 message(STATUS " * executable  -> ${V32OPT_INSTALL_BINDIR}")
-message(STATUS " * manual page -> ${V32OPT_INSTALL_MANDIR}")
+message(STATUS " * manual page -> ${V32OPT_INSTALL_MANDIR} (language: ${DEST_LANG})")
 if(V32OPT_INSTALL_DOCDIR)
     message(STATUS " * README      -> ${V32OPT_INSTALL_DOCDIR}")
 endif()
@@ -255,13 +285,15 @@ install(TARGETS v32opt
         RUNTIME DESTINATION "${V32OPT_INSTALL_BINDIR}"
         COMPONENT binaries)
 
-install(FILES man/v32opt.1
+install(FILES "${V32OPT_MAN_SOURCE}"
         DESTINATION "${V32OPT_INSTALL_MANDIR}"
+        RENAME v32opt.1
         COMPONENT documentation)
 
 if(V32OPT_INSTALL_DOCDIR)
-    install(FILES README.md
+    install(FILES "${V32OPT_README_SOURCE}"
             DESTINATION "${V32OPT_INSTALL_DOCDIR}"
+            RENAME README.md
             COMPONENT documentation)
 endif()
 

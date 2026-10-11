@@ -1,6 +1,6 @@
 # --- Configuration ---
 TEST             = peephole-jumps
-OPTIMIZER        = ../../v32opt
+OPTIMIZER        = ../../bin/v32opt
 COMPILER         = compile
 ASSEMBLER        = assemble
 TEXTURE_TOOL     = png2vircon

@@ -1,0 +1,734 @@
+.\" -*- coding: UTF-8 -*-
+.\" Traducción al español de man/v32opt.1. `make version` actualiza la
+.\" fecha y la versión de la línea .TH siguiente.
+.TH V32OPT 1 "octubre de 2026" "v32opt 20261010-dev" "Órdenes de usuario"
+.SH NOMBRE
+v32opt \- optimiza código ensamblador de Vircon32
+.SH SINOPSIS
+.B v32opt
+.I entrada.asm
+.RB [ \-o
+.IR salida.asm ]
+.RB [ \-O
+.IR 0 | 1 | 2 | 3 | s ]
+.RB [ \-v ]
+.RB [ \-d ]
+.RB [ \-t ]
+.RB [ \-L
+.IR c | lua ]
+.RB [ \-f nombre ]
+.RB [ \-fno\- nombre ]
+.RB [ \-\-dot
+.IR cfg.dot ]
+.RB [ \-\-trigger\-max= N ]
+.br
+.B v32opt
+.B \-\-version
+.br
+.B v32opt
+.B \-\-help
+.SH DESCRIPCIÓN
+.B v32opt
+es un optimizador modular de múltiples pasadas para ensamblador escrito
+para la consola de fantasía
+.BR Vircon32 .
+Acepta el ensamblador producido por el compilador de C de Vircon32
+(incluido el C++ traducido a C por
+.BR v32c++ (1)),
+por
+.BR v32lua (1),
+o tu propio ensamblador escrito a mano, así como (con las salvedades de
+.BR "LENGUAJES DE ORIGEN" )
+el ensamblador recuperado de un CART ya empaquetado mediante las órdenes
+.IR unpackrom /
+.I disassemble
+de las
+.B DevTools
+de Vircon32, y lo reescribe para que sea más pequeño y, cuando es
+posible, más barato de ejecutar. Está pensado para situarse
+.I entre
+un compilador y el ensamblador en una cadena de construcción normal de
+Vircon32:
+.B v32opt
+lee un archivo
+.I .asm
+y escribe otro; nunca invoca por sí mismo al ensamblador, a
+.BR packrom (1)
+ni a ninguna otra herramienta.
+.PP
+La optimización se organiza como una iteración de punto fijo de pasadas
+locales
+.I "de mirilla"
+(peephole) sobre una ventana deslizante de instrucciones, seguida (desde
+.B \-O2
+en adelante) de un análisis del grafo de flujo de control de todo el
+programa y (en
+.BR \-O3 )
+de la inserción en línea interprocedimental de funciones. Las pasadas
+pueden activarse, desactivarse y limitarse de forma individual, tanto para
+ajustar lo agresivo que es el optimizador como para aislar una pasada que
+rompe un programa concreto (véase
+.BR \-\-trigger\-max ,
+más abajo).
+.PP
+Una nota sobre la arquitectura de Vircon32, y sobre por qué gran parte de
+esta herramienta apunta al
+.I tamaño
+del código: en la CPU de Vircon32 toda instrucción se ejecuta en
+exactamente 1 ciclo, y no hay indicadores de CPU que reaccionen a las
+instrucciones (Carry, Zero, Overflow) \(em las comparaciones destructivas
+como
+.B IEQ
+/ \fBINE\fP depositan directamente \(dq1\(dq o \(dq0\(dq en el registro
+de destino, que los saltos condicionales
+.RB ( JT / JF )
+comprueban directamente. En consecuencia, la mayoría de las
+simplificaciones algebraicas son neutras en ciclos;
+.B v32opt
+las aplica de todos modos para reducir el binario, disminuir la presión
+sobre los registros, eliminar tráfico de memoria y mantener idiomático el
+ensamblador generado.
+.PP
+Salvo que se indique
+.B \-v
+o
+.BR \-t ,
+.B v32opt
+no muestra nada en absoluto si todo va bien. El ensamblador optimizado se
+escribe en
+.IR salida.asm ,
+o, si no se indica
+.BR \-o ,
+en el propio nombre de la entrada con su extensión (si la tiene)
+sustituida por
+.IR Opt.asm ,
+de modo que
+.I game.asm
+se convierte en
+.IR gameOpt.asm .
+El archivo de entrada nunca se modifica.
+.PP
+Se acepta exactamente un archivo de entrada. Puede aparecer antes,
+después o entre las opciones; todo lo que va tras un
+.B \-\-
+literal se toma como nombre de archivo.
+.SH OPCIONES
+.TP
+.BI \-o " salida.asm"
+Escribe el ensamblador optimizado en
+.I salida.asm
+en lugar del nombre por defecto,
+.IR <entrada>Opt.asm .
+.TP
+.BI \-O " nivel"
+Selecciona un nivel de optimización predefinido:
+.RS
+.TP
+.B \-O0
+Ninguna optimización (el valor por defecto).
+.TP
+.B \-O1
+Las catorce pasadas locales de mirilla (véase
+.BR "NIVELES DE OPTIMIZACIÓN" ,
+más abajo).
+.TP
+.B \-O2
+.B \-O1
+más eliminación de subexpresiones comunes, eliminación de funciones
+muertas, propagación y plegado global de constantes sobre el grafo de
+flujo de control, y eliminación del puntero de marco en las funciones que
+nunca tocan
+.B BP
+(directamente o a través de
+.BR [BP\[+-]N] ).
+.TP
+.B \-O3
+.B \-O2
+más la inserción en línea de funciones hoja triviales. El nivel más
+agresivo: cambios estructurales profundos, con la mayor probabilidad de
+romper un programa.
+.TP
+.B \-Os
+Actualmente idéntico a
+.B \-O3
+(un marcador de posición para un nivel dedicado al tamaño).
+.RE
+.TP
+.BR \-v ", " \-\-verbose
+Informa de las pasadas activadas al principio, después de las
+estadísticas de cada iteración (nombre de la pasada y número de
+aplicaciones) mientras se ejecuta el bucle de punto fijo, y de un total
+final.
+.TP
+.B \-d
+Marca cada optimización directamente en el archivo de salida: cada
+instrucción eliminada se reproduce como un comentario
+.RS
+.IP
+.nf
+; [DEBUG <pasada>] <instrucción original>
+.fi
+.RE
+.IP
+en su posición original, y cada instrucción reescrita va precedida de su
+texto original. Combínala con
+.B \-\-trigger\-max
+para identificar exactamente la transformación en la que termina una
+bisección. No tiene relación con la información de depuración
+.B \-g
+de los compiladores.
+.TP
+.B \-t
+Modo de pruebas: resumen de la ejecución legible por máquina. Imprime una
+línea
+.I pasada:recuento
+por cada pasada que cambió algo, y después
+.IR total : N .
+.TP
+.BR \-L " modo" ", " \-\-langmode " modo"
+Modo de lenguaje, \(dqc\(dq (el valor por defecto) o \(dqlua\(dq (en
+mayúsculas o minúsculas). Usa \(dqc\(dq para C, para C++ compilado a
+través de
+.BR v32c++ (1)
+y para ensamblador escrito a mano; \(dqlua\(dq para la salida de
+.BR v32lua (1)
+(véase
+.BR "LENGUAJES DE ORIGEN" ).
+El modo Lua hace que las pasadas que siguen valores o eliminan cálculos
+\(dqduplicados\(dq tengan en cuenta el sistema de tipos NaN-boxed de
+v32lua, de modo que las construcciones de etiquetado/desetiquetado
+BOXED_* nunca se pliegan, reenvían ni eliminan por CSE como aritmética
+ordinaria (véase
+.BR "MODO LUA" ,
+más abajo).
+.TP
+.BI \-\-dot " cfg.dot"
+Exporta el grafo de flujo de control (los bloques básicos, sus etiquetas
+e instrucciones, y las aristas de caída a la instrucción siguiente /
+salto / rama / llamada) en formato DOT de Graphviz. Puede combinarse con
+cualquier nivel de optimización o usarse sola. La exportación refleja
+siempre la lista de instrucciones FINAL optimizada. Para dibujarlo, por
+ejemplo:
+.BR "dot \-Tpng cfg.dot \-o cfg.png" .
+.TP
+.BI \-f nombre " / " \-fno\- nombre
+Activa o desactiva una pasada concreta por su nombre, por encima del
+nivel predefinido
+.BR \-O .
+Nombres de pasadas reconocidos:
+.RS
+.IP
+.nf
+peephole\-pairs, peephole\-algebra, peephole\-compiler\-myopia,
+peephole\-forwarding, peephole\-jumps, peephole\-movs,
+peephole\-immediates, peephole\-reduce, peephole\-shifts,
+peephole\-dead\-stores, peephole\-loads, peephole\-immediate\-prop,
+peephole\-jmp\-chain, peephole\-zero\-test, cse, dce,
+constant\-folding, omit\-frame\-pointers, inline, promote\-regs,
+promote\-leaf, promote\-loops
+.fi
+.RE
+.IP
+Las tres pasadas promote-* son experimentales y no forman parte de ningún
+nivel
+.BR \-O ;
+actívalas explícitamente. Véase
+.BR "NIVELES DE OPTIMIZACIÓN" .
+.TP
+.BI \-finline\-max= N
+Limita el tamaño de una función que todavía se considera insertable en
+línea, en instrucciones del cuerpo. Una función cuyo cuerpo lineal tenga
+más de
+.I N
+instrucciones nunca se inserta en línea. El valor se limita al intervalo
+0..32 (la capacidad de la tabla de candidatas).
+.I N
+vale 8 por defecto.
+.TP
+.BI \-finline\-call\-limit= N
+Limita a
+.I N
+el número total de llamadas
+.B CALL
+insertadas en línea en toda la ejecución (evaluadas en el orden del
+archivo); útil para localizar por bisección una compilación errónea
+causada por la inserción en línea. Un valor negativo (el valor por
+defecto) significa sin límite.
+.TP
+.BI \-finline\-exclude= nombre1,nombre2,...
+Lista separada por comas de nombres de etiquetas de función que nunca
+deben insertarse en línea.
+.TP
+.BI \-fmax\-passes= N
+Limita el bucle iterativo de optimización local a
+.I N
+iteraciones de punto fijo (1000 por defecto).
+.TP
+.BI \-\-trigger\-max= N
+Presupuesto global de transformaciones, compartido por todas las pasadas
+y por cada iteración de punto fijo: una vez aplicadas en total
+.I N
+transformaciones (nodos eliminados, reescrituras en el sitio,
+cargas/almacenamientos insertados), todo candidato posterior se deja
+intacto, exactamente como si nunca hubiera coincidido. Un
+.I N
+negativo (u omitir la opción) significa sin límite. Es la herramienta
+principal para localizar por bisección una compilación errónea: vuelve a
+ejecutar con valores crecientes de
+.I N
+hasta que la salida se rompa; la
+.IR N -ésima
+transformación aplicada, en el orden del programa a través de todas las
+pasadas, es la que hay que examinar, y
+.B \-d
+la nombrará en la salida. El informe final de
+.B \-v
+indica cuántas transformaciones se usaron.
+.TP
+.B \-fno\-resolve\-defines
+Trata todo símbolo de
+.B %define
+como un valor opaco. Por defecto, un operando que nombra un
+.B %define
+cuyo valor es un único literal entero se ve por su valor, de modo que las
+pasadas de mirilla sobre inmediatos numéricos y el plegado de constantes
+pueden plegar a través de él; el texto del símbolo se conserva salvo que
+la instrucción se reescriba realmente. Los valores de coma flotante, los
+símbolos definidos más de una vez con valores distintos y (en modo
+.BR "\-L lua" )
+las etiquetas de NaN-boxing
+.RB ( BOXED_* ", " NAN_VALUE ,
+y cualquier valor con el patrón de bits de NaN) nunca se resuelven. Útil
+para localizar por bisección una compilación errónea.
+.TP
+.BR \-\-version ", " \-V
+Imprime la versión, el autor y la URL del proyecto, y termina de
+inmediato.
+.TP
+.BR \-\-help ", " \-h
+Imprime un resumen de uso y termina.
+.SH "NIVELES DE OPTIMIZACIÓN"
+.SS "\-O1: pasadas locales de mirilla"
+Pasadas sin estado, basadas en ventanas, que limpian secuencias de
+instrucciones redundantes sin análisis estructural:
+.TP
+.I peephole\-pairs
+Elimina pares de instrucciones adyacentes que se anulan (doble
+.BR BNOT ,
+un
+.B CIB
+inmediatamente después de la comparación destructiva que ya produjo un
+0/1 limpio, tramos
+.BR PUSH / POP
+que conservan el registro sin nada que los proteja entre medias, pares
+XOR idénticos).
+.TP
+.I peephole\-algebra
+Elimina los movimientos de un registro a sí mismo y la aritmética
+identidad; reduce la multiplicación por 2 a una suma consigo mismo.
+.TP
+.I peephole\-compiler\-myopia
+Elimina la recarga de un valor que se acaba de almacenar desde el mismo
+registro en la misma posición de memoria.
+.TP
+.I peephole\-forwarding
+Sustituye una carga desde memoria por un movimiento entre registros
+cuando el valor se acaba de almacenar ahí desde ese registro (las
+operaciones de lectura-modificación-escritura en memoria, los
+almacenamientos solapados a través de otros registros base, y MOVS/SETS
+interrumpen la coincidencia).
+.TP
+.I peephole\-jumps
+Elimina los saltos a la etiqueta que sigue inmediatamente, invierte los
+pares de rama sobre salto
+.RB ( JF + JMP
+a
+.BR JT )
+y elimina el código que un salto incondicional vuelve inalcanzable (no
+con destinos calculados:
+.B "JMP R0"
+o
+.BR "JMP 0x1000" ).
+.TP
+.I peephole\-movs
+Elimina los pares
+.B MOV
+duplicados y simétricos (mismo origen y destino dos veces, o dos
+registros que se vuelven a intercambiar).
+.TP
+.I peephole\-immediates
+Combina sumas/restas consecutivas de inmediatos sobre el mismo registro
+en una sola; elimina los pares que se anulan (solo enteros \- la suma en
+coma flotante no es asociativa).
+.TP
+.I peephole\-reduce
+Reducción de fuerza: multiplicación por 0/1/2, división por 1 y módulo
+por 1 para enteros; las identidades exactas \(mu1.0 y \(de1.0 para coma
+flotante (el \(mu0.0 en coma flotante se deja deliberadamente como está:
+Inf/NaN por cero es NaN, no cero).
+.TP
+.I peephole\-shifts
+Elimina los desplazamientos nulos y convierte el desplazamiento a la
+izquierda de 1 en una suma consigo mismo.
+.TP
+.I peephole\-zero\-test
+Integra una comparación con cero en el salto condicional que la consume:
+.B "MOV Ra, Rb / IEQ Ra, 0 / JT Ra, L"
+se convierte en
+.BR "JF Rb, L" ,
+y lo mismo para
+.B INE
+y
+.BR JF ,
+y para la forma en el sitio sin la copia. Solo se aplica cuando está
+demostrado que
+.B Ra
+no se vuelve a leer en ninguno de los dos lados de la rama; la
+demostración sigue los saltos y examina las funciones llamadas, y
+cualquier duda (destinos calculados, R11\-R15, una función llamada que
+pueda leer el registro) deja el código como está. Solo comparaciones de
+enteros.
+.TP
+.I peephole\-dead\-stores
+Elimina los almacenamientos en registros o en memoria que se sobrescriben
+antes de cualquier lectura posible (solo un almacenamiento
+.B MOV
+puro cuenta como sobrescritura; las instrucciones de
+lectura-modificación-escritura leen el valor anterior y bloquean la
+coincidencia).
+.TP
+.I peephole\-loads
+Sustituye una segunda carga consecutiva desde la misma dirección de
+memoria por un movimiento desde el registro de destino de la primera
+carga.
+.TP
+.I peephole\-immediate\-prop
+Plegado de inmediatos dentro de un registro: elimina la aritmética
+identidad
+.RB ( IADD / ISUB
+por 0,
+.BR IMUL / IDIV
+por 1), pliega un
+.B MOV
+de constante en un inmediato
+.BR IADD / ISUB / IMUL
+posterior sobre el mismo registro (nunca a través de una lectura o
+escritura del registro, de una rama condicional ni de un límite de
+etiqueta/salto/llamada), y fusiona sumas/restas de inmediatos
+adyacentes. A pesar del nombre, no sustituye una constante en los
+operandos de otras instrucciones. Se omite todo plegado cuyo resultado no
+quepa en un literal de 32 bits.
+.TP
+.I peephole\-jmp\-chain
+Acorta la indirección de saltos: todo
+.BR JMP ,
+.B JT
+o
+.B JF
+cuya etiqueta de destino lleve directamente a otro salto incondicional a
+una etiqueta se redirige al final de la cadena, tenga los saltos que
+tenga (los bucles sobre sí mismos se dejan como están; una cadena que
+termina en un salto calculado se sigue hasta su última etiqueta). Un
+salto intermedio se elimina en cuanto nada puede alcanzarlo ya: ninguna
+etiqueta situada encima se referencia en ningún lugar (salto, llamada,
+.BR "MOV R0, etiqueta" ,
+.IR pointer ,
+\&...), y la instrucción anterior es una transferencia incondicional.
+.SS "\-O2: análisis global"
+.B \-O1
+más:
+.TP
+.I cse
+Eliminación de subexpresiones comunes dentro de los bloques básicos: un
+cálculo repetido (registro, operación, operando) se sustituye por un
+movimiento desde el primer resultado \(em los operandos de origen no
+deben cambiar entre las dos apariciones.
+.TP
+.I dce
+Eliminación de funciones muertas: alcanzabilidad desde la ruta de
+arranque, los puntos de entrada, los inicializadores globales, los
+manejadores de interrupciones, las etiquetas de datos y las directivas
+.IR pointer ,
+siguiendo cada función nombrada como operando
+.RB ( CALL ,
+o
+.B MOV
+de su dirección); las funciones
+.BI __function_ nombre :
+no alcanzadas se eliminan.
+.TP
+.I constant\-folding
+Propagación de constantes basada en retículos sobre el grafo de flujo de
+control, que pliega las constantes conocidas a través de los saltos y
+las invalida de forma conservadora en torno a las llamadas. Ten en cuenta
+que esto cambia palabras por inmediatos (un
+.B "MOV Rd, constante"
+plegado ocupa dos palabras donde la forma con registro ocupaba una), así
+que puede aumentar el binario ensamblado aunque reduzca el fuente \(em su
+beneficio está en habilitar más optimizaciones de mirilla basadas en
+inmediatos.
+.TP
+.I omit\-frame\-pointers
+Suprime el prólogo
+.BR "PUSH BP" / "MOV BP, SP"
+y el epílogo
+.BR "MOV SP, BP" / "POP BP"
+de las funciones cuyo cuerpo nunca hace referencia a
+.B BP
+\(em ni directamente
+.I ni
+a través de
+.BR [BP\[+-]N] .
+Es deliberadamente una pasada de
+.B \-O2
+(no de
+.BR \-O1 ):
+borra la cadena de marcos que recorren los emuladores y depuradores para
+generar trazas de llamadas, así que
+.B \-O1
+sigue siendo seguro para depurar.
+.SS "\-O3: interprocedimental"
+.B \-O2
+más:
+.TP
+.I inline
+Inserción en línea de funciones hoja triviales: los cuerpos de función
+cortos, sin ramas ni llamadas, se insertan directamente en sus puntos de
+llamada, reescribiendo los accesos a parámetros del marco
+.B [BP+N]
+de la función llamada como
+.B [SP+N\-2]
+en el punto de llamada (una invariante de la disposición del marco: el BP
+de la función llamada queda siempre dos palabras por debajo del SP de
+quien llama en la llamada). Los cuerpos candidatos no pueden tocar SP ni
+BP, y el cuerpo insertado se ejecuta con SP exactamente donde lo habría
+dejado el
+.BR CALL .
+Controla su agresividad con
+.BR \-finline\-max ,
+.B \-finline\-call\-limit
+y
+.BR \-finline\-exclude .
+.SS "Experimentales (sin nivel \-O)"
+Las tres pasadas de promoción de memoria a registros
+.RI ( promote\-regs ,
+.IR promote\-leaf ,
+.IR promote\-loops )
+reescriben las posiciones de pila
+.B [BP\-N]
+a las que se accede con frecuencia como registros de propósito general
+sin usar, inyectando cargas y volcados en los límites de cada región. No
+las activa ningún nivel predefinido mientras se prueban; actívalas solo
+explícitamente, y cuenta con tener que hacer bisecciones.
+.SH "LENGUAJES DE ORIGEN"
+.TP
+.B C
+Salida del compilador de C de Vircon32
+.RB ( compile );
+el objetivo principal. Usa el valor por defecto,
+.BR "\-L c" .
+.TP
+.B C++
+.BR v32c++ (1)
+traduce C++ a C, que después compila el compilador de C de Vircon32, así
+que el ensamblador es salida normal del compilador de C: usa
+.BR "\-L c" ;
+se aplica todo lo dicho para C.
+.TP
+.B Lua
+Salida de
+.BR v32lua (1):
+usa
+.B "\-L lua"
+(véase
+.BR "MODO LUA" ).
+.TP
+.B Ensamblador escrito a mano
+Usa
+.BR "\-L c" .
+Las pasadas a nivel de función (dce, inline, omit-frame-pointers,
+promote-*) solo reconocen como funciones las etiquetas con la forma de
+los compiladores,
+.BI __function_ nombre :;
+el código bajo otras etiquetas nunca se elimina ni se inserta en línea.
+El código que solo se alcanza mediante una dirección calculada
+(\fBJMP R0\fP, \fBCALL R0\fP) sin que su etiqueta se nombre en ningún
+lugar puede ser eliminado por dce o por peephole-jumps; nombrar la
+etiqueta (una directiva
+.IR pointer ,
+\fBMOV R0, __function_cb\fP) la mantiene viva. Las etiquetas que
+terminan en
+.I _start
+se tratan como cabeceras de bucle en promote-loops.
+.TP
+.B CARTs desensamblados
+.B disassemble
+da nombre a los destinos de saltos y llamadas, pero las referencias a
+datos en la ROM del programa (cadenas, tablas) siguen siendo direcciones
+fijas, que
+.B v32opt
+no reubica. Por tanto, cualquier optimización que cambie el tamaño del
+código desplaza esos datos a los que apuntan sus referencias y rompe el
+CART reconstruido. Trata la optimización de código desensamblado como un
+experimento.
+.SH "MODO LUA"
+Al optimizar la salida de
+.BR v32lua (1),
+indica
+.BR "\-L lua" .
+v32lua representa los valores de Lua como palabras IEEE-754 NaN-boxed
+cuyos bits de etiqueta se manipulan con operandos inmediatos
+.I BOXED_*
+(OR para empaquetar, AND para desempaquetar, IADD para empaquetar un
+booleano). En modo C esas instrucciones parecen aritmética ordinaria
+sobre constantes desconocidas; en modo Lua, las pasadas que siguen
+valores y eliminan cálculos duplicados
+.RI ( cse ,
+.IR constant\-folding ,
+.IR peephole\-algebra )
+reconocen y protegen estas construcciones de empaquetado, y la pasada de
+álgebra elimina además la mitad \(dq¿es Nil?\(dq, demostrablemente
+muerta, de la prueba fija de veracidad de seis instrucciones del
+compilador tras un productor de booleanos empaquetados.
+.SH "ESTADO DE SALIDA"
+.TP
+.B 0
+Se leyó la entrada y se escribió correctamente el ensamblador
+optimizado.
+.TP
+.B 1
+No se indicó ningún archivo de entrada (o se indicó más de uno); una
+opción no se reconoció o estaba mal formada; el nivel de optimización o
+el modo de lenguaje pedido no existe; no se pudo abrir el archivo de
+entrada, o contiene una línea de instrucción o de datos demasiado larga
+para procesarla sin truncarla; o no se pudo escribir el archivo de
+salida.
+.SH EJEMPLOS
+Optimizar un archivo generado por un compilador con el nivel más seguro,
+escribiendo
+.IR gameOpt.asm :
+.PP
+.RS
+.nf
+v32opt game.asm \-o gameOpt.asm \-O1
+.fi
+.RE
+.PP
+Proceso completo con estadísticas por pasada:
+.PP
+.RS
+.nf
+v32opt game.asm \-O2 \-v
+.fi
+.RE
+.PP
+Control detallado: análisis global sin inserción en línea, pero con la
+promoción experimental de bucles activada:
+.PP
+.RS
+.nf
+v32opt game.asm \-O2 \-fno\-inline \-fpromote\-loops
+.fi
+.RE
+.PP
+Optimizar la salida de v32lua teniendo en cuenta los tipos empaquetados:
+.PP
+.RS
+.nf
+v32lua \-o game.asm game.lua
+v32opt game.asm \-o gameOpt.asm \-O1 \-L lua
+.fi
+.RE
+.PP
+Localizar por bisección una compilación errónea: encontrar la
+transformación N exacta que rompe el programa y examinar después la
+culpable, nombrada en la salida:
+.PP
+.RS
+.nf
+v32opt game.asm \-o gameOpt.asm \-O3 \-\-trigger\-max=137 \-d
+.fi
+.RE
+.PP
+Exportar y dibujar un grafo de flujo de control del programa optimizado:
+.PP
+.RS
+.nf
+v32opt game.asm \-O2 \-\-dot cfg.dot
+dot \-Tpng cfg.dot \-o cfg.png
+.fi
+.RE
+.SH ARCHIVOS
+.TP
+.I *.asm
+Entrada: ensamblador de Vircon32, generado por un compilador, escrito a
+mano o desensamblado de un CART empaquetado.
+.TP
+.IR <entrada> Opt.asm
+Salida por defecto: el ensamblador optimizado, listo para el ensamblador
+de Vircon32.
+.TP
+.I *.dot
+Opcional, con
+.BR \-\-dot :
+exportación del grafo de flujo de control en formato Graphviz.
+.PP
+Nota para la construcción del CART: el XML de tu cartucho hace referencia
+al
+.I .vbin
+producido a partir del ensamblador, así que, tras ensamblar
+.IR gameOpt.asm ,
+renombra el
+.I .vbin
+resultante o haz que el XML apunte a él.
+.SH "VÉASE TAMBIÉN"
+.BR v32lua (1),
+.BR v32c++ (1),
+la documentación de las DevTools de Vircon32
+.RI ( compile ,
+.IR assemble ,
+.IR packrom ,
+y la pareja
+.IR unpackrom / disassemble
+para recuperar el ensamblador de CARTs empaquetados).
+.PP
+Repositorio del proyecto:
+.I https://github.com/wedge1020/v32opt
+.SH ERRORES
+Es software joven y en desarrollo activo. Las pasadas de ventana modelan
+las instrucciones de lectura-modificación-escritura en memoria, los
+almacenamientos solapados y las operaciones de memoria dinámica
+MOVS/SETS, pero quedan algunas suposiciones estructurales: la eliminación
+de código inalcanzable no razona sobre destinos de salto calculados
+.RB ( "JMP R0" / "JMP 0x1000" ),
+la heurística de límites de DCE puede confundir una función real cuyo
+nombre termine en
+.BR _return ,
+las pasadas experimentales promote-* siguen en pruebas, y el
+desensamblado optimizado suele romperse por el desplazamiento de los
+datos de la ROM (véase
+.BR "LENGUAJES DE ORIGEN" ).
+Trata
+.B \-O3
+(y las pasadas promote-*) como realmente arriesgados, e incluso la salida
+de
+.BR \-O1 / \-O2
+como algo que verificar ensamblando, empaquetando y ejecutando el CART
+original y el optimizado uno al lado del otro. Cuando un programa se
+rompa,
+.B \-\-trigger\-max
+junto con
+.B \-d
+aislará la transformación exacta culpable, y
+.B \-fno\-<nombre>
+retirará la pasada culpable.
+.PP
+Informa de los problemas, con el ensamblador de entrada y las opciones
+exactas usadas, a través del repositorio del proyecto indicado arriba.
+.SH AUTOR
+Matthew Haas
+.PP
+Traducción al español incluida con el proyecto; en caso de duda, la
+página en inglés,
+.IR man/v32opt.1 ,
+es la referencia.

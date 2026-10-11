@@ -1,7 +1,7 @@
 # --- Configuration ---
 TEST             = primes
 COMPILER         = v32lua
-OPTIMIZER        = ../../v32opt
+OPTIMIZER        = ../../bin/v32opt
 ASSEMBLER        = assemble
 TEXTURE_TOOL     = png2vircon
 PACKER           = packrom

@@ -25,7 +25,12 @@ jobs:
   build:
     name: Build (${{ matrix.os }}-${{ matrix.arch }})
     runs-on: ${{ matrix.os-runner }}
-    
+
+    # The OpenBSD and Haiku targets are a nice extra, not a requirement:
+    # if one of them fails, the job still counts as passed, so the release
+    # job below goes ahead with every package that did build.
+    continue-on-error: ${{ matrix.optional == true }}
+
     defaults:
       run:
         shell: ${{ matrix.os == 'windows' && 'msys2 {0}' || 'bash' }}
@@ -35,13 +40,25 @@ jobs:
       matrix:
         include:
           # Windows Targets
+          #   x86_64: MSYS2 UCRT64 (gcc) on the regular x64 runner.
+          #   arm64:  MSYS2 CLANGARM64 (clang) on GitHub's native Windows
+          #           ARM64 runner. Cross-compiling from the x64 runner
+          #           can't work: UCRT64 ships no aarch64 C runtime or
+          #           import libraries to link against, which is why the
+          #           old "clang -target aarch64-w64-windows-gnu" build
+          #           failed. (windows-11-arm is free for public
+          #           repositories.)
           - os: windows
             arch: x86_64
             os-runner: windows-latest
+            msystem: UCRT64
+            msys-packages: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make zip
           - os: windows
             arch: arm64
-            os-runner: windows-latest
-          
+            os-runner: windows-11-arm
+            msystem: CLANGARM64
+            msys-packages: mingw-w64-clang-aarch64-clang make zip
+
           # macOS Targets
           - os: macos
             arch: x86_64
@@ -66,6 +83,28 @@ jobs:
             arch: armv8-rpi
             os-runner: ubuntu-latest
 
+          # OpenBSD and Haiku Targets (optional): built inside a QEMU
+          # virtual machine on a Linux runner by cross-platform-actions.
+          # The arm64 OpenBSD guest is emulated, so it is the slowest job.
+          - os: openbsd
+            arch: x86_64
+            os-runner: ubuntu-latest
+            vm-arch: x86-64
+            vm-version: '7.9'
+            optional: true
+          - os: openbsd
+            arch: arm64
+            os-runner: ubuntu-latest
+            vm-arch: arm64
+            vm-version: '7.9'
+            optional: true
+          - os: haiku
+            arch: x86_64
+            os-runner: ubuntu-latest
+            vm-arch: x86-64
+            vm-version: 'r1beta5'
+            optional: true
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -75,14 +114,9 @@ jobs:
         if: matrix.os == 'windows'
         uses: msys2/setup-msys2@v2
         with:
-          msystem: UCRT64
+          msystem: ${{ matrix.msystem }}
           update: true
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-clang
-            mingw-w64-ucrt-x86_64-lld
-            mingw-w64-ucrt-x86_64-make
-            zip
+          install: ${{ matrix.msys-packages }}
       - name: Setup Linux ARM Cross-Compilers
         if: matrix.os == 'linux'
         shell: bash
@@ -92,13 +126,21 @@ jobs:
           elif [ "${{ matrix.arch }}" = "armv7-rpi" ]; then
             sudo apt-get update && sudo apt-get install -y gcc-arm-linux-gnueabihf
           fi
+      - name: Start Virtual Machine (OpenBSD / Haiku)
+        if: matrix.os == 'openbsd' || matrix.os == 'haiku'
+        uses: cross-platform-actions/action@v1.4.0
+        with:
+          operating_system: ${{ matrix.os }}
+          architecture: ${{ matrix.vm-arch }}
+          version: ${{ matrix.vm-version }}
+
       # --- BUILD EXECUTABLES & STRIP SYMBOLS ---
       - name: Compile and Strip (Windows)
         if: matrix.os == 'windows'
         run: |
           if [ "${{ matrix.arch }}" = "arm64" ]; then
-            mingw32-make CC="clang -target aarch64-w64-windows-gnu -fuse-ld=lld"
-            strip bin/*
+            make CC="clang"
+            llvm-strip bin/*
           else
             mingw32-make CC="gcc"
             strip bin/*
@@ -123,17 +165,38 @@ jobs:
             make CC="gcc"
             strip bin/*
           fi
+      # Runs inside the VM (the checkout is synced in, and bin/ back out).
+      # The project Makefiles need GNU make, which OpenBSD doesn't ship
+      # (its make is BSD make; gmake is a package), so the sources are
+      # compiled directly, with the same flags src/Makefile uses. The
+      # code needs nothing from libm, so no -lm (Haiku keeps it in libroot).
+      - name: Compile and Strip (OpenBSD / Haiku)
+        if: matrix.os == 'openbsd' || matrix.os == 'haiku'
+        shell: cpa.sh {0}
+        run: |
+          uname -a
+          if command -v cc >/dev/null 2>&1; then CC=cc; else CC=gcc; fi
+          mkdir -p bin
+          $CC -Wall -Wextra -O2 -Isrc -Iinc src/*.c src/peephole/*.c -o bin/${{ env.PROJECT_NAME }}
+          strip bin/*
+          ./bin/${{ env.PROJECT_NAME }} --version
+
       # --- MODULAR PACKAGING BLOCK (ALL OS RUNNERS) ---
+      # (Default shell: MSYS2's bash on Windows, which has the zip package
+      # installed above; Git Bash, the runner's own "bash", has no zip.)
       - name: Parse Version and Create Zip Archive
         run: |
           # Dynamically builds path: inc/${PROJECT_NAME}.h
           HEADER_FILE="inc/${{ env.PROJECT_NAME }}.h"
-          
-          VERSION=$(grep -i "VERSION" "$HEADER_FILE" | head -n 1 | awk -F'"' '{print $2}')
+
+          # The '#define VERSION "..."' line itself (comments above it
+          # mention VERSION too, so a plain grep picks up the wrong line).
+          VERSION=$(sed -n 's/^#define[[:space:]]*VERSION[[:space:]]*"\(.*\)".*/\1/p' "$HEADER_FILE" | head -n 1)
           if [ -z "$VERSION" ]; then
-             VERSION=$(grep -i "VERSION" "$HEADER_FILE" | head -n 1 | awk '{print $3}')
+            echo "::error::could not read VERSION from $HEADER_FILE"
+            exit 1
           fi
-          
+
           if [ "${{ github.event.inputs.build_type }}" = "test" ]; then
             ZIP_NAME="${{ env.PROJECT_NAME }}-${VERSION}-test-${{ matrix.os }}-${{ matrix.arch }}.zip"
             echo "RETENTION_DAYS=2" >> $GITHUB_ENV
@@ -141,15 +204,17 @@ jobs:
             ZIP_NAME="${{ env.PROJECT_NAME }}-${VERSION}-${{ matrix.os }}-${{ matrix.arch }}.zip"
             echo "RETENTION_DAYS=0" >> $GITHUB_ENV
           fi
-          
+
           echo "VERSION_TAG=v$VERSION" >> $GITHUB_ENV
           echo "Packaging: $ZIP_NAME"
-          
-          cp README.md bin/
+
+          # The READMEs and manual pages, in every language present
+          cp README*.md bin/
+          cp man/*.1 bin/ 2>/dev/null || true
           cd bin
           zip -r "../$ZIP_NAME" ./*
           cd ..
-          
+
           echo "FINAL_ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
       # --- STAGE ZIP INTERNALLY ---
       - name: Upload Compressed Target Release Artifact
@@ -159,7 +224,7 @@ jobs:
           name: ${{ env.PROJECT_NAME }}-package-${{ matrix.os }}-${{ matrix.arch }}
           path: ${{ env.FINAL_ZIP_NAME }}
           retention-days: ${{ fromJson(env.RETENTION_DAYS) }}
-          
+
       - name: Save Version Tag for Release Job
         run: echo "${{ env.VERSION_TAG }}" > version_tag.txt
 
