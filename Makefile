@@ -66,7 +66,7 @@ bin/$(TARGET):
 
 # Clean both the build files in src/ and the generated assembly in testing/
 clean:
-	rm -f err.txt put/* *.zip
+	rm -f err.txt put/* *.zip ../v32opt-project.zip
 	$(MAKE) -C src clean
 	$(MAKE) -C testing clean
 	-rmdir bin 2>/dev/null
@@ -125,7 +125,7 @@ tests: bin/$(TARGET)
 	$(MAKE) -C testing
 
 archive: clean
-	zip -r v32opt-project.zip .github doc ISSUES Makefile CMakeLists.txt cmake man README.md README.es.md README.fr.md inc scripts src testing
+	zip -r ../v32opt-project.zip .github doc ISSUES Makefile CMakeLists.txt cmake man README.md README.es.md README.fr.md inc scripts src testing
 
 put: clean
 	@mkdir -p put
