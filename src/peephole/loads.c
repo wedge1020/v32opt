@@ -79,7 +79,7 @@ int peephole_loads(AsmNode *head) {
                     scan->src_op.mode = MODE_REG;
                     strcpy(scan->src_op.reg, dst_reg);  // <-- FIXED: strcpy, not =
                     snprintf(scan->src_op.raw, sizeof(scan->src_op.raw), "%s", dst_reg);
-                    snprintf(scan->raw, sizeof(scan->raw), "    MOV %s, %s",
+                    node_set_rawf(scan, "    MOV %s, %s",
                              scan->dst_op.raw, scan->src_op.raw);
                     optimizations++;
                     scan = scan->next;

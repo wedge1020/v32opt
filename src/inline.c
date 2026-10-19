@@ -218,8 +218,7 @@ int inline_trivial_functions(AsmNode *head) {
                     valid_candidate = false;
                     if (config.debug) {
                         AsmNode *debug_node = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
-                        snprintf(debug_node->raw, sizeof(debug_node->raw),
-                                 "; [DEBUG inline] Skipped %s: contains control flow", func_name);
+                        node_set_rawf(debug_node, "; [DEBUG inline] Skipped %s: contains control flow", func_name);
                         debug_node->prev = curr;
                         debug_node->next = curr->next;
                         if (curr->next) curr->next->prev = debug_node;
@@ -233,8 +232,7 @@ int inline_trivial_functions(AsmNode *head) {
                     str_case_eq(scan->dst_op.reg, "SP") || str_case_eq(scan->src_op.reg, "SP")) {
                     if (config.debug) {
                         AsmNode *debug_node = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
-                        snprintf(debug_node->raw, sizeof(debug_node->raw),
-                                 "; [DEBUG inline] Skipped %s: modifies SP/BP", func_name);
+                        node_set_rawf(debug_node, "; [DEBUG inline] Skipped %s: modifies SP/BP", func_name);
                         debug_node->prev = curr;
                         debug_node->next = curr->next;
                         if (curr->next) curr->next->prev = debug_node;
@@ -263,8 +261,7 @@ int inline_trivial_functions(AsmNode *head) {
                      scan->src_op.offset < 0)) {
                     if (config.debug) {
                         AsmNode *debug_node = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
-                        snprintf(debug_node->raw, sizeof(debug_node->raw),
-                                 "; [DEBUG inline] Skipped %s: uses local vars [BP-N]", func_name);
+                        node_set_rawf(debug_node, "; [DEBUG inline] Skipped %s: uses local vars [BP-N]", func_name);
                         debug_node->prev = curr;
                         debug_node->next = curr->next;
                         if (curr->next) curr->next->prev = debug_node;
@@ -295,8 +292,7 @@ int inline_trivial_functions(AsmNode *head) {
                 } else {
                     if (config.debug) {
                         AsmNode *debug_node = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
-                        snprintf(debug_node->raw, sizeof(debug_node->raw),
-                                 "; [DEBUG inline] Skipped %s: too large (%d insns, max=%d)",
+                        node_set_rawf(debug_node, "; [DEBUG inline] Skipped %s: too large (%d insns, max=%d)",
                                  func_name, core_count, config.opt_inline_max_body_ins);
                         debug_node->prev = curr;
                         debug_node->next = curr->next;
@@ -319,8 +315,7 @@ int inline_trivial_functions(AsmNode *head) {
                 candidate_count++;
                 if (config.debug) {
                     AsmNode *debug_node = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
-                    snprintf(debug_node->raw, sizeof(debug_node->raw),
-                             "; [DEBUG inline] Candidate: %s (%d insns)", func_name, core_count);
+                    node_set_rawf(debug_node, "; [DEBUG inline] Candidate: %s (%d insns)", func_name, core_count);
                     debug_node->prev = curr;
                     debug_node->next = curr->next;
                     if (curr->next) curr->next->prev = debug_node;
@@ -361,8 +356,7 @@ int inline_trivial_functions(AsmNode *head) {
             if (target_is_non_leaf) {
                 if (config.debug) {
                     AsmNode *debug_node = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
-                    snprintf(debug_node->raw, sizeof(debug_node->raw),
-                             "; [DEBUG inline] Skipped CALL %s: target is non-leaf", target_label);
+                    node_set_rawf(debug_node, "; [DEBUG inline] Skipped CALL %s: target is non-leaf", target_label);
                     debug_node->prev = curr->prev;
                     debug_node->next = curr;
                     if (curr->prev) curr->prev->next = debug_node;
@@ -377,8 +371,7 @@ int inline_trivial_functions(AsmNode *head) {
             if (config.opt_inline_call_limit >= 0 && g_inline_calls_so_far >= config.opt_inline_call_limit) {
                 if (config.debug) {
                     AsmNode *debug_node = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
-                    snprintf(debug_node->raw, sizeof(debug_node->raw),
-                             "; [DEBUG inline] Skipped CALL %s: hit -finline-call-limit=%d",
+                    node_set_rawf(debug_node, "; [DEBUG inline] Skipped CALL %s: hit -finline-call-limit=%d",
                              target_label, config.opt_inline_call_limit);
                     debug_node->prev = curr->prev;
                     debug_node->next = curr;
@@ -405,8 +398,7 @@ int inline_trivial_functions(AsmNode *head) {
                 if (excluded) {
                     if (config.debug) {
                         AsmNode *debug_node = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
-                        snprintf(debug_node->raw, sizeof(debug_node->raw),
-                                 "; [DEBUG inline] Skipped CALL %s: excluded by -finline-exclude",
+                        node_set_rawf(debug_node, "; [DEBUG inline] Skipped CALL %s: excluded by -finline-exclude",
                                  target_label);
                         debug_node->prev = curr->prev;
                         debug_node->next = curr;
@@ -433,8 +425,7 @@ int inline_trivial_functions(AsmNode *head) {
                 if (!defines_ok) {
                     if (config.debug) {
                         AsmNode *debug_node = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
-                        snprintf(debug_node->raw, sizeof(debug_node->raw),
-                                 "; [DEBUG inline] Skipped CALL %s: body uses a %%define not yet defined here",
+                        node_set_rawf(debug_node, "; [DEBUG inline] Skipped CALL %s: body uses a %%define not yet defined here",
                                  target_label);
                         debug_node->prev = curr->prev;
                         debug_node->next = curr;
@@ -447,8 +438,7 @@ int inline_trivial_functions(AsmNode *head) {
                 if (trigger_allowed()) {
                     if (config.debug) {
                         AsmNode *debug_node = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
-                        snprintf(debug_node->raw, sizeof(debug_node->raw),
-                                 "; [DEBUG inline] Inlined CALL %s (%d insns)",
+                        node_set_rawf(debug_node, "; [DEBUG inline] Inlined CALL %s (%d insns)",
                                  target_label, candidates[c].body_count);
                         debug_node->prev = curr->prev;
                         debug_node->next = curr;
@@ -483,10 +473,10 @@ int inline_trivial_functions(AsmNode *head) {
 
                         // Regenerate raw text
                         if (inlined_ins->has_dst && inlined_ins->has_src) {
-                            snprintf(inlined_ins->raw, sizeof(inlined_ins->raw), "    %s %s, %s",
+                            node_set_rawf(inlined_ins, "    %s %s, %s",
                                      inlined_ins->mnemonic, inlined_ins->dst_op.raw, inlined_ins->src_op.raw);
                         } else if (inlined_ins->has_dst) {
-                            snprintf(inlined_ins->raw, sizeof(inlined_ins->raw), "    %s %s",
+                            node_set_rawf(inlined_ins, "    %s %s",
                                      inlined_ins->mnemonic, inlined_ins->dst_op.raw);
                         }
 

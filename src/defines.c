@@ -37,10 +37,12 @@ static int cmp_def(const void *a, const void *b) {
 // if the node isn't a %define.
 static bool parse_define(const AsmNode *node, char *name, size_t nsz, char *value, size_t vsz) {
     if (!is_preprocessor_node(node)) return false;
-    char buf[1024];
-    strip_comment_from_line(buf, node->raw, sizeof(buf));
+    size_t bufsz = strlen(node->raw) + 1;     // a %define line of any length
+    char *buf = malloc(bufsz);
+    if (!buf) return false;
+    strip_comment_from_line(buf, node->raw, bufsz);
     char *p = trim(buf);
-    if (strncasecmp(p, "%define", 7) != 0 || !isspace((unsigned char)p[7])) return false;
+    if (strncasecmp(p, "%define", 7) != 0 || !isspace((unsigned char)p[7])) { free(buf); return false; }
     p += 7;
     while (isspace((unsigned char)*p)) p++;
     char *n = p;
@@ -48,6 +50,7 @@ static bool parse_define(const AsmNode *node, char *name, size_t nsz, char *valu
     if (*p) *p++ = '\0';
     safe_str_copy(name, n, nsz);
     safe_str_copy(value, trim(p), vsz);
+    free(buf);
     return name[0] != '\0';
 }
 

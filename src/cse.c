@@ -142,7 +142,7 @@ int opt_cse(AsmNode *head) {
                                 strcpy(op_ry->mnemonic, "MOV");
                                 op_ry->src_op = op_rx->dst_op;
                                 op_ry->src_op.mode = MODE_REG;
-                                snprintf(op_ry->raw, sizeof(op_ry->raw), "    MOV %s, %s",
+                                node_set_rawf(op_ry, "    MOV %s, %s",
                                          op_ry->dst_op.raw, op_ry->src_op.raw);
                                 optimizations++;
                                 scan = op_ry->next;

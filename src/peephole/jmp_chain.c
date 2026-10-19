@@ -244,9 +244,9 @@ static void retarget(AsmNode *n, ChainLabel *from, ChainLabel *to)
     Operand *op = jump_target_op(n);
     safe_str_copy(op->raw, to->name, sizeof(op->raw));
     if (n->type == OP_JMP) {
-        snprintf(n->raw, sizeof(n->raw), "    JMP %s", to->name);
+        node_set_rawf(n, "    JMP %s", to->name);
     } else {
-        snprintf(n->raw, sizeof(n->raw), "    %s %s, %s",
+        node_set_rawf(n, "    %s %s, %s",
                  n->type == OP_JT ? "JT" : "JF", n->dst_op.raw, to->name);
     }
     from->refs--;

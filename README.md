@@ -1037,9 +1037,10 @@ of producing an out-of-range immediate.
 *      **Directives      Are      Never      Deleted:**      No      pass
 removes     an     assembler    directive     (`%define`,     `%include`,
 `integer`/`float`/`string`/`pointer`/`datafile` data), even  when it sits
-inside a range of dead code being swept away. An instruction or data line
-too long for  the optimizer to hold  is reported as an  error rather than
-silently truncated.
+inside a range of dead code being swept away. A line can be of any length:
+the text of every line is kept whole (a long `string` literal or a `pointer`
+table of hundreds of functions is one line), and DCE reads a `pointer` line
+in full, so a function named only at its far end is still kept.
 
 * **Self-Referential Load Protection:** Redundant move elimination deeply
 inspects  indirect memory  loads. Textually  identical instructions  like

@@ -109,7 +109,7 @@ int peephole_jumps(AsmNode *head)
                             }
 
                             safe_str_copy(curr->src_op.raw, jmp_target_copy, sizeof(curr->src_op.raw));
-                            snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %s",
+                            node_set_rawf(curr, "    %s %s, %s",
                                      curr->mnemonic, curr->dst_op.raw, jmp_target_copy);
 
                             optimizations++;

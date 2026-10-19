@@ -107,7 +107,9 @@ typedef struct {
 
 typedef struct AsmNode {
     OpType type;
-    char raw[1024];              // longer code lines are rejected by the parser
+    char *raw;                   // the line's text, heap-allocated to fit it
+                                 // exactly (never NULL once a node is made):
+                                 // set it only with node_set_raw/node_set_rawf
     char mnemonic[32];
 
     Operand dst_op;
@@ -127,6 +129,9 @@ typedef struct AsmNode {
 Operand  parse_operand (const char *);
 AsmNode *create_node   (const char *, OpType, const char *, const char *, const char *);
 void     remove_node   (AsmNode    *);
+void     node_set_raw  (AsmNode *, const char *);
+void     node_set_rawf (AsmNode *, const char *, ...)
+         __attribute__((format(printf, 2, 3)));
 bool     is_directive_node      (const AsmNode *);
 bool     is_preprocessor_node   (const AsmNode *);
 bool     is_data_directive_node (const AsmNode *);

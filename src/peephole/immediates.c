@@ -83,7 +83,7 @@ int peephole_immediates(AsmNode *head) {
                         strcpy(curr->mnemonic, (combined > 0) ? "IADD" : "ISUB");
                         curr->src_op.immediate = abs(combined);
                         snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%d", abs(combined));
-                        snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %d",
+                        node_set_rawf(curr, "    %s %s, %d",
                                  curr->mnemonic, curr->dst_op.raw, abs(combined));
                         optimizations++;
                         continue;

@@ -556,7 +556,7 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
                             node->src_op.mode = MODE_IMMEDIATE;
                             node->src_op.immediate = src_st.val;
                             snprintf(node->src_op.raw, sizeof(node->src_op.raw), "%d", src_st.val);
-                            snprintf(node->raw, sizeof(node->raw), "    MOV %s, %d",
+                            node_set_rawf(node, "    MOV %s, %d",
                                      node->dst_op.raw, src_st.val);
                             optimizations++;
                         }

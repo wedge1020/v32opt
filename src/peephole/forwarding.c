@@ -78,7 +78,7 @@ int peephole_forwarding(AsmNode *head) {
                         trigger_allowed()) {
                         insert_debug_comment(scan->prev, OPT_PEEPHOLE_FORWARDING, scan->raw);
                         scan->src_op = curr->src_op; // Replace [mem] with R1
-                        snprintf(scan->raw, sizeof(scan->raw), "    MOV %s, %s",
+                        node_set_rawf(scan, "    MOV %s, %s",
                                  scan->dst_op.raw, scan->src_op.raw);
                         optimizations++;
                         break;
@@ -165,15 +165,15 @@ int peephole_forwarding(AsmNode *head) {
 
                         // Rebuild the instruction raw string
                         if (str_case_eq(scan->mnemonic, "JMP")) {
-                            snprintf(scan->raw, sizeof(scan->raw), "    JMP %s", target_op->raw);
+                            node_set_rawf(scan, "    JMP %s", target_op->raw);
                         } else if (scan->dst_op.mode != MODE_NONE && scan->src_op.mode != MODE_NONE) {
-                            snprintf(scan->raw, sizeof(scan->raw), "    %s %s, %s",
+                            node_set_rawf(scan, "    %s %s, %s",
                                      scan->mnemonic, scan->dst_op.raw, scan->src_op.raw);
                         } else if (scan->dst_op.mode != MODE_NONE) {
-                            snprintf(scan->raw, sizeof(scan->raw), "    %s %s",
+                            node_set_rawf(scan, "    %s %s",
                                      scan->mnemonic, scan->dst_op.raw);
                         } else {
-                            snprintf(scan->raw, sizeof(scan->raw), "    %s %s",
+                            node_set_rawf(scan, "    %s %s",
                                      scan->mnemonic, scan->src_op.raw);
                         }
                         optimizations++;

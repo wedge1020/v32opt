@@ -1,3 +1,4 @@
+#include <stdarg.h>
 #include "v32opt.h"
 
 // Map OptType enum to human-readable names
@@ -176,12 +177,13 @@ void insert_debug_comment(AsmNode *after, OptType opt_type, const char *original
     normalize_whitespace(normalized, stripped, sizeof(normalized));
 
     AsmNode *comment = calloc(1, sizeof(AsmNode));
+    node_set_raw(comment, "");
     comment->type = OP_OTHER;
     comment->debug_note = true;
 
     char debug_prefix[128];
     snprintf(debug_prefix, sizeof(debug_prefix), "; [DEBUG %s] ", safe_pass_name);
-    snprintf(comment->raw, sizeof(comment->raw), "%s%s", debug_prefix, normalized);
+    node_set_rawf(comment, "%s%s", debug_prefix, normalized);
 
     if (after) {
         comment->prev = after;
@@ -361,6 +363,44 @@ Operand parse_operand(const char *str) {
 }
 
 // ===================================================================
+// NODE TEXT
+// A node's text (raw) is allocated to fit, so a line can be any length: a
+// long string literal or pointer table is held whole instead of being
+// refused (it used to be a fixed 1023-character array).
+//   - node_set_raw:  replace the text with a copy of `text`
+//   - node_set_rawf: replace it with printf-style formatted text
+// ===================================================================
+void node_set_raw(AsmNode *node, const char *text) {
+    size_t n = strlen(text);
+    char *copy = (char*)malloc(n + 1);
+    if (!copy) {
+        fprintf(stderr, "v32opt: out of memory\n");
+        exit(EXIT_FAILURE);
+    }
+    memcpy(copy, text, n + 1);
+    free(node->raw);
+    node->raw = copy;
+}
+
+void node_set_rawf(AsmNode *node, const char *fmt, ...) {
+    va_list ap, ap2;
+    va_start(ap, fmt);
+    va_copy(ap2, ap);
+    int n = vsnprintf(NULL, 0, fmt, ap);
+    va_end(ap);
+    if (n < 0) n = 0;
+    char *copy = (char*)malloc((size_t)n + 1);
+    if (!copy) {
+        fprintf(stderr, "v32opt: out of memory\n");
+        exit(EXIT_FAILURE);
+    }
+    vsnprintf(copy, (size_t)n + 1, fmt, ap2);
+    va_end(ap2);
+    free(node->raw);
+    node->raw = copy;
+}
+
+// ===================================================================
 // ASM NODE CREATION
 // Allocates and initializes a new AsmNode with the given properties.
 //   - raw: Raw assembly text (e.g., "    MOV R1, R2")
@@ -372,7 +412,7 @@ Operand parse_operand(const char *str) {
 // ===================================================================
 AsmNode* create_node(const char* raw, OpType type, const char* mnem, const char* dst, const char* src) {
     AsmNode *node = (AsmNode*)calloc(1, sizeof(AsmNode));
-    if (raw) safe_str_copy(node->raw, raw, sizeof(node->raw));
+    node_set_raw(node, raw ? raw : "");
     node->type = type;
     if (mnem) safe_str_copy(node->mnemonic, mnem, sizeof(node->mnemonic));
 
@@ -443,6 +483,7 @@ void remove_node(AsmNode *node) {
     if (node->prev) node->prev->next = node->next;
     // Unlink from next node
     if (node->next) node->next->prev = node->prev;
+    free(node->raw);
     free(node);
 }
 
@@ -455,6 +496,8 @@ void remove_node(AsmNode *node) {
 AsmNode* clone_node(AsmNode *src) {
     AsmNode *dst = (AsmNode*)calloc(1, sizeof(AsmNode));
     memcpy(dst, src, sizeof(AsmNode));
+    dst->raw = NULL;                     // memcpy shared the text: give the copy its own
+    node_set_raw(dst, src->raw);
     // Clear pointers to avoid dangling references
     dst->prev = NULL;
     dst->next = NULL;
@@ -477,23 +520,31 @@ AsmNode* clone_node(AsmNode *src) {
 //   - filename: Path to the input .asm file
 // Returns: Dummy head node (first real node is head->next)
 // ===================================================================
-// Where a line's trailing comment starts: the first ';' that is not inside
-// a "double-quoted" string literal (string "a;b" is data, not a comment).
-// Returns a pointer to the terminating NUL when there is no comment.
-static const char *find_comment_start(const char *s)
-{
-    bool in_string = false;
-    for (; *s; s++) {
-        if (in_string) {
-            if (*s == '\\' && s[1] != '\0') s++;      // skip an escaped char
-            else if (*s == '"')            in_string = false;
-        } else if (*s == '"') {
-            in_string = true;
-        } else if (*s == ';') {
-            return s;
-        }
+// Read one line of any length into *buf (grown as needed; *cap is its
+// size). Returns the line's length, line ending included, or -1 at the end
+// of the file.
+static long read_line_dyn(FILE *fp, char **buf, size_t *cap) {
+    size_t len = 0;
+    if (*cap == 0) {
+        *cap = 1024;
+        *buf = (char*)malloc(*cap);
+        if (!*buf) { fprintf(stderr, "v32opt: out of memory\n"); exit(EXIT_FAILURE); }
     }
-    return s;
+    (*buf)[0] = '\0';
+    for (;;) {
+        if (!fgets(*buf + len, (int)(*cap - len), fp)) {
+            if (len == 0) return -1;
+            break;
+        }
+        len += strlen(*buf + len);
+        if (len > 0 && (*buf)[len - 1] == '\n') break;
+        if (len + 1 < *cap) break;                 // no newline, no more input
+        *cap *= 2;
+        char *grown = (char*)realloc(*buf, *cap);
+        if (!grown) { fprintf(stderr, "v32opt: out of memory\n"); exit(EXIT_FAILURE); }
+        *buf = grown;
+    }
+    return (long)len;
 }
 
 AsmNode* parse_vircon32_asm(const char *filename) {
@@ -508,57 +559,31 @@ AsmNode* parse_vircon32_asm(const char *filename) {
     AsmNode *dummy_head = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
     AsmNode *tail = dummy_head;
 
-    // Longest line text an AsmNode can hold (node->raw, minus its NUL).
-    const size_t node_raw_max = sizeof(dummy_head->raw) - 1;
-
-    char line[8192];
-    long line_no = 0;
-    while (fgets(line, sizeof(line), fp)) {
+    // Lines are read whole, whatever their length (a long string literal or
+    // pointer table is one line); `raw` is the same text without its line
+    // ending, which is what a node keeps.
+    char *line = NULL, *raw = NULL;
+    size_t line_cap = 0, raw_cap = 0;
+    long line_no = 0, line_len;
+    while ((line_len = read_line_dyn(fp, &line, &line_cap)) >= 0) {
         line_no++;
 
-        // A line longer than line[] arrives in pieces; swallow the rest of
-        // it so the tail can't come back around as a bogus line of its own.
-        size_t line_len = strlen(line);
-        bool overlong   = (line_len == sizeof(line) - 1 &&
-                           line[line_len - 1] != '\n' && !feof(fp));
-        if (overlong) {
-            int c;
-            while ((c = fgetc(fp)) != EOF && c != '\n') { }
+        if ((size_t)line_len + 1 > raw_cap) {
+            raw_cap = (size_t)line_len + 1;
+            raw = (char*)realloc(raw, raw_cap);
+            if (!raw) { fprintf(stderr, "v32opt: out of memory\n"); exit(EXIT_FAILURE); }
         }
-
-        char raw[8192];
-        safe_str_copy(raw, line, sizeof(raw));
+        memcpy(raw, line, (size_t)line_len + 1);
         // Remove line endings
         raw[strcspn(raw, "\r\n")] = '\0';
 
         char *trimmed = trim(line);
 
         // --- Blank Lines & Comments ---
-        // (A comment longer than a node can hold is merely shortened.)
         if (strlen(trimmed) == 0 || trimmed[0] == ';') {
             AsmNode *node = create_node(raw, OP_OTHER, NULL, NULL, NULL);
             tail->next = node; node->prev = tail; tail = node;
             continue;
-        }
-
-        // --- Refuse to silently truncate code ---
-        // node->raw is what gets written back out. If the code part of the
-        // line (everything before any trailing comment) doesn't fit, the
-        // output would be cut mid-instruction or mid-data -- a long string
-        // literal or pointer/integer table -- and DCE would no longer see
-        // every function named on the line. Fail loudly instead.
-        {
-            const char *code_end = find_comment_start(raw);
-            bool cut = (*code_end == '\0' && overlong) ||
-                       (size_t)(code_end - raw) > node_raw_max;
-            if (cut) {
-                fprintf(stderr,
-                        "v32opt: %s:%ld: line too long (code longer than %zu "
-                        "characters); refusing to write truncated output\n",
-                        filename, line_no, node_raw_max);
-                fclose(fp);
-                exit(EXIT_FAILURE);
-            }
         }
 
         // --- Extract Code (Remove Inline Comments) ---
@@ -682,6 +707,9 @@ AsmNode* parse_vircon32_asm(const char *filename) {
         tail->next = node; node->prev = tail; tail = node;
     }
 
+    (void)line_no;
+    free(line);
+    free(raw);
     fclose(fp);
     return dummy_head;
 }
@@ -706,11 +734,10 @@ void write_vircon32_asm(const char *filename, AsmNode *head) {
     bool last_was_blank = false;
 
     while (curr) {
-        char line_copy[8192];
-        safe_str_copy(line_copy, curr->raw, sizeof(line_copy));
-        char *trimmed = trim(line_copy);
-
-        bool is_blank = (strlen(trimmed) == 0);
+        const char *text = curr->raw;
+        while (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n' ||
+               *text == '\v' || *text == '\f') text++;
+        bool is_blank = (*text == '\0');
 
         // --- Blank Line Handling ---
         // Collapse consecutive blank lines to avoid excessive whitespace

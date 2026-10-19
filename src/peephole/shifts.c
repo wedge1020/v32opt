@@ -54,7 +54,7 @@ int peephole_shifts(AsmNode *head)
             curr->type = OP_IADD;
             strcpy(curr->mnemonic, "IADD");
             curr->src_op = curr->dst_op;
-            snprintf(curr->raw, sizeof(curr->raw), "    IADD %s, %s",
+            node_set_rawf(curr, "    IADD %s, %s",
                      curr->dst_op.raw, curr->src_op.raw);
             optimizations++;
             curr = next;

@@ -589,8 +589,10 @@ int opt_dce (AsmNode *head)
     // function pointers. Any function listed here is reachable.
     for (AsmNode *node = head; node != NULL; node = node->next) {
         if (str_case_eq(node->mnemonic, "pointer")) {
-            char args_copy[8192];
-            safe_str_copy(args_copy, node->raw, sizeof(args_copy));
+            // A pointer table can be as long as the program has functions
+            // in it: scan a copy of the whole line, never a truncated one.
+            char *args_copy = strdup(node->raw);
+            if (!args_copy) { fprintf(stderr, "v32opt: out of memory\n"); exit(EXIT_FAILURE); }
 
             char *token = strtok(args_copy, " ,\t\n\r");
             if (token && str_case_eq(token, "pointer")) {
@@ -606,6 +608,7 @@ int opt_dce (AsmNode *head)
                     token = strtok(NULL, " ,\t\n\r");
                 }
             }
+            free(args_copy);
         }
     }
 

@@ -64,7 +64,7 @@ int peephole_reduce(AsmNode *head) {
                 strcpy(curr->mnemonic, "MOV");
                 curr->src_op.immediate = 0;
                 snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "0");
-                snprintf(curr->raw, sizeof(curr->raw), "    MOV %s, 0", curr->dst_op.raw);
+                node_set_rawf(curr, "    MOV %s, 0", curr->dst_op.raw);
                 optimizations++;
             } else if (imm == 1) {
                 AsmNode *nodes[] = {curr};
@@ -75,7 +75,7 @@ int peephole_reduce(AsmNode *head) {
                 curr->type = OP_IADD;
                 strcpy(curr->mnemonic, "IADD");
                 curr->src_op = curr->dst_op;
-                snprintf(curr->raw, sizeof(curr->raw), "    IADD %s, %s",
+                node_set_rawf(curr, "    IADD %s, %s",
                          curr->dst_op.raw, curr->src_op.raw);
                 optimizations++;
             }
@@ -108,7 +108,7 @@ int peephole_reduce(AsmNode *head) {
                 strcpy(curr->mnemonic, "MOV");
                 curr->src_op.immediate = 0;
                 snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "0");
-                snprintf(curr->raw, sizeof(curr->raw), "    MOV %s, 0", curr->dst_op.raw);
+                node_set_rawf(curr, "    MOV %s, 0", curr->dst_op.raw);
                 optimizations++;
             }
         }

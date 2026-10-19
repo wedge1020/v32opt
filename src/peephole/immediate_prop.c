@@ -106,7 +106,7 @@ int peephole_immediate_prop(AsmNode *head)
                             insert_debug_comment(curr->prev, OPT_PEEPHOLE_IMMEDIATE_PROP, curr->raw);
                             curr->src_op.immediate = (int)result;
                             snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%lld", result);
-                            snprintf(curr->raw, sizeof(curr->raw), "    MOV %s, %lld", curr->dst_op.raw, result);
+                            node_set_rawf(curr, "    MOV %s, %lld", curr->dst_op.raw, result);
                             optimizations++;
                             folded = true;
                         }
@@ -202,7 +202,7 @@ int peephole_immediate_prop(AsmNode *head)
                         strcpy(curr->mnemonic, (combined > 0) ? "IADD" : "ISUB");
                         curr->src_op.immediate = labs(combined);
                         snprintf(curr->src_op.raw, sizeof(curr->src_op.raw), "%ld", labs(combined));
-                        snprintf(curr->raw, sizeof(curr->raw), "    %s %s, %ld",
+                        node_set_rawf(curr, "    %s %s, %ld",
                                  curr->mnemonic, curr->dst_op.raw, labs(combined));
                         optimizations++;
                         continue;

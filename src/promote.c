@@ -396,9 +396,9 @@ int pass_promote_stack_slots(AsmNode *head) {
                                 // other pass in this project follows.
                                 insert_debug_comment(n->prev, OPT_PROMOTE_LEAF, n->raw);
                                 if (n->has_dst && n->has_src) {
-                                    snprintf(n->raw, sizeof(n->raw), "    %s %s, %s", n->mnemonic, n->dst_op.raw, n->src_op.raw);
+                                    node_set_rawf(n, "    %s %s, %s", n->mnemonic, n->dst_op.raw, n->src_op.raw);
                                 } else if (n->has_dst) {
-                                    snprintf(n->raw, sizeof(n->raw), "    %s %s", n->mnemonic, n->dst_op.raw);
+                                    node_set_rawf(n, "    %s %s", n->mnemonic, n->dst_op.raw);
                                 }
                                 optimizations++;
                             }
@@ -825,9 +825,9 @@ int pass_promote_regs(AsmNode *head) {
                             // other pass in this project follows.
                             insert_debug_comment(m->prev, OPT_PROMOTE_REGS, m->raw);
                             if (m->has_dst && m->has_src) {
-                                snprintf(m->raw, sizeof(m->raw), "    %s %s, %s", m->mnemonic, m->dst_op.raw, m->src_op.raw);
+                                node_set_rawf(m, "    %s %s, %s", m->mnemonic, m->dst_op.raw, m->src_op.raw);
                             } else if (m->has_dst) {
-                                snprintf(m->raw, sizeof(m->raw), "    %s %s", m->mnemonic, m->dst_op.raw);
+                                node_set_rawf(m, "    %s %s", m->mnemonic, m->dst_op.raw);
                             }
                             optimizations++;
                         }
@@ -1313,9 +1313,9 @@ int pass_promote_loop_registers(AsmNode *head) {
                             // other pass in this project follows.
                             insert_debug_comment(n->prev, OPT_PROMOTE_LOOPS, n->raw);
                             if (n->has_dst && n->has_src) {
-                                snprintf(n->raw, sizeof(n->raw), "    %s %s, %s", n->mnemonic, n->dst_op.raw, n->src_op.raw);
+                                node_set_rawf(n, "    %s %s, %s", n->mnemonic, n->dst_op.raw, n->src_op.raw);
                             } else if (n->has_dst) {
-                                snprintf(n->raw, sizeof(n->raw), "    %s %s", n->mnemonic, n->dst_op.raw);
+                                node_set_rawf(n, "    %s %s", n->mnemonic, n->dst_op.raw);
                             }
                             optimizations++;
                         }

@@ -211,6 +211,17 @@ unit fixtures and on 35 Vircon32 C-compiler test programs at
   file and line; over-long comments are still merely shortened.
   ';' inside a "string" literal no longer counts as a comment start
   for this check.
+- FIXED: a line over 1023 characters (a long "string" literal, say a
+  help text of a program) made v32opt stop with "line too long ...
+  refusing to write truncated output". AsmNode.raw is now allocated to
+  fit its line, the parser reads lines of any length, and the writer
+  no longer copies them. The one reader that needs a whole line, DCE's
+  scan of "pointer" tables, now scans the full text (a copy cut at the
+  old 8192 characters would have dropped every function named after it).
+  The line-length error is gone. testing/long-lines/run.sh checks a
+  30000-character string and an 800-function pointer table; outputs on
+  all other fixtures are byte-identical to before (126 runs, -O1/-O2/-O3,
+  -d, -fno-inline), and clean under AddressSanitizer/UBSan.
 - FIXED: constant folds could overflow 32 bits and emit literals the
   assembler rejects ("MOV R1,100000 / IMUL R1,100000" -> "MOV R1,
   10000000000"); also signed-int overflow (UB) in peephole-immediates

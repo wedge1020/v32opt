@@ -84,8 +84,7 @@ int peephole_zero_test(AsmNode *head) {
         // Snapshot everything needed BEFORE removing nodes.
         Operand tested = form_a ? mov->src_op : cmp->dst_op;
         bool jump_if_zero = (cmp->type == OP_IEQ) == (jmp->type == OP_JT);
-        char old_jmp_raw[sizeof(jmp->raw)];
-        safe_str_copy(old_jmp_raw, jmp->raw, sizeof(old_jmp_raw));
+        char *old_jmp_raw = strdup(jmp->raw);
 
         // One atomic transform: remove first (the shared trigger gate),
         // rewrite the jump only if the removal committed.
@@ -95,15 +94,17 @@ int peephole_zero_test(AsmNode *head) {
         nodes[count++] = cmp;
         AsmNode *dummy = NULL;
         if (!remove_with_debug(&dummy, nodes, count, OPT_PEEPHOLE_ZERO_TEST)) {
+            free(old_jmp_raw);
             curr = jmp->next;       // budget exhausted: leave the site intact
             continue;
         }
 
         insert_debug_comment(jmp->prev, OPT_PEEPHOLE_ZERO_TEST, old_jmp_raw);
+        free(old_jmp_raw);
         jmp->type = jump_if_zero ? OP_JF : OP_JT;
         strcpy(jmp->mnemonic, jump_if_zero ? "JF" : "JT");
         jmp->dst_op = tested;
-        snprintf(jmp->raw, sizeof(jmp->raw), "    %-5s %s, %s",
+        node_set_rawf(jmp, "    %-5s %s, %s",
                  jmp->mnemonic, jmp->dst_op.raw, jmp->src_op.raw);
 
         optimizations += count;

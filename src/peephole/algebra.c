@@ -66,7 +66,7 @@ int peephole_algebra(AsmNode *head)
             curr->type = OP_IADD;
             strcpy(curr->mnemonic, "IADD");
             curr->src_op = curr->dst_op;
-            snprintf(curr->raw, sizeof(curr->raw), "    IADD %s, %s",
+            node_set_rawf(curr, "    IADD %s, %s",
                      curr->dst_op.raw, curr->src_op.raw);
             optimizations++;
         }
@@ -82,7 +82,7 @@ int peephole_algebra(AsmNode *head)
             insert_debug_comment(curr->prev, OPT_PEEPHOLE_ALGEBRA, curr->raw);
             curr->type = OP_MOV;
             strcpy(curr->mnemonic, "MOV");
-            snprintf(curr->raw, sizeof(curr->raw), "    MOV %s, 0", curr->dst_op.raw);
+            node_set_rawf(curr, "    MOV %s, 0", curr->dst_op.raw);
             optimizations++;
             curr = next;
             continue;
