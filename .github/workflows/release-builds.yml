@@ -11,19 +11,131 @@ on:
         options:
           - 'test'
           - 'release'
+      publish_release:
+        description: 'Release runs only: publish the GitHub release at once, instead of leaving it as a draft to review'
+        type: boolean
+        required: false
+        default: false
 
+# Read-only by default; only the release job below can write (create the
+# release and attach the zips).
 permissions:
-  contents: write
+  contents: read
 
 # =========================================================================
 # CHANGE THIS SINGLE VARIABLE TO DEPLOY THIS WORKFLOW TO ANOTHER REPOSITORY
+#   PROJECT_NAME    the program's name: the binary, the zips' names, and the
+#                   header in inc/ that holds '#define VERSION "..."'
 # =========================================================================
 env:
   PROJECT_NAME: v32opt
 
 jobs:
+  # Reads the version once, for every build job and the release. The
+  # '#define VERSION "..."' line itself is parsed (anchored, as the base
+  # Makefile and CMakeLists.txt do): a plain `grep -i VERSION | head -1`
+  # takes the first line that merely mentions the word -- a comment, say
+  # -- and names every zip and the release tag after its garbage.
+  #
+  # It also checks the manual pages, which are shipped in every package:
+  # each one (English, Spanish and French) must be stamped with that
+  # version by `make version`. A mismatch is a warning on test builds and
+  # an error on release builds.
+  version:
+    name: Read Version and Check Manual Pages
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Parse and Check Version
+        id: parse
+        shell: bash
+        run: |
+          HEADER_FILE="inc/${{ env.PROJECT_NAME }}.h"
+          VERSION=$(sed -n 's/^#define[[:space:]]*VERSION[[:space:]]*"\(.*\)".*/\1/p' "$HEADER_FILE" | head -n 1)
+          if [ -z "$VERSION" ]; then
+            echo "::error file=$HEADER_FILE::could not read VERSION from $HEADER_FILE"
+            exit 1
+          fi
+          case "$VERSION" in
+            *[!A-Za-z0-9._+-]*)
+              echo "::error file=$HEADER_FILE::VERSION '$VERSION' has characters unsafe for file names and tags"
+              exit 1 ;;
+          esac
+          echo "Version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ inputs.build_type }}" = "release" ]; then LEVEL=error; else LEVEL=warning; fi
+          STALE=0
+          for page in man/v32opt.1 man/v32opt.es.1 man/v32opt.fr.1; do
+            if [ ! -f "$page" ]; then
+              echo "::error file=$page::$page is missing from the repository (is it committed?)"
+              exit 1
+            fi
+            if ! grep -q "^\.TH .*\"${{ env.PROJECT_NAME }} $VERSION\"" "$page"; then
+              echo "::$LEVEL file=$page::$page is not stamped with $VERSION (run 'make version')"
+              STALE=1
+            fi
+          done
+          if [ "$STALE" = 1 ] && [ "$LEVEL" = error ]; then exit 1; fi
+
+      # The release text, the READMEs and the test script are separate
+      # files: a checkout that lacks one fails here, with a clear message,
+      # rather than in the middle of every build job.
+      - name: Check Required Files
+        shell: bash
+        run: |
+          MISSING=
+          for f in .github/release-notes.md README.md README.es.md README.fr.md testing/long-lines/run.sh; do
+            [ -f "$f" ] || { echo "::error file=$f::$f is missing from the repository (is it committed?)"; MISSING=1; }
+          done
+          [ -z "$MISSING" ]
+
+  # (cmake runs alongside the builds, as a separate result: it does not
+  # hold the builds or the release back.)
+  #
+  # The CMake build and install: configure, build, run the ctest suite
+  # (every unit-test input optimizes at -O3 in both language modes, and
+  # the long-lines check passes), then install into a scratch directory and
+  # check what a user would get: the binary, which must report the version,
+  # and the manual page and README.
+  cmake:
+    name: CMake Build, Test and Install (${{ matrix.os }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure, Build and Test
+        shell: bash
+        run: |
+          cmake -S . -B build
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+
+      - name: Install and Check the Layout
+        shell: bash
+        run: |
+          STAGE="$PWD/stage"
+          DESTDIR="$STAGE" cmake --install build
+          BIN=$(find "$STAGE" -name '${{ env.PROJECT_NAME }}' -type f | head -n 1)
+          [ -n "$BIN" ] || { echo "::error::no ${{ env.PROJECT_NAME }} binary was installed"; exit 1; }
+          MAN=$(find "$STAGE" -name '${{ env.PROJECT_NAME }}.1' -type f | head -n 1)
+          [ -n "$MAN" ] || { echo "::error::no manual page was installed"; exit 1; }
+          GOT=$("$BIN" --version | head -n 1 | sed 's/.* //')
+          [ "$GOT" = "${{ needs.version.outputs.version }}" ] || { echo "::error::the installed binary reports '$GOT', not '${{ needs.version.outputs.version }}'"; exit 1; }
+
   build:
     name: Build (${{ matrix.os }}-${{ matrix.arch }})
+    needs: version
     runs-on: ${{ matrix.os-runner }}
 
     # The OpenBSD and Haiku targets are a nice extra, not a requirement:
@@ -35,9 +147,17 @@ jobs:
       run:
         shell: ${{ matrix.os == 'windows' && 'msys2 {0}' || 'bash' }}
 
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+
     strategy:
       fail-fast: false
       matrix:
+        # smoke: the binary runs on the runner itself (not cross-compiled),
+        # so it can be checked: it must report the version, and must pass
+        # testing/long-lines/run.sh (which needs no Vircon32 tools). The
+        # OpenBSD and Haiku builds are checked inside their virtual
+        # machines instead.
         include:
           # Windows Targets
           #   x86_64: MSYS2 UCRT64 (gcc) on the regular x64 runner.
@@ -53,24 +173,29 @@ jobs:
             os-runner: windows-latest
             msystem: UCRT64
             msys-packages: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make zip
+            smoke: true
           - os: windows
             arch: arm64
             os-runner: windows-11-arm
             msystem: CLANGARM64
             msys-packages: mingw-w64-clang-aarch64-clang make zip
+            smoke: true
 
-          # macOS Targets
+          # macOS Targets (macos-latest is an Apple Silicon runner; the
+          # x86_64 binary is cross-compiled there)
           - os: macos
             arch: x86_64
             os-runner: macos-latest
           - os: macos
             arch: arm64
             os-runner: macos-latest
+            smoke: true
 
           # Linux Core Targets
           - os: linux
             arch: x86_64
             os-runner: ubuntu-latest
+            smoke: true
           - os: linux
             arch: arm64
             os-runner: ubuntu-latest
@@ -135,6 +260,9 @@ jobs:
           version: ${{ matrix.vm-version }}
 
       # --- BUILD EXECUTABLES & STRIP SYMBOLS ---
+      # (The Makefile links bin/v32opt; on Windows the compiler adds .exe.
+      # The Windows x86_64 build links statically, as the CMake build does
+      # for MinGW, so v32opt.exe needs no MinGW DLLs beside it.)
       - name: Compile and Strip (Windows)
         if: matrix.os == 'windows'
         run: |
@@ -142,7 +270,7 @@ jobs:
             make CC="clang"
             llvm-strip bin/*
           else
-            mingw32-make CC="gcc"
+            mingw32-make CC="gcc -static"
             strip bin/*
           fi
       - name: Compile and Strip (macOS)
@@ -170,7 +298,9 @@ jobs:
       # (its make is BSD make; gmake is a package), so the sources are
       # compiled directly, with the same flags src/Makefile uses. The
       # code needs nothing from libm, so no -lm (Haiku keeps it in libroot).
-      - name: Compile and Strip (OpenBSD / Haiku)
+      # The binary can run here, so it is checked here: it must report the
+      # version.
+      - name: Compile, Strip and Test (OpenBSD / Haiku)
         if: matrix.os == 'openbsd' || matrix.os == 'haiku'
         shell: cpa.sh {0}
         run: |
@@ -178,44 +308,53 @@ jobs:
           if command -v cc >/dev/null 2>&1; then CC=cc; else CC=gcc; fi
           mkdir -p bin
           $CC -Wall -Wextra -O2 -Isrc -Iinc src/*.c src/peephole/*.c -o bin/${{ env.PROJECT_NAME }}
-          strip bin/*
-          ./bin/${{ env.PROJECT_NAME }} --version
+          strip bin/${{ env.PROJECT_NAME }}
+          GOT=$(./bin/${{ env.PROJECT_NAME }} --version | head -n 1 | sed 's/.* //')
+          echo "Reports: $GOT"
+          [ "$GOT" = "${{ env.VERSION }}" ]
+
+      # --- SMOKE TEST (NATIVE BUILDS) ---
+      - name: Smoke Test (--version, long lines)
+        if: matrix.smoke == true
+        run: |
+          BIN=$(ls bin/${{ env.PROJECT_NAME }}* | head -n 1)
+          GOT=$("$BIN" --version | head -n 1 | sed 's/.* //')
+          echo "Reports: $GOT"
+          [ "$GOT" = "$VERSION" ] || { echo "::error::$BIN reports '$GOT', not '$VERSION'"; exit 1; }
+          bash testing/long-lines/run.sh "$BIN"
 
       # --- MODULAR PACKAGING BLOCK (ALL OS RUNNERS) ---
+      # Each zip holds, at its top level:
+      #     v32opt[.exe]              the optimizer
+      #     README.md, README.es.md,
+      #     README.fr.md              the README, in each language
+      #     v32opt.1, v32opt.es.1,
+      #     v32opt.fr.1               the manual page, in each language
       # (Default shell: MSYS2's bash on Windows, which has the zip package
       # installed above; Git Bash, the runner's own "bash", has no zip.)
-      - name: Parse Version and Create Zip Archive
+      - name: Create Zip Archive
         run: |
-          # Dynamically builds path: inc/${PROJECT_NAME}.h
-          HEADER_FILE="inc/${{ env.PROJECT_NAME }}.h"
-
-          # The '#define VERSION "..."' line itself (comments above it
-          # mention VERSION too, so a plain grep picks up the wrong line).
-          VERSION=$(sed -n 's/^#define[[:space:]]*VERSION[[:space:]]*"\(.*\)".*/\1/p' "$HEADER_FILE" | head -n 1)
-          if [ -z "$VERSION" ]; then
-            echo "::error::could not read VERSION from $HEADER_FILE"
-            exit 1
-          fi
-
-          if [ "${{ github.event.inputs.build_type }}" = "test" ]; then
+          if [ "${{ inputs.build_type }}" = "test" ]; then
             ZIP_NAME="${{ env.PROJECT_NAME }}-${VERSION}-test-${{ matrix.os }}-${{ matrix.arch }}.zip"
             echo "RETENTION_DAYS=2" >> $GITHUB_ENV
           else
             ZIP_NAME="${{ env.PROJECT_NAME }}-${VERSION}-${{ matrix.os }}-${{ matrix.arch }}.zip"
             echo "RETENTION_DAYS=0" >> $GITHUB_ENV
           fi
-
-          echo "VERSION_TAG=v$VERSION" >> $GITHUB_ENV
           echo "Packaging: $ZIP_NAME"
 
-          # The READMEs and manual pages, in every language present
-          cp README*.md bin/
-          cp man/*.1 bin/ 2>/dev/null || true
-          cd bin
+          mkdir package
+          cp bin/${{ env.PROJECT_NAME }}* package/
+          cp README*.md package/
+          cp man/*.1 package/
+
+          cd package
           zip -r "../$ZIP_NAME" ./*
           cd ..
+          unzip -l "$ZIP_NAME"
 
           echo "FINAL_ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+
       # --- STAGE ZIP INTERNALLY ---
       - name: Upload Compressed Target Release Artifact
         uses: actions/upload-artifact@v4
@@ -225,38 +364,79 @@ jobs:
           path: ${{ env.FINAL_ZIP_NAME }}
           retention-days: ${{ fromJson(env.RETENTION_DAYS) }}
 
-      - name: Save Version Tag for Release Job
-        run: echo "${{ env.VERSION_TAG }}" > version_tag.txt
-
-      - name: Upload Version Tag
-        uses: actions/upload-artifact@v4
-        with:
-          name: version-tag-${{ matrix.os }}-${{ matrix.arch }}
-          path: version_tag.txt
-          retention-days: ${{ fromJson(env.RETENTION_DAYS) }}
-
+  # The release page. For a `release` run this attaches every platform's zip
+  # to a GitHub release "v<VERSION>", together with a SHA256SUMS.txt and the
+  # text of .github/release-notes.md (its @VERSION@ becomes the version).
+  #
+  #   - The release is created as a DRAFT, visible only to people who can
+  #     write to the repository, so the text and the zips can be reviewed
+  #     before anyone sees them: press "Publish release" on the Releases
+  #     page. Start the run with `publish_release` ticked to publish at once.
+  #   - It is created for the commit that was built (target_commitish), not
+  #     for whatever the default branch holds when the draft is published:
+  #     the tag v<VERSION> is made at that commit.
+  #   - A -dev version is marked a pre-release (never "Latest").
+  #   - Running it again for the same version updates that release and
+  #     replaces the zips of the same names.
+  #   - This is the only job that can write to the repository (the other
+  #     jobs get the read-only default above). A release made with the
+  #     built-in GITHUB_TOKEN does not itself start other workflows (an
+  #     `on: release` workflow would not fire); GitHub does this on purpose.
   release:
-    name: Create Draft Release
-    needs: build
-    if: github.event.inputs.build_type == 'release'
+    name: ${{ inputs.publish_release && 'Publish Release' || 'Create Draft Release' }}
+    needs: [version, build]
+    if: inputs.build_type == 'release'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
+      # Only .github/ (the release text) is needed from the repository.
+      - name: Checkout the release text
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github
+
       - name: Download all zip packages from build jobs
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: ${{ env.PROJECT_NAME }}-package-*
           merge-multiple: true
 
-      - name: Determine Version Tag
+      # The OpenBSD and Haiku packages are optional (their job may fail
+      # without failing the run); every other target must be here, or the
+      # release would silently go out missing a platform.
+      - name: Check the Packages
+        shell: bash
         run: |
-          VERSION_TAG=$(cat artifacts/version_tag.txt | head -n 1)
-          echo "VERSION_TAG=$VERSION_TAG" >> $GITHUB_ENV
-          rm artifacts/version_tag.txt
-      - name: Generate Draft Release on GitHub
+          MISSING=0
+          for target in windows-x86_64 windows-arm64 macos-x86_64 macos-arm64 \
+                        linux-x86_64 linux-arm64 linux-armv7-rpi linux-armv8-rpi; do
+            zip="artifacts/${{ env.PROJECT_NAME }}-${VERSION}-${target}.zip"
+            [ -f "$zip" ] || { echo "::error::$zip is missing"; MISSING=1; }
+          done
+          [ "$MISSING" = 0 ]
+          ls -l artifacts
+
+      - name: Write the Checksums and the Release Text
+        shell: bash
+        run: |
+          [ -f .github/release-notes.md ] || { echo "::error file=.github/release-notes.md::the release text is missing"; exit 1; }
+          (cd artifacts && sha256sum -- *.zip > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          sed "s|@VERSION@|${VERSION}|g" .github/release-notes.md > release-notes.md
+
+      - name: Create the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.VERSION_TAG }}
-          name: "${{ env.PROJECT_NAME }} Release ${{ env.VERSION_TAG }}"
-          draft: true
-          prerelease: false
-          files: artifacts/*.zip
+          tag_name: v${{ needs.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: "${{ env.PROJECT_NAME }} Release v${{ needs.version.outputs.version }}"
+          body_path: release-notes.md
+          draft: ${{ !inputs.publish_release }}
+          prerelease: ${{ contains(needs.version.outputs.version, '-dev') }}
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/*.zip
+            artifacts/SHA256SUMS.txt

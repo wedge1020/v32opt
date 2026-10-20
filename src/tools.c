@@ -604,7 +604,11 @@ AsmNode* parse_vircon32_asm(const char *filename) {
         char *code_trimmed = trim(code_part);
 
         // --- Labels (e.g., "my_label:") ---
-        if (code_trimmed[strlen(code_trimmed) - 1] == ':') {
+        // A label is one token. A data line whose visible text happens to
+        // end in ':' -- cut short by the 255-character code buffer, or by a
+        // ';' inside its string literal ("Score:;x") -- is not one.
+        if (code_trimmed[strlen(code_trimmed) - 1] == ':' &&
+            !strpbrk(code_trimmed, " \t\"")) {
             AsmNode *node = create_node(raw, OP_LABEL, NULL, NULL, NULL);
             tail->next = node; node->prev = tail; tail = node;
             continue;

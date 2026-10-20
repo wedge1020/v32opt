@@ -194,8 +194,20 @@ pestaña Actions) compila binarios comprimidos en zip para Linux (x86_64,
 arm64, Raspberry Pi armv7/armv8), macOS (x86_64, arm64) y Windows (x86_64,
 arm64), además de -- como extras opcionales que nunca retrasan una
 publicación -- OpenBSD (x86_64, arm64) y Haiku (x86_64). Cada zip contiene
-el binario, los README y las páginas de manual; una ejecución de tipo
-`release` los reúne en un borrador de publicación (release) de GitHub.
+el binario, los README y las páginas de manual. Antes de compilar, el
+flujo comprueba que las páginas de manual llevan la versión actual (véase
+[Publicación de versiones](#publicación-de-versiones-sellado-de-versión));
+las compilaciones nativas pasan una prueba rápida (`--version` y
+`testing/long-lines/run.sh`).
+
+Una ejecución de tipo `release` reúne los zip, junto con un
+`SHA256SUMS.txt`, en una publicación (release) de GitHub `v<VERSIÓN>`,
+cuyo texto es `.github/release-notes.md` (`@VERSION@` se sustituye por la
+versión). La publicación es un **borrador** hasta que se pulsa «Publish
+release» en la página Releases; marque `publish_release` al lanzar la
+ejecución para publicarla de inmediato. Una versión `-dev` se marca como
+preliminar (pre-release). Repetir la ejecución para la misma versión
+actualiza esa publicación.
 
 ---
 
@@ -451,9 +463,9 @@ v32opt <entrada.asm> [-o salida.asm] [opciones]
 
 `v32opt` no muestra nada si todo va bien, salvo que se indique `-v` o
 `-t`, y termina con código de salida `1` (y un mensaje en stderr) ante una
-opción incorrecta, una entrada que falta o no se puede leer, una salida
-que no se puede escribir, o una línea de entrada demasiado larga para
-procesarla con seguridad.
+opción incorrecta, una entrada que falta o no se puede leer, o una salida
+que no se puede escribir. (Las líneas de entrada pueden tener
+cualquier longitud.)
 
 ### Filosofía de los niveles de optimización y consideraciones de depuración
 
@@ -1095,9 +1107,11 @@ producir un inmediato fuera de rango.
 * **Las directivas nunca se borran:** Ninguna pasada elimina una
 directiva del ensamblador (`%define`, `%include`, datos
 `integer`/`float`/`string`/`pointer`/`datafile`), aunque esté dentro de un
-tramo de código muerto que se esté eliminando. Una línea de instrucción o
-de datos demasiado larga para que el optimizador la guarde se notifica
-como error en lugar de truncarse en silencio.
+tramo de código muerto que se esté eliminando. Una línea puede tener
+cualquier longitud: el texto de cada línea se conserva entero (un literal
+`string` largo, o una tabla `pointer` con cientos de funciones, es una sola
+línea), y DCE lee una línea `pointer` completa, de modo que una función
+nombrada solo al final de ella se conserva igualmente.
 
 * **Protección de cargas autorreferenciales:** La eliminación de
 movimientos redundantes examina a fondo las cargas indirectas de memoria.

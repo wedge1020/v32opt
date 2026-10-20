@@ -200,8 +200,19 @@ l'onglet Actions) compile des binaires compressés en zip pour Linux
 Windows (x86_64, arm64), ainsi que -- en extras facultatifs qui ne
 retardent jamais une publication -- OpenBSD (x86_64, arm64) et Haiku
 (x86_64). Chaque zip contient le binaire, les README et les pages de
-manuel ; une exécution de type `release` les rassemble dans un brouillon
-de publication (release) GitHub.
+manuel. Avant la compilation, le workflow vérifie que les pages de manuel
+portent la version courante (voir [Publication](#publication-estampillage-de-la-version)) ;
+les compilations natives passent un test rapide (`--version` et
+`testing/long-lines/run.sh`).
+
+Une exécution de type `release` rassemble les zip, avec un
+`SHA256SUMS.txt`, dans une publication (release) GitHub `v<VERSION>`, dont
+le texte est `.github/release-notes.md` (`@VERSION@` est remplacé par la
+version). La publication reste un **brouillon** tant que l'on n'appuie pas
+sur « Publish release » dans la page Releases ; cochez `publish_release`
+au lancement pour la publier aussitôt. Une version `-dev` est marquée
+comme préversion (pre-release). Relancer l'exécution pour la même version
+met à jour cette publication.
 
 ---
 
@@ -462,9 +473,9 @@ v32opt <entrée.asm> [-o sortie.asm] [options]
 
 `v32opt` n'affiche rien en cas de succès, sauf si `-v` ou `-t` est
 indiqué, et se termine avec le code de sortie `1` (et un message sur
-stderr) en cas d'option incorrecte, d'entrée manquante ou illisible, de
-sortie impossible à écrire, ou de ligne d'entrée trop longue pour être
-traitée sans risque.
+stderr) en cas d'option incorrecte, d'entrée manquante ou illisible,
+ou de sortie impossible à écrire. (Les lignes d'entrée peuvent avoir
+n'importe quelle longueur.)
 
 ### Philosophie des niveaux d'optimisation et considérations de débogage
 
@@ -1112,10 +1123,12 @@ produire un immédiat hors limites.
 * **Les directives ne sont jamais supprimées :** Aucune passe ne supprime
 une directive de l'assembleur (`%define`, `%include`, données
 `integer`/`float`/`string`/`pointer`/`datafile`), même lorsqu'elle se
-trouve dans une plage de code mort en cours de suppression. Une ligne
-d'instruction ou de données trop longue pour que l'optimiseur puisse la
-conserver est signalée comme une erreur au lieu d'être tronquée en
-silence.
+trouve dans une plage de code mort en cours de suppression. Une ligne peut
+avoir n'importe quelle longueur : le texte de chaque ligne est conservé en
+entier (un long littéral `string`, ou une table `pointer` de centaines de
+fonctions, tient sur une seule ligne), et DCE lit une ligne `pointer` en
+entier, si bien qu'une fonction nommée uniquement à son extrémité est
+quand même conservée.
 
 * **Protection des lectures autoréférentielles :** L'élimination des
 copies redondantes examine en profondeur les lectures mémoire indirectes.

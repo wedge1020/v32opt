@@ -316,8 +316,9 @@ endif()
 # ----------------------------------------------------------------------------
 
 # Light  checks that  need  no  Vircon32 tools:  the  binary reports  the
-# expected version, and every unit-test input under testing/ optimizes at
-# -O3 in  both language modes without  error. The full unit  suite (which
+# expected version, every unit-test input under testing/ optimizes at
+# -O3 in  both language modes without  error, and  the long-lines check
+# (testing/long-lines/run.sh) passes. The full unit  suite (which
 # assembles and packs both versions  with the Vircon32 DevTools) is still
 # `make tests` in the base Makefile.
 #
@@ -341,6 +342,14 @@ if(BUILD_TESTING)
         endforeach()
     endforeach()
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/testing")
+
+    # Assembly lines of any length (needs bash, and no Vircon32 tools).
+    find_program(V32OPT_BASH bash)
+    if(V32OPT_BASH)
+        add_test(NAME long-lines
+                 COMMAND "${V32OPT_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/testing/long-lines/run.sh"
+                         "$<TARGET_FILE:v32opt>")
+    endif()
 endif()
 
 # ----------------------------------------------------------------------------

@@ -182,8 +182,18 @@ The `Generate Global Binaries` GitHub Actions workflow
 builds zipped binaries for Linux (x86_64, arm64, Raspberry Pi armv7/armv8),
 macOS (x86_64, arm64) and Windows (x86_64, arm64), plus -- as optional
 extras that never hold up a release -- OpenBSD (x86_64, arm64) and Haiku
-(x86_64). Each zip holds the binary, the READMEs and the manual pages; a
-`release` run collects them into a draft GitHub release.
+(x86_64). Each zip holds the binary, the READMEs and the manual pages.
+Before building, the workflow checks that the manual pages are stamped
+with the current version (see [Releasing](#releasing-version-stamping));
+the native builds are smoke-tested (`--version`, and
+`testing/long-lines/run.sh`).
+
+A `release` run collects the zips, plus a `SHA256SUMS.txt`, into a GitHub
+release `v<VERSION>`, whose text is `.github/release-notes.md` (`@VERSION@`
+is replaced by the version). The release is a **draft** until you press
+"Publish release" on the Releases page; tick `publish_release` when
+starting the run to publish at once. A `-dev` version is marked a
+pre-release. Running it again for the same version updates that release.
 
 ---
 
@@ -425,8 +435,8 @@ v32opt <input.asm> [-o output.asm] [options]
 
 `v32opt` is  silent on success  unless `-v` or  `-t` is given,  and exits
 with status `1` (and a message on  stderr) for a bad option, a missing or
-unreadable input,  an unwritable  output, or  an input  line too  long to
-process safely.
+unreadable input, or an unwritable output. (Input lines can be of any
+length.)
 
 ### Optimization Tier Philosophy & Debugging Considerations
 

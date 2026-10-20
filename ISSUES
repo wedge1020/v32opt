@@ -207,10 +207,9 @@ unit fixtures and on 35 Vircon32 C-compiler test programs at
   ';' overflowed the stack (long string/data lines).
 - FIXED: a line whose code part didn't fit AsmNode.raw (1023 chars)
   was silently truncated in the output (and DCE no longer saw every
-  function named on a long pointer line). Now an error naming the
-  file and line; over-long comments are still merely shortened.
-  ';' inside a "string" literal no longer counts as a comment start
-  for this check.
+  function named on a long pointer line). (This was first made an
+  error naming the file and line; the next entry removes the limit
+  altogether, so such lines are now simply kept whole.)
 - FIXED: a line over 1023 characters (a long "string" literal, say a
   help text of a program) made v32opt stop with "line too long ...
   refusing to write truncated output". AsmNode.raw is now allocated to
@@ -274,6 +273,18 @@ FOLLOW-UP (Oct 10 2026):
   Fixture: testing/peephole-jmp-chain scenario 5 now expects the full
   collapse; scenarios 8-11 added (non-adjacent and conditional jumps,
   address taken, fall-through, self-loop / computed jump).
+
+FOLLOW-UP (Oct 20 2026):
+
+- FIXED: a data line whose visible text ended in ':' was read as a label:
+  one cut short by the 255-character code buffer (a long "string" whose
+  255th character is a colon) or by a ';' inside its literal ("Score:;x").
+  A label is now a single token (no blanks or quotes). Output is
+  byte-identical on every fixture; the case only changed how such a line
+  was treated as a block boundary.
+- DOCS: the Spanish and French READMEs and manual pages, and one line of
+  the English README, still listed "input line too long" as an error;
+  the long-lines check now also runs from `make tests` and ctest.
 
 REMAINING (found in the audit, not changed):
 
