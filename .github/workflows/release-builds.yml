@@ -172,13 +172,13 @@ jobs:
             arch: x86_64
             os-runner: windows-latest
             msystem: UCRT64
-            msys-packages: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make zip
+            msys-packages: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make zip unzip
             smoke: true
           - os: windows
             arch: arm64
             os-runner: windows-11-arm
             msystem: CLANGARM64
-            msys-packages: mingw-w64-clang-aarch64-clang make zip
+            msys-packages: mingw-w64-clang-aarch64-clang make zip unzip
             smoke: true
 
           # macOS Targets (macos-latest is an Apple Silicon runner; the
