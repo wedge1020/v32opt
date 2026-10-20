@@ -20,8 +20,9 @@ trap 'rm -f "${OUT}"' EXIT
 fail() { echo "FAIL: $1"; exit 1; }
 
 "${OPT}" -O2 "${HERE}/long-lines.asm" -o "${OUT}" || fail "v32opt refused the file"
-cmp <(grep -E '^ *(string|pointer)' "${HERE}/long-lines.asm") \
-    <(grep -E '^ *(string|pointer)' "${OUT}") || fail "a data line was altered"
+# (compared as strings, not with cmp: MSYS2 has no cmp unless diffutils is installed)
+[ "$(grep -E '^ *(string|pointer)' "${HERE}/long-lines.asm")" = \
+  "$(grep -E '^ *(string|pointer)' "${OUT}")" ] || fail "a data line was altered"
 [ "$(grep -c '^__function_f[0-9]*:' "${OUT}")" = 800 ] || fail "a function in the pointer table was removed"
 grep -q '^__function_f799:' "${OUT}" || fail "the last function in the table was removed"
 grep -q '^__function_dead:' "${OUT}" && fail "the unreferenced function was kept"
