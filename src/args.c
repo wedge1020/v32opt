@@ -24,7 +24,6 @@ static void set_opt_level(OptConfig *cfg, int level) {
     cfg -> opt_omit_frame_pointers       = false;
     cfg -> opt_inline                    = false;
 
-    // still disabled by default: needs further testing/completion
     cfg -> opt_promote_regs              = false;
     cfg -> opt_promote_leaf              = false;
     cfg -> opt_promote_loops             = false;
@@ -49,11 +48,17 @@ static void set_opt_level(OptConfig *cfg, int level) {
 
     if (level                           == 1) return;
 
-    // -O2: add CSE, DCE, constant folding, omit-frame-pointers
+    // -O2: add CSE, DCE, constant folding, omit-frame-pointers, and the
+    // function-level memory-to-register promotion (it analyses whole
+    // functions, unlike the -O1 peepholes). promote-loops stays opt-in: it
+    // is sound but saves no cycles until the register copies it leaves can
+    // be cleaned up (see ISSUES).
     cfg -> opt_cse                       = true;
     cfg -> opt_constant_folding          = true;
     cfg -> opt_dce                       = true;
     cfg -> opt_omit_frame_pointers       = true;
+    cfg -> opt_promote_regs              = true;
+    cfg -> opt_promote_leaf              = true;
 
     if (level                           == 2) return;
 
@@ -169,7 +174,8 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "  -O0                      Disable all optimizations [default]\n");
     fprintf(stdout, "  -O1                      Local peephole passes\n");
     fprintf(stdout, "  -O2                      -O1 + cse, dce, constant-folding,\n");
-    fprintf(stdout, "                           omit-frame-pointers\n");
+    fprintf(stdout, "                           omit-frame-pointers, promote-regs,\n");
+    fprintf(stdout, "                           promote-leaf\n");
     fprintf(stdout, "  -O3                      -O2 + inline (aggressive; could break)\n");
     fprintf(stdout, "  -Os                      Currently identical to -O3\n\n");
     fprintf(stdout, "Individual Optimization Toggles:\n");
@@ -204,8 +210,9 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "                           transform applied (in program order, across all\n");
     fprintf(stdout, "                           passes) is the one to inspect. Combine with -d to\n");
     fprintf(stdout, "                           see exactly which transform that was.\n\n");
-    fprintf(stdout, "NOTE: promote-regs, promote-leaf, and promote-loops are experimental and\n");
-    fprintf(stdout, "not part of any -O level; enable them explicitly with -f<name>.\n\n");
+    fprintf(stdout, "NOTE: promote-regs and promote-leaf keep stack locals in registers and are\n");
+    fprintf(stdout, "part of -O2 and up. promote-loops does the same for loops but is opt-in\n");
+    fprintf(stdout, "(-fpromote-loops): it is correct, but saves no cycles on its own yet.\n\n");
 }
 
 // --- Main Argument Processor ----------------------------------------------

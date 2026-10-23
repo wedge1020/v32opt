@@ -89,7 +89,7 @@ jobs:
         shell: bash
         run: |
           MISSING=
-          for f in .github/release-notes.md README.md README.es.md README.fr.md testing/long-lines/run.sh; do
+          for f in .github/release-notes.md README.md README.es.md README.fr.md testing/long-lines/run.sh testing/promote/run.sh; do
             [ -f "$f" ] || { echo "::error file=$f::$f is missing from the repository (is it committed?)"; MISSING=1; }
           done
           [ -z "$MISSING" ]
@@ -99,7 +99,7 @@ jobs:
   #
   # The CMake build and install: configure, build, run the ctest suite
   # (every unit-test input optimizes at -O3 in both language modes, and
-  # the long-lines check passes), then install into a scratch directory and
+  # the long-lines and promote checks pass), then install into a scratch directory and
   # check what a user would get: the binary, which must report the version,
   # and the manual page and README.
   cmake:
@@ -314,7 +314,7 @@ jobs:
           [ "$GOT" = "${{ env.VERSION }}" ]
 
       # --- SMOKE TEST (NATIVE BUILDS) ---
-      - name: Smoke Test (--version, long lines)
+      - name: Smoke Test (--version, long lines, promote)
         if: matrix.smoke == true
         run: |
           BIN=$(ls bin/${{ env.PROJECT_NAME }}* | head -n 1)
@@ -322,6 +322,7 @@ jobs:
           echo "Reports: $GOT"
           [ "$GOT" = "$VERSION" ] || { echo "::error::$BIN reports '$GOT', not '$VERSION'"; exit 1; }
           bash testing/long-lines/run.sh "$BIN"
+          bash testing/promote/run.sh "$BIN"
 
       # --- MODULAR PACKAGING BLOCK (ALL OS RUNNERS) ---
       # Each zip holds, at its top level:

@@ -140,7 +140,10 @@ flujo de control, y eliminación del puntero de marco en las funciones que
 nunca tocan
 .B BP
 (directamente o a través de
-.BR [BP\[+-]N] ).
+.BR [BP\[+-]N] ),
+y las pasadas de promoción de memoria a registros a nivel de función
+.RI ( promote\-regs ,
+.IR promote\-leaf ).
 .TP
 .B \-O3
 .B \-O2
@@ -229,10 +232,11 @@ promote\-leaf, promote\-loops
 .fi
 .RE
 .IP
-Las tres pasadas promote-* son experimentales y no forman parte de ningún
-nivel
-.BR \-O ;
-actívalas explícitamente. Véase
+promote-regs y promote-leaf forman parte de
+.B \-O2
+y superiores (usa
+.BI \-fno\-promote\- nombre
+para dejar fuera una); promote-loops es opcional. Véase
 .BR "NIVELES DE OPTIMIZACIÓN" .
 .TP
 .BI \-finline\-max= N
@@ -509,17 +513,53 @@ Controla su agresividad con
 .B \-finline\-call\-limit
 y
 .BR \-finline\-exclude .
-.SS "Experimentales (sin nivel \-O)"
-Las tres pasadas de promoción de memoria a registros
+.SS "Promoción de memoria a registros"
+Las tres pasadas de promoción
 .RI ( promote\-regs ,
 .IR promote\-leaf ,
 .IR promote\-loops )
 reescriben las posiciones de pila
 .B [BP\-N]
-a las que se accede con frecuencia como registros de propósito general
-sin usar, inyectando cargas y volcados en los límites de cada región. No
-las activa ningún nivel predefinido mientras se prueban; actívalas solo
-explícitamente, y cuenta con tener que hacer bisecciones.
+a las que se accede con frecuencia (locales; los parámetros se dejan
+como están) como registros de propósito general sin usar (R1\-R10),
+inyectando una carga al inicio de la región y un almacenamiento solo
+donde la copia en memoria aún puede observarse: antes del
+.B CALL
+que termina un tramo sin llamadas
+.RI ( promote\-regs )
+y tras la etiqueta de salida de un bucle
+.RI ( promote\-loops ).
+No se almacena nada de vuelta antes de
+.BR RET :
+el marco está muerto en ese punto.
+.PP
+Una función se deja entera como está cuando su dirección de marco o de
+pila escapa en cualquier punto de ella
+.RB ( "MOV R1, BP" ,
+.BR "LEA R1, [BP\-N]" ,
+.BR "MOV R1, SP" ,
+\&...), o cuando no tiene prólogo
+.BR "MOV BP, SP" .
+Un bucle o tramo se omite cuando algo salta hacia dentro o desde el
+interior de su cuerpo. Un registro solo se usa si la vida de registros
+con flujo de control demuestra que está libre: R0, y R2 y R3 (los valores
+de retorno adicionales de v32lua), cuentan como vivos en cada
+.BR RET ,
+y R11\-R13 (operandos implícitos de MOVS/SETS/CMPS) no se usan nunca. En
+unos 190 programas de prueba generados por compilador,
+.B promote\-regs
+y
+.B promote\-leaf
+(parte de
+.BR \-O2 )
+quitaron 0,8 puntos más de ciclos y 1,0 punto de tamaño de código a
+.BR \-O2 .
+.B promote\-loops
+es correcta pero opcional
+.RB ( \-fpromote\-loops ):
+su carga de preheader cuesta ciclos que nada recupera todavía (las copias
+de registro que deja no se limpian), así que en ese conjunto ahorró un
+cuarto de punto de tamaño de código y costó un séptimo de punto de ciclos.
 .SH "LENGUAJES DE ORIGEN"
 .TP
 .B C
@@ -559,7 +599,9 @@ etiqueta (una directiva
 \fBMOV R0, __function_cb\fP) la mantiene viva. Las etiquetas que
 terminan en
 .I _start
-se tratan como cabeceras de bucle en promote-loops.
+se tratan como cabeceras de bucle en promote-loops (juzgadas sobre la
+.B __function_
+en que están).
 .TP
 .B CARTs desensamblados
 .B disassemble
@@ -621,7 +663,7 @@ v32opt game.asm \-O2 \-v
 .RE
 .PP
 Control detallado: análisis global sin inserción en línea, pero con la
-promoción experimental de bucles activada:
+promoción de registros en bucles (opcional):
 .PP
 .RS
 .nf
@@ -702,13 +744,12 @@ de código inalcanzable no razona sobre destinos de salto calculados
 la heurística de límites de DCE puede confundir una función real cuyo
 nombre termine en
 .BR _return ,
-las pasadas experimentales promote-* siguen en pruebas, y el
-desensamblado optimizado suele romperse por el desplazamiento de los
+y el desensamblado optimizado suele romperse por el desplazamiento de los
 datos de la ROM (véase
 .BR "LENGUAJES DE ORIGEN" ).
 Trata
 .B \-O3
-(y las pasadas promote-*) como realmente arriesgados, e incluso la salida
+como realmente arriesgado, e incluso la salida
 de
 .BR \-O1 / \-O2
 como algo que verificar ensamblando, empaquetando y ejecutando el CART

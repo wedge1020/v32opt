@@ -317,10 +317,10 @@ endif()
 
 # Light  checks that  need  no  Vircon32 tools:  the  binary reports  the
 # expected version, every unit-test input under testing/ optimizes at
-# -O3 in  both language modes without  error, and  the long-lines check
-# (testing/long-lines/run.sh) passes. The full unit  suite (which
-# assembles and packs both versions  with the Vircon32 DevTools) is still
-# `make tests` in the base Makefile.
+# -O3 in  both language modes without  error, and  the long-lines and
+# promote checks (testing/long-lines/run.sh, testing/promote/run.sh)
+# pass. The full unit  suite (which assembles and packs both versions
+# with the Vircon32 DevTools) is still `make tests` in the base Makefile.
 #
 option(BUILD_TESTING "Define the ctest smoke tests" ON)
 if(BUILD_TESTING)
@@ -348,6 +348,10 @@ if(BUILD_TESTING)
     if(V32OPT_BASH)
         add_test(NAME long-lines
                  COMMAND "${V32OPT_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/testing/long-lines/run.sh"
+                         "$<TARGET_FILE:v32opt>")
+        # The promote passes' safety checks (testing/promote/promote.asm).
+        add_test(NAME promote
+                 COMMAND "${V32OPT_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/testing/promote/run.sh"
                          "$<TARGET_FILE:v32opt>")
     endif()
 endif()

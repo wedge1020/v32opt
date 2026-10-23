@@ -53,3 +53,6 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# differential test build products
+testing/differential/work/

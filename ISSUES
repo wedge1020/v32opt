@@ -121,8 +121,7 @@ REMAINING (known, open):
   slot. --trigger-max bisection is consistent within a pass but not
   across passes.
 
-- the promote-* passes remain experimental (opt-in only) and are
-  not covered by the unit suite except promote-loops.
+- (promote-*: see the Oct 23 audit below -- no longer experimental.)
 
 UNIT TESTS: 19/19 pass (make -C testing). Fixtures updated where
 they encoded the old unsound expectations (shifts cancel pairs,
@@ -290,3 +289,130 @@ REMAINING (found in the audit, not changed):
 
 - Disassembled CARTs: ROM data is referenced by absolute address, which
   v32opt does not relocate, so any size-changing pass breaks them.
+
+PROMOTE AUDIT (Oct 23 2026; promote-regs and promote-leaf are now part of
+-O2, so of -O3 and -Os too; promote-loops stays opt-in, see below):
+
+Method: random C programs (loops, nesting, break/continue, early return,
+switch, calls, address-taken locals, struct locals reached directly and
+through a pointer) compiled with v32cc, optimized, assembled with v32as and
+run in v32sim; the final RAM image of every variant is compared with the
+-O0 build, and cycle counts come from the simulator's cycle counter. The
+original passes miscompiled 2 of 100 such programs (at every -O level
+with the passes enabled); the fixed ones none of ~190 programs x 7
+configurations (-O0..-O3, each pass alone, -L lua), nor under
+AddressSanitizer/UBSan. Everything below was reproduced on its own first;
+the generator was then taught the one pattern that exposed a bug in a
+first draft of the new store/load elision (a loop re-entered by an
+enclosing loop), and the final build passes that too.
+
+FIXED -- CONFIRMED MISCOMPILES:
+
+-fpromote-loops, address taken OUTSIDE the loop
+  Only the loop body was searched for BP-address-taking, so
+      int v = 0; int *p = &v;  for (...) { v += 1; *p += 10; }
+  (or any struct local with an earlier "LEA R, [BP-N]") promoted v while
+  the pointer still aliased it: the exit store overwrote every update made
+  through p. The escape check (bp_value_escapes, plus the new
+  sp_value_escapes for "MOV R, SP" / "LEA R, [SP+N]") now covers the whole
+  function in all three passes.
+
+-fpromote-loops, entry from outside
+  A jump from outside the loop to a label in its body (a goto into a
+  loop) or to its exit label skipped the preheader load, so the register
+  (or the exit store) ran uninitialized. Now rejected: nothing outside may
+  branch to any label of the loop or to its exit label.
+
+-fpromote-regs / -leaf / -loops, clobbered return registers
+  A free register was any register not NAMED in the region, which says
+  nothing about what flows through it. v32lua returns the 2nd/3rd value of
+  a multi-value return in R2/R3, and a function that merely passes them
+  through from a callee never names them -- promote-regs picked R2 for the
+  segment after the call. The register is now chosen only if
+  liveness.c (reg_dead_from) proves it dead from the load on; R0/R2/R3
+  count as live at RET (is_live_out_register); R11-R13 (implicit
+  MOVS/SETS/CMPS operands) are never used.
+
+-fpromote-regs, no prologue
+  Later segments of a function without "MOV BP, SP" (naked/hand-written)
+  were promoted; only the first segment checked. Now the whole function
+  needs the prologue, and the first segment must contain it.
+
+FIXED -- OTHER:
+
+- bp_value_escapes treated ANY indirect [BP+/-N] operand of a non-MOV
+  instruction as taking the frame's address, so "IADD R0, [BP-1]" disabled
+  promotion for the whole function. Only a direct BP operand and LEA of a
+  BP-relative operand escape now.
+- promote-loops skipped every loop nested inside one it could not promote
+  (an outer loop with a CALL hid its inner loops). It now looks inside.
+- promote-loops took slots in offset order; with fewer free registers than
+  candidates the cold ones won. References are now weighted by loop nesting
+  (8x per level) and taken heaviest first.
+- The store before the epilogue (all three passes) is gone: the frame is
+  dead at RET and, with the escape checks above, nothing can observe it
+  (saves one instruction per promoted local per return). Stores remain
+  before the CALL that ends a promote-regs segment and at a loop's exit --
+  and only when something reads the slot outside the region (a loop that
+  an enclosing loop re-enters keeps its store: the preheader load re-reads
+  memory). Loads are left out when liveness.c shows the register is always
+  written before it is read.
+- promote-loops' "secondary exits" code could never run (the safety scan
+  rejects any branch leaving the loop other than to its exit label) and
+  inserted its store before the first label AFTER the jump rather than at
+  its target; removed.
+- is_inside_loop() (promote.h) removed with it.
+
+BEHAVIOR / MEASUREMENTS:
+
+- Parameters ([BP+N]) are not promoted (considered and dropped): the copy
+  costs a load per call and, with today's cleanup passes, saves nothing.
+- Loads and stores are left out where they cannot matter: no preheader /
+  segment load when liveness.c shows the register is always written before
+  it is read; no exit store / pre-CALL store when nothing outside the
+  region reads the slot -- except that a loop an enclosing loop re-enters
+  keeps its store, because its preheader load re-reads memory.
+- Over ~190 programs (random loop- and call-heavy code + hand-written
+  cases), cycles / code size against -O0:
+      -O2 without any promote pass        -1.57% / -3.11%
+      + promote-regs + promote-leaf       -2.38% / -4.12%   (this is -O2)
+      + promote-loops as well             -2.23% / -4.39%
+      promote-loops alone on -O2          -1.98% / -3.75%
+  promote-regs + promote-leaf: faster in 72 programs (best -10.4%), same in
+  117, slower in 4 (worst +0.4%). promote-loops added to them: faster in 34
+  (best -3.8%), slower in 28 (worst +9.5%): +0.15 points of cycles for
+  -0.27 points of size; alone on -O2 it is slower in 40 programs (worst
+  +6.2%).
+  Thresholds (3 references per function/segment, 2 per loop) were picked on
+  an earlier corpus: 2 per function inflated code by 4%, 4 gave nothing
+  extra, 1 per loop was the same as 2.
+- Why promote-loops is not in -O2: promotion keeps the instruction count
+  (mov R0,[BP-2] -> mov R0,R4) and adds a load per loop entry; what pays is
+  cancelling the register copies it leaves, which nothing does yet (see
+  REMAINING). Short loops entered many times lose, long ones break even. It
+  moves to -O2 when the cleanup lands. -fpromote-loops enables it.
+- Level: -O1 + the promote passes is never faster than -O2 + them and slower
+  in 37 of 193 programs (worst +5.2%; the -O2 passes feed on promoted
+  registers), though a little smaller. Promotion is also not a peephole: it
+  needs whole-function analysis, like the other -O2 passes.
+- v32cc's default (enhanced) syntax writes .local labels that repeat in
+  every function (".return:"); liveness.c treats a repeated label as
+  ambiguous and answers "live", so with that output no promote pass fires
+  (nor peephole-zero-test). Use v32cc --standard.
+
+REMAINING (promote):
+
+- The cycle gain (and promote-loops' whole case) is capped by what the cleanup
+  passes can do with the register copies promotion leaves ("mov R1,R4 / iadd R1,1 / mov R4,R1"
+  -> "iadd R4,1"; "mov R1,R6" whose R1 is never read). A liveness-driven
+  dead-register-write elimination plus copy coalescing (liveness.c is
+  ready for it; R2/R3 would need to stop counting as live-out in -L c)
+  measured -41% cycles on a 40-element summing loop on top of what
+  promotion alone leaves; with it, promoting parameters would pay too.
+- testing/promote/run.sh checks the safety logic on the assembly;
+  testing/differential/ is the end-to-end harness (v32cc + v32as + v32sim,
+  RAM and cycle comparison, random program generator) behind the numbers
+  above. It needs the sibling projects and is not part of `make tests`.
+- Pre-existing, unrelated: LeakSanitizer reports a few small leaks (nodes
+  made by other passes) at exit, with or without promote-*; no memory
+  errors under AddressSanitizer/UBSan.

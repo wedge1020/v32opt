@@ -124,6 +124,7 @@ monofiles:
 tests: bin/$(TARGET)
 	$(MAKE) -C testing
 	bash testing/long-lines/run.sh bin/$(TARGET)
+	bash testing/promote/run.sh bin/$(TARGET)
 
 archive: clean
 	zip -r ../v32opt-project.zip .github doc ISSUES Makefile CMakeLists.txt cmake man README.md README.es.md README.fr.md inc scripts src testing

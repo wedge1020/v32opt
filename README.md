@@ -53,7 +53,7 @@ easy to ignore.
 5. [Phase 1: Local Peephole Optimizations (-O1)](#phase-1-local-peephole-optimizations--o1)
 6. [Phase 2: Global Data-Flow & Dead Code (-O2)](#phase-2-global-data-flow--dead-code--o2)
 7. [Phase 3: Interprocedural Inlining (-O3)](#phase-3-interprocedural-inlining--o3)
-8. [Experimental Passes: Memory-to-Register Promotion](#experimental-passes-memory-to-register-promotion)
+8. [Memory-to-Register Promotion (-O2)](#memory-to-register-promotion--o2)
 9. [CFG Visualization](#cfg-visualization)
 10. [Safety & Correctness Guardrails](#safety--correctness-guardrails)
 11. [Diagnostic and Debug Options](#diagnostic-and-debug-options)
@@ -388,7 +388,10 @@ Use the default C mode. Things to know:
   __function_cb`, a `pointer` directive) keeps it alive.
 
 * **Labels  ending  in  `_start`**  are  taken as  loop  headers  by  the
-  experimental `promote-loops` pass.
+  `promote-loops` pass. The loop's safety is judged over the whole
+  `__function_` it sits in (code before the first such label counts as one
+  function): a single `MOV R1, BP` or `LEA R1, [BP-N]` anywhere in it keeps
+  every loop of that function in memory.
 
 * Assembler directives (`%define`, `%include`,  data directives, ...) are
   never  deleted by  any  pass,  and integer  `%define`  values are  seen
@@ -421,7 +424,7 @@ v32opt <input.asm> [-o output.asm] [options]
 | --- | --- | --- |
 | `-O0` | **No Optimization** | Disables all optimization passes (default). |
 | `-O1` | **Local Peephole** | Enables all 14 local window peephole optimizations. |
-| `-O2` | **Global Analysis** | Enables all `-O1` passes + **CSE**, **Dead Code Elimination (DCE)**, **Global Constant Folding** & **Frame Pointer Elimination**. |
+| `-O2` | **Global Analysis** | Enables all `-O1` passes + **CSE**, **Dead Code Elimination (DCE)**, **Global Constant Folding**, **Frame Pointer Elimination** & **Memory-to-Register Promotion** (`promote-regs`, `promote-leaf`). |
 | `-O3` | **Aggressive** | Enables all `-O2` passes + **Function Inlining**. |
 | `-Os` | **Space Saving** | Currently identical to `-O3` (a placeholder for a dedicated size-focused tier). |
 | `-o <file>` | **Output File** | Where to write the optimized assembly (default: `<input>Opt.asm`). |
@@ -456,8 +459,11 @@ against the original.
 * **`-O2`  (Global Analysis  & Structural Cleanup):**  Introduces Control
 Flow  Graphs  (CFG), program-wide  data-flow  tracking,  and stack  frame
 modifications.  These  passes  analyze  entire blocks  and  functions  to
-eliminate  unreachable  code,  fold  constants across  jumps,  and  strip
-redundant overhead.
+eliminate  unreachable  code,  fold  constants across  jumps,  strip
+redundant overhead, and keep stack locals in registers (the `promote-*`
+passes need whole-function knowledge -- which frame addresses escape,
+which registers are provably free -- so they belong here, not with the
+sliding-window peepholes).
 
 * **`-O3` (Aggressive  Interprocedural Transformations):** Makes sweeping
 architectural  modifications—such  as  function  inlining—that  trade
@@ -486,7 +492,7 @@ You can enable or disable specific passes granularly using `-f<name>` and
 `-fno-<name>`:
 
 ```bash
-# Example: Run O2 but disable jump chaining and enable loop register promotion
+# Example: Run O2 but disable jump chaining, and add loop register promotion
 $ v32opt game.asm -O2 -fno-peephole-jmp-chain -fpromote-loops
 ```
 
@@ -938,73 +944,141 @@ up  and  tear down  of  a  function). But  it  also  is considered  quite
 
 ---
 
-## Experimental Passes: Memory-to-Register Promotion
+## Memory-to-Register Promotion (`-O2`)
 
-> **Note:**  These  passes  are   currently  disconnected  from  standard
-> `-O1`/`-O2`/`-O3` optimization levels  while undergoing testing. Enable
-> them explicitly using individual `-f` toggles.
+The Vircon32 C compiler keeps every local variable in memory
+(`[BP-1]`, `[BP-2]`, ...) and goes through a register for each use. Three
+passes move frequently used locals into otherwise unused registers
+(`R1`-`R10`) for the stretch of code in which that is safe, so the
+copies between memory and registers can be forwarded and cancelled by the
+`-O1` peepholes that run alongside. `promote-regs` and `promote-leaf` are
+part of `-O2` (and so of `-O3` and `-Os`; `-fno-promote-regs` and
+`-fno-promote-leaf` leave one out). `promote-loops` is sound and tested
+the same way but opt-in (`-fpromote-loops`); see below for why.
+
+All three work the same way: pick a local referenced often enough in a
+region, rewrite every reference in the region to a register, then add
+the load (and, only where the memory copy can still be observed, the
+store) at the region's edges.
 
 ### Stack Slot Promotion (`promote-leaf` / `promote-regs`)
 
-Performs  scalar  replacement  of  aggregates on  the  stack:  frequently
-accessed  local stack  variables (`[BP-offset]`)  are promoted  to unused
-general-purpose registers (`R1–R13`),  with a load from  the stack slot
-at the start of the region and a store back at its end.
+* `promote-leaf` works on whole **leaf functions** (no `CALL`): the load
+  goes in right after the prologue (`MOV BP, SP` / `ISUB SP, N`).
 
-* `promote-leaf` works  on whole **leaf functions**  (functions that make
-  no `CALL`s and never take or overwrite `BP`'s value); the store goes in
-  before the epilogue that precedes `RET`.
-
-* `promote-regs`   applies  the   same  logic   to  ordinary   functions,
-  separately within  each `CALL`-free  stretch (before the  first `CALL`,
-  between  calls,  after  the  last),  and only  where  that  stretch  is
-  single-entry/single-exit.
+* `promote-regs` applies the same logic to ordinary functions, separately
+  within each `CALL`-free stretch (before the first `CALL`, between
+  calls, after the last), and only where that stretch is
+  single-entry/single-exit. A local written in a stretch is stored back
+  just before the `CALL` that ends it; the next stretch reloads it.
 
 ```vircon32
-; BEFORE                 ; AFTER
-__function_compute:      __function_compute:
-    MOV BP, SP               MOV BP, SP
-    MOV [BP-1], 10           MOV R1, [BP-1]     ; (Pre-header load injected)
-    IADD [BP-1], 5           MOV R1, 10         ; (Stack accesses promoted to R1)
-    MOV R2, [BP-1]           IADD R1, 5
-    RET                      MOV R2, R1
-                             MOV [BP-1], R1     ; (Post-header store injected)
-                             RET
+; BEFORE                      ; AFTER (promote-regs)
+__function_f:                 __function_f:
+    ...                           ...
+    CALL __function_g             CALL __function_g
+    MOV R0, [BP-1]                MOV R4, [BP-1]       ; (load once, after the CALL)
+    IADD R0, R1                   MOV R0, R4           ; (uses now read the register)
+    MOV [BP-1], R0                IADD R0, R1
+    MOV R0, [BP-1]                MOV R4, R0
+    IMUL R0, 2                    MOV R0, R4
+    MOV [BP-1], R0                IMUL R0, 2
+__function_f_return:              MOV R4, R0
+                              __function_f_return:
 ```
 
-The benefit  here is that, by  factoring out regular stack  access during
-some core  section of  code, we  potentially eliminate  the corresponding
-`MOV`s needed to copy data  to/from memory, instead dealing directly with
-registers.
+Nothing is stored back before `RET`: the frame is dead the moment the
+function returns, and no pointer into it can exist (see below).
 
-As you can  see in this (short) example, it  actually makes the footprint
-of code  larger, but if the  core action is  more than just a  few lines,
-this can start to offer real benefit.
+### Loop-Invariant Register Promotion (`promote-loops`, opt-in)
 
-### Loop-Invariant Register Promotion (`promote-loops`)
-
-Targets call-free loops (`__for_start`, `__while_start`) to promote stack
-variables  referenced  inside the  loop  body  into CPU  registers.  This
-eliminates repetitive memory read/write cycles during loop iterations.
+Targets `CALL`-free loops (`__for_N_start`, `__while_N_start`, ...) and
+promotes the locals referenced inside the body: the load goes in front of
+the loop's header label (a true preheader, run once), the store right
+after its exit label. Either is left out when it cannot matter: no load
+when every path through the loop writes the register before reading it,
+no store when nothing outside the loop reads the slot (a `for` counter
+that is dead afterwards) -- unless the loop sits inside another one, which
+re-enters it and re-reads the slot in the preheader.
 
 ```vircon32
-; BEFORE                             ; AFTER
-__for_1_start:                       __for_1_start:
-    IADD [BP-2], 1                       IADD R2, 1         ; (Promoted to register inside loop)
-    JMP __for_1_start                    JMP __for_1_start
+; BEFORE                                 ; AFTER
+    MOV [BP-2], R0                           MOV [BP-2], R0
+__for_1_start:                               MOV R4, [BP-2]       ; (preheader)
+    MOV R0, [BP-2]                       __for_1_start:
+    ...                                      MOV R0, R4
+    MOV R0, [BP-2]                           ...
+    IADD R0, 1                               MOV R0, R4
+    MOV [BP-2], R0                           IADD R0, 1
+    JMP __for_1_start                        MOV R4, R0
+__for_1_end:                                 JMP __for_1_start
+    ...                                  __for_1_end:
+                                             MOV [BP-2], R4       ; (flush at the exit)
+                                             ...
 ```
 
-One of  the biggest abusers of  frequent stack access during  runtime are
-loops. If  we can mitigate  that in any  way, that should  translate into
-fewer instructions per loop iteration, which could add up to considerable
-savings.
+References are weighted by loop nesting, so when there are not enough free
+registers for every candidate the innermost loops' variables win. A loop
+that cannot be promoted (it contains a `CALL`, a `RET`, ...) is skipped
+on its own; loops nested inside it are still considered.
 
-Think of those examples  where you do a "just in  time" declaration of an
-`index` variable,  whose *sole* purpose is  to drive the loop.  You don't
-need or do anything with `index` once the loop has completed. But without
-this optimization,  the compiler would  allocate memory (via  the stack),
-and there would  be constant MOVs to  read and write the  `index` data to
-the stack during the loop.
+**Why it is not in `-O2`.** Turning `MOV R0, [BP-2]` into `MOV R0, R4` is
+the same number of cycles; the preheader load (and the exit store, where
+something reads the slot afterwards) is extra. What promotion gains is that
+the register copies it leaves can be cancelled -- `MOV R1, R4 / IADD R1, 1 /
+MOV R4, R1` is one `IADD R4, 1` -- and nothing cancels them yet. On the test
+corpus the function-level passes more than pay for themselves through
+forwarding (see below); the loop pass, on top of them, saved about a quarter
+of a point of code size and *cost* about a seventh of a point of cycles, with
+some short loops 2-5% slower. Once the copy cleanup exists (see
+[doc/loop-optimizations.md](doc/loop-optimizations.md)) it should flip to a
+clear win and move to `-O2`.
+
+### What keeps a slot in memory
+
+These checks look at the **whole function**, not just the region being
+promoted: a pointer made before a loop is as capable of aliasing a slot
+inside it as one made inside.
+
+* The frame address escapes: `MOV R1, BP`, `LEA R1, [BP-N]` (taking the
+  address of a local, a struct, an array), `IADD R1, BP`, ... Likewise
+  anything that copies `SP` out (`MOV R1, SP`, `LEA R1, [SP+N]`).
+* No `MOV BP, SP` prologue (hand-written or `naked` code has no frame of
+  its own to promote slots of).
+* A segment or loop that something else branches into or out of: a
+  jump from outside to a label inside (a `goto` into a loop body, or to
+  the loop's exit label), or from inside to somewhere that would skip the
+  store.
+* Parameters (`[BP+N]`) are never promoted: a copy of one costs a load
+  and, today, saves nothing.
+
+### Choosing the register
+
+A register is only used when it is **provably free**: it does not appear
+in the region, and the control-flow-aware liveness query that
+`peephole-zero-test` already uses (`liveness.c`) shows it is never read
+before being written again on any path from the load. `R0` and, because
+`v32lua` returns the 2nd and 3rd value of a multi-value return in `R2` and
+`R3`, those two are treated as live at every `RET` -- a function that merely
+passes them through from a callee keeps them. `R11`-`R13` double as the
+implicit operands of `MOVS`/`SETS`/`CMPS` and are never used.
+
+### What to expect
+
+Promotion by itself mostly turns memory operands into register operands
+(smaller code: a `[BP-N]` operand is two words, a register one); the cycle
+savings come from the `-O1` passes finding copies to cancel once nothing
+can alias the slot (a load after a store through a pointer can be forwarded
+only when the slot cannot be the pointer's target). Over ~190 compiler-
+generated test programs (loop-heavy, call-heavy, with address-taken
+locals) `promote-regs` + `promote-leaf` took a further 0.8 points of cycles
+and 1.0 point of code size off `-O2` (`-1.6%` -> `-2.4%` cycles, `-3.1%` ->
+`-4.1%` size, against `-O0`): faster in 72 programs (best -10%), the same
+in 117, slower in 4 (worst +0.4%). Straight-line code with a local used
+several times between stores through pointers gains most. `-d` marks every
+load and store a pass adds (`; [DEBUG promote-regs] ...`), and
+`--trigger-max` counts one slot per promoted variable, so a suspected
+miscompile can be bisected like any other pass.
 
 ---
 
@@ -1058,11 +1132,14 @@ inspects  indirect memory  loads. Textually  identical instructions  like
 as   pointer-dereference  chaining   rather  than   duplicates,  ensuring
 pointer-to-pointer lookups evaluate correctly.
 
-* **Address-Taking Guardrails:** Register promotion passes scan functions
-and  loops for  stack-address calculations  (e.g., `IADD  R1, BP`).  If a
-local  variable's  memory  address  is  dynamically  computed  or  taken,
-promotion is  automatically aborted  for that  block to  guarantee memory
-safety and prevent aliasing bugs.
+* **Address-Taking Guardrails:** Register promotion passes scan the whole
+function (not just the loop or segment being promoted) for stack-address
+calculations (e.g., `IADD R1, BP`, `LEA R1, [BP-N]`, `MOV R1, SP`). If a
+local  variable's  memory  address  is  dynamically  computed  or  taken
+anywhere in it, promotion is automatically aborted for that function to
+guarantee memory safety and prevent aliasing bugs. Register choice is
+backed by a liveness proof (see
+[Memory-to-Register Promotion](#memory-to-register-promotion--o2)).
 
 *  **Inlining  Stack  Rewriting:**  When   leaf  functions  are  inlined,
 parameter  reads accessing  `[BP+N]`  (where `N  >=  2`) are  dynamically

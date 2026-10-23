@@ -141,7 +141,11 @@ sur le graphe de flot de contrôle, et l'élimination du pointeur de cadre
 dans les fonctions qui ne touchent jamais à
 .B BP
 (directement ou par
-.BR [BP\[+-]N] ).
+.BR [BP\[+-]N] ),
+et les passes de promotion de la mémoire en registres au niveau des
+fonctions
+.RI ( promote\-regs ,
+.IR promote\-leaf ).
 .TP
 .B \-O3
 .B \-O2
@@ -229,10 +233,11 @@ promote\-leaf, promote\-loops
 .fi
 .RE
 .IP
-Les trois passes promote-* sont expérimentales et ne font partie d'aucun
-niveau
-.BR \-O ;
-activez-les explicitement. Voir
+promote-regs et promote-leaf font partie de
+.B \-O2
+et des niveaux supérieurs (utilisez
+.BI \-fno\-promote\- nom
+pour en écarter une) ; promote-loops est optionnelle. Voir
 .BR "NIVEAUX D'OPTIMISATION" .
 .TP
 .BI \-finline\-max= N
@@ -507,18 +512,55 @@ Réglez son agressivité avec
 .B \-finline\-call\-limit
 et
 .BR \-finline\-exclude .
-.SS "Expérimentales (aucun niveau \-O)"
-Les trois passes de promotion de la mémoire en registres
+.SS "Promotion de la mémoire en registres"
+Les trois passes de promotion
 .RI ( promote\-regs ,
 .IR promote\-leaf ,
 .IR promote\-loops )
 réécrivent les emplacements de pile
 .B [BP\-N]
-fréquemment utilisés en registres généraux inutilisés, en injectant des
-lectures et des écritures de vidage aux frontières des régions. Aucun
-niveau prédéfini ne les active tant qu'elles sont en test ; ne les
-activez qu'explicitement, et attendez-vous à devoir procéder par
-bissection.
+fréquemment utilisés (les locales ; les paramètres sont laissés tels
+quels) en registres généraux inutilisés (R1\-R10), en injectant une
+lecture au début de la région et une écriture seulement là où la copie en
+mémoire peut encore être observée : avant le
+.B CALL
+qui termine un tronçon sans appel
+.RI ( promote\-regs )
+et après l'étiquette de sortie d'une boucle
+.RI ( promote\-loops ).
+Rien n'est rangé avant
+.BR RET :
+le cadre est mort à ce point.
+.PP
+Une fonction est entièrement laissée telle quelle lorsque son adresse de
+cadre ou de pile s'échappe en un point quelconque
+.RB ( "MOV R1, BP" ,
+.BR "LEA R1, [BP\-N]" ,
+.BR "MOV R1, SP" ,
+\&...), ou lorsqu'elle n'a pas de prologue
+.BR "MOV BP, SP" .
+Une boucle ou un tronçon est écarté lorsque quelque chose branche dans son
+corps ou depuis celui-ci. Un registre n'est utilisé que si la vivacité
+des registres, sensible au flot de contrôle, prouve qu'il est libre : R0,
+ainsi que R2 et R3 (les valeurs de retour supplémentaires de v32lua),
+comptent comme vivants à chaque
+.BR RET ,
+et R11\-R13 (opérandes implicites de MOVS/SETS/CMPS) ne sont jamais
+utilisés. Sur environ 190 programmes de test générés par compilateur,
+.B promote\-regs
+et
+.B promote\-leaf
+(partie de
+.BR \-O2 )
+ont retiré 0,8 point de cycles et 1,0 point de taille de code de plus à
+.BR \-O2 .
+.B promote\-loops
+est correcte mais optionnelle
+.RB ( \-fpromote\-loops ) :
+sa lecture de préheader coûte des cycles que rien ne récupère encore (les
+copies de registre qu'elle laisse ne sont pas nettoyées) ; sur cet
+ensemble, elle a économisé un quart de point de taille de code et coûté un
+septième de point de cycles.
 .SH "LANGAGES SOURCES"
 .TP
 .B C
@@ -558,7 +600,10 @@ l'étiquette (une directive
 \fBMOV R0, __function_cb\fP) la maintient en vie. Les étiquettes se
 terminant par
 .I _start
-sont traitées comme des en-têtes de boucle par promote-loops.
+sont traitées comme des en-têtes de boucle par promote-loops (jugées sur
+la
+.B __function_
+où elles se trouvent).
 .TP
 .B CARTs désassemblées
 .B disassemble
@@ -617,8 +662,8 @@ v32opt game.asm \-O2 \-v
 .fi
 .RE
 .PP
-Contrôle fin : analyse globale sans intégration, mais avec la promotion
-expérimentale des boucles activée :
+Contrôle fin : analyse globale sans intégration, mais avec la promotion en
+registres dans les boucles (optionnelle) :
 .PP
 .RS
 .nf
@@ -701,13 +746,12 @@ cibles de sauts calculées
 l'heuristique de frontières de DCE peut se tromper sur une vraie fonction
 dont le nom se termine par
 .BR _return ,
-les passes expérimentales promote-* sont encore en test, et le
-désassemblage optimisé est en général cassé par le déplacement des
+et le désassemblage optimisé est en général cassé par le déplacement des
 données de la ROM (voir
 .BR "LANGAGES SOURCES" ).
 Considérez
 .B \-O3
-(et les passes promote-*) comme réellement risqués, et même la sortie de
+comme réellement risqué, et même la sortie de
 .BR \-O1 / \-O2
 comme quelque chose à vérifier en assemblant, en empaquetant et en
 exécutant côte à côte la CART d'origine et la CART optimisée. Lorsqu'un

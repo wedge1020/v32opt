@@ -55,7 +55,7 @@ entorno de nicho, que sea igual de fácil de ignorar.
 5. [Fase 1: Optimizaciones Locales de Mirilla (-O1)](#fase-1-optimizaciones-locales-de-mirilla--o1)
 6. [Fase 2: Flujo de Datos Global y Código Muerto (-O2)](#fase-2-flujo-de-datos-global-y-código-muerto--o2)
 7. [Fase 3: Inserción en Línea Interprocedimental (-O3)](#fase-3-inserción-en-línea-interprocedimental--o3)
-8. [Pasadas Experimentales: Promoción de Memoria a Registros](#pasadas-experimentales-promoción-de-memoria-a-registros)
+8. [Promoción de Memoria a Registros (-O2)](#promoción-de-memoria-a-registros--o2)
 9. [Visualización del CFG](#visualización-del-cfg)
 10. [Salvaguardas de Seguridad y Corrección](#salvaguardas-de-seguridad-y-corrección)
 11. [Opciones de Diagnóstico y Depuración](#opciones-de-diagnóstico-y-depuración)
@@ -413,7 +413,11 @@ Usa el modo C por defecto. Conviene saber:
   mantiene viva.
 
 * **Las etiquetas que terminan en `_start`** las toma como cabeceras de
-  bucle la pasada experimental `promote-loops`.
+  bucle la pasada `promote-loops`. La seguridad del bucle se juzga sobre
+  toda la `__function_` en la que está (el código anterior a la primera de
+  esas etiquetas cuenta como una sola función): un solo `MOV R1, BP` o
+  `LEA R1, [BP-N]` en ella mantiene en memoria todos los bucles de esa
+  función.
 
 * Las directivas del ensamblador (`%define`, `%include`, directivas de
   datos, ...) nunca las borra ninguna pasada, y los valores enteros de
@@ -449,7 +453,7 @@ v32opt <entrada.asm> [-o salida.asm] [opciones]
 | --- | --- | --- |
 | `-O0` | **Sin Optimización** | Desactiva todas las pasadas de optimización (por defecto). |
 | `-O1` | **Mirilla Local** | Activa las 14 optimizaciones locales de mirilla (peephole) sobre ventana. |
-| `-O2` | **Análisis Global** | Activa todas las pasadas de `-O1` + **CSE**, **Eliminación de Código Muerto (DCE)**, **Plegado Global de Constantes** y **Eliminación del Puntero de Marco**. |
+| `-O2` | **Análisis Global** | Activa todas las pasadas de `-O1` + **CSE**, **Eliminación de Código Muerto (DCE)**, **Plegado Global de Constantes**, **Eliminación del Puntero de Marco** y **Promoción de Memoria a Registros** (`promote-regs`, `promote-leaf`). |
 | `-O3` | **Agresivo** | Activa todas las pasadas de `-O2` + **Inserción de Funciones en Línea**. |
 | `-Os` | **Ahorro de Espacio** | Actualmente idéntico a `-O3` (un marcador de posición para un nivel dedicado al tamaño). |
 | `-o <archivo>` | **Archivo de Salida** | Dónde escribir el ensamblador optimizado (por defecto: `<entrada>Opt.asm`). |
@@ -487,7 +491,11 @@ original.
 Flujo de Control (CFG), seguimiento del flujo de datos en todo el programa
 y modificaciones del marco de pila. Estas pasadas analizan bloques y
 funciones completos para eliminar código inalcanzable, plegar constantes a
-través de saltos y suprimir sobrecarga redundante.
+través de saltos, suprimir sobrecarga redundante y mantener las variables
+locales de pila en registros (las pasadas `promote-*` necesitan conocer la
+función entera -- qué direcciones del marco escapan, qué registros están
+demostrablemente libres --, por eso están aquí y no entre las pasadas de
+mirilla).
 
 * **`-O3` (Transformaciones Interprocedimentales Agresivas):** Realiza
 modificaciones arquitectónicas profundas —como la inserción de funciones
@@ -517,7 +525,7 @@ Puedes activar o desactivar pasadas concretas con `-f<nombre>` y
 `-fno-<nombre>`:
 
 ```bash
-# Ejemplo: ejecutar O2 pero desactivar las cadenas de saltos y activar la promoción de registros en bucles
+# Ejemplo: ejecutar O2 pero desactivar las cadenas de saltos y añadir la promoción de registros en bucles
 $ v32opt game.asm -O2 -fno-peephole-jmp-chain -fpromote-loops
 ```
 
@@ -992,76 +1000,154 @@ la liberación de una función). Pero también se considera bastante
 
 ---
 
-## Pasadas Experimentales: Promoción de Memoria a Registros
+## Promoción de Memoria a Registros (`-O2`)
 
-> **Nota:** Estas pasadas están actualmente desvinculadas de los niveles
-> estándar de optimización `-O1`/`-O2`/`-O3` mientras se prueban.
-> Actívalas explícitamente con las opciones `-f` individuales.
+El compilador de C de Vircon32 mantiene cada variable local en memoria
+(`[BP-1]`, `[BP-2]`, ...) y pasa por un registro en cada uso. Tres pasadas
+mueven las locales más usadas a registros que de otro modo no se usan
+(`R1`-`R10`) durante el tramo de código en que es seguro hacerlo, de modo
+que las copias entre memoria y registros puedan reenviarse y cancelarse por
+las pasadas de mirilla de `-O1` que se ejecutan a la vez. `promote-regs` y
+`promote-leaf` forman parte de `-O2` (y por tanto de `-O3` y `-Os`;
+`-fno-promote-regs` y `-fno-promote-leaf` dejan fuera la que se indique).
+`promote-loops` es correcta y se prueba igual, pero es opcional
+(`-fpromote-loops`); más abajo se explica por qué.
+
+Las tres funcionan igual: elegir una local referenciada lo bastante en una
+región, reescribir todas las referencias de la región a un registro, y
+añadir la carga (y, solo donde la copia en memoria aún puede observarse, el
+almacenamiento) en los bordes de la región.
 
 ### Promoción de Posiciones de Pila (`promote-leaf` / `promote-regs`)
 
-Realiza un reemplazo escalar de agregados en la pila: las variables
-locales de pila a las que se accede con frecuencia (`[BP-desplazamiento]`)
-se promueven a registros de propósito general sin usar (`R1–R13`), con
-una carga desde la posición de pila al inicio de la región y un
-almacenamiento de vuelta al final.
-
-* `promote-leaf` trabaja sobre **funciones hoja** completas (funciones
-  que no hacen ningún `CALL` y nunca toman ni sobrescriben el valor de
-  `BP`); el almacenamiento se coloca antes del epílogo que precede a
-  `RET`.
+* `promote-leaf` trabaja sobre **funciones hoja** completas (sin `CALL`):
+  la carga se coloca justo después del prólogo (`MOV BP, SP` /
+  `ISUB SP, N`).
 
 * `promote-regs` aplica la misma lógica a funciones ordinarias, por
   separado dentro de cada tramo sin `CALL` (antes del primer `CALL`, entre
   llamadas, después de la última), y solo donde ese tramo tiene una única
-  entrada y una única salida.
+  entrada y una única salida. Una local escrita en un tramo se almacena de
+  vuelta justo antes del `CALL` que lo termina; el tramo siguiente la
+  vuelve a cargar.
 
 ```vircon32
-; ANTES                  ; DESPUÉS
-__function_compute:      __function_compute:
-    MOV BP, SP               MOV BP, SP
-    MOV [BP-1], 10           MOV R1, [BP-1]     ; (Carga previa inyectada)
-    IADD [BP-1], 5           MOV R1, 10         ; (Accesos a la pila promovidos a R1)
-    MOV R2, [BP-1]           IADD R1, 5
-    RET                      MOV R2, R1
-                             MOV [BP-1], R1     ; (Almacenamiento posterior inyectado)
-                             RET
+; ANTES                       ; DESPUÉS (promote-regs)
+__function_f:                 __function_f:
+    ...                           ...
+    CALL __function_g             CALL __function_g
+    MOV R0, [BP-1]                MOV R4, [BP-1]       ; (una carga, tras el CALL)
+    IADD R0, R1                   MOV R0, R4           ; (los usos leen el registro)
+    MOV [BP-1], R0                IADD R0, R1
+    MOV R0, [BP-1]                MOV R4, R0
+    IMUL R0, 2                    MOV R0, R4
+    MOV [BP-1], R0                IMUL R0, 2
+__function_f_return:              MOV R4, R0
+                              __function_f_return:
 ```
 
-La ventaja es que, al sacar fuera el acceso habitual a la pila durante
-alguna sección central del código, potencialmente eliminamos los `MOV`
-correspondientes necesarios para copiar datos hacia y desde la memoria,
-trabajando en su lugar directamente con registros.
+No se almacena nada de vuelta antes de `RET`: el marco está muerto en
+cuanto la función retorna, y no puede existir ningún puntero a él (véase
+más abajo).
 
-Como puedes ver en este ejemplo (corto), en realidad aumenta el tamaño
-del código, pero si la acción central es más que unas pocas líneas, puede
-empezar a ofrecer un beneficio real.
+### Promoción a Registros Invariante en Bucles (`promote-loops`, opcional)
 
-### Promoción a Registros Invariante en Bucles (`promote-loops`)
-
-Se dirige a bucles sin llamadas (`__for_start`, `__while_start`) para
-promover a registros de la CPU las variables de pila referenciadas dentro
-del cuerpo del bucle. Esto elimina ciclos repetitivos de lectura/escritura
-de memoria durante las iteraciones del bucle.
+Se dirige a bucles sin `CALL` (`__for_N_start`, `__while_N_start`, ...) y
+promueve las locales referenciadas en el cuerpo: la carga va delante de la
+etiqueta de cabecera del bucle (un verdadero preheader, que se ejecuta una
+vez), el almacenamiento justo después de su etiqueta de salida. Se omite
+cualquiera de los dos cuando no puede importar: sin carga si todos los
+caminos del bucle escriben el registro antes de leerlo, sin almacenamiento
+si nada fuera del bucle lee la posición (un contador de `for` que queda
+muerto después) -- salvo que el bucle esté dentro de otro, que lo vuelve
+a entrar y relee la posición en el preheader.
 
 ```vircon32
-; ANTES                              ; DESPUÉS
-__for_1_start:                       __for_1_start:
-    IADD [BP-2], 1                       IADD R2, 1         ; (Promovido a registro dentro del bucle)
-    JMP __for_1_start                    JMP __for_1_start
+; ANTES                                  ; DESPUÉS
+    MOV [BP-2], R0                           MOV [BP-2], R0
+__for_1_start:                               MOV R4, [BP-2]       ; (preheader)
+    MOV R0, [BP-2]                       __for_1_start:
+    ...                                      MOV R0, R4
+    MOV R0, [BP-2]                           ...
+    IADD R0, 1                               MOV R0, R4
+    MOV [BP-2], R0                           IADD R0, 1
+    JMP __for_1_start                        MOV R4, R0
+__for_1_end:                                 JMP __for_1_start
+    ...                                  __for_1_end:
+                                             MOV [BP-2], R4       ; (volcado a la salida)
+                                             ...
 ```
 
-Unos de los mayores abusadores del acceso frecuente a la pila en tiempo
-de ejecución son los bucles. Si podemos mitigarlo de algún modo, eso
-debería traducirse en menos instrucciones por iteración, lo que puede
-sumar un ahorro considerable.
+Las referencias se ponderan por la profundidad de anidamiento, de modo que
+si no hay registros libres para todos los candidatos ganan las variables
+de los bucles más internos. Un bucle que no puede promoverse (contiene un
+`CALL`, un `RET`, ...) se omite por sí solo; los bucles anidados en él se
+siguen considerando.
 
-Piensa en esos ejemplos en los que declaras "sobre la marcha" una
-variable `index` cuyo *único* propósito es dirigir el bucle. No necesitas
-ni haces nada con `index` una vez terminado el bucle. Pero sin esta
-optimización, el compilador reservaría memoria (en la pila), y habría
-constantes MOV para leer y escribir el dato `index` en la pila durante el
-bucle.
+**Por qué no está en `-O2`.** Convertir `MOV R0, [BP-2]` en `MOV R0, R4`
+cuesta los mismos ciclos; la carga del preheader (y el almacenamiento a la
+salida, cuando algo lee después la posición) es adicional. Lo que gana la
+promoción es que las copias de registro que deja pueden cancelarse
+-- `MOV R1, R4 / IADD R1, 1 / MOV R4, R1` es un solo `IADD R4, 1` -- y
+todavía nada las cancela. En el conjunto de pruebas las pasadas a nivel de
+función se compensan de sobra mediante el reenvío (véase más abajo); la
+pasada de bucles, encima de ellas, ahorró aproximadamente un cuarto de
+punto de tamaño de código y *costó* aproximadamente un séptimo de punto de
+ciclos, con algunos bucles cortos entre un 2 y un 5 % más lentos. Cuando
+exista esa limpieza de copias (véase
+[doc/loop-optimizations.md](doc/loop-optimizations.md)) debería pasar a ser
+una ganancia clara y moverse a `-O2`.
+
+### Qué mantiene una posición en memoria
+
+Estas comprobaciones miran la **función entera**, no solo la región que se
+promueve: un puntero creado antes de un bucle puede apuntar a una posición
+dentro de él igual que uno creado dentro.
+
+* La dirección del marco escapa: `MOV R1, BP`, `LEA R1, [BP-N]` (tomar la
+  dirección de una local, una estructura, un array), `IADD R1, BP`, ...
+  Igualmente todo lo que copie `SP` hacia fuera (`MOV R1, SP`,
+  `LEA R1, [SP+N]`).
+* Ausencia de prólogo `MOV BP, SP` (el código escrito a mano o `naked` no
+  tiene marco propio cuyas posiciones promover).
+* Un tramo o bucle al que algo más salta hacia dentro o desde dentro: un
+  salto desde fuera a una etiqueta interior (un `goto` al cuerpo de un
+  bucle, o a su etiqueta de salida), o desde dentro a un punto que se
+  saltaría el almacenamiento.
+* Los parámetros (`[BP+N]`) nunca se promueven: una copia de uno cuesta una
+  carga y, hoy por hoy, no ahorra nada.
+
+### Elección del registro
+
+Solo se usa un registro cuando está **demostrablemente libre**: no aparece
+en la región, y la consulta de vida de registros que tiene en cuenta el
+flujo de control y que ya usa `peephole-zero-test` (`liveness.c`) muestra
+que nunca se lee antes de volver a escribirse por ningún camino desde la
+carga. `R0` y -- porque `v32lua` devuelve el 2.º y 3.er valor de un retorno
+múltiple en `R2` y `R3` -- esos dos se tratan como vivos en cada `RET`: una
+función que solo los deja pasar desde un llamado los conserva.
+`R11`-`R13` hacen de operandos implícitos de `MOVS`/`SETS`/`CMPS` y nunca
+se usan.
+
+### Qué esperar
+
+La promoción por sí sola convierte sobre todo operandos de memoria en
+operandos de registro (código más pequeño: un operando `[BP-N]` ocupa dos
+palabras, un registro una); el ahorro de ciclos llega cuando las pasadas de
+`-O1` encuentran copias que cancelar una vez que nada puede aliasar la
+posición (una carga tras un almacenamiento mediante un puntero solo puede
+reenviarse cuando la posición no puede ser el destino del puntero). Sobre
+unos 190 programas de prueba generados por compilador (con muchos bucles,
+muchas llamadas, con locales cuya dirección se toma), `promote-regs` +
+`promote-leaf` quitaron 0,8 puntos más de ciclos y 1,0 punto de tamaño de
+código a `-O2` (`-1,6 %` -> `-2,4 %` de ciclos, `-3,1 %` -> `-4,1 %` de
+tamaño, respecto a `-O0`): más rápidos en 72 programas (el mejor -10 %),
+iguales en 117, más lentos en 4 (el peor +0,4 %). Gana más el código lineal
+con una local usada varias veces entre almacenamientos mediante punteros.
+`-d` marca cada carga y almacenamiento que añade una pasada
+(`; [DEBUG promote-regs] ...`), y `--trigger-max` cuenta una posición por
+variable promovida, de modo que una sospecha de mala compilación puede
+acotarse por bisección como con cualquier otra pasada.
 
 ---
 
@@ -1121,11 +1207,15 @@ desreferencias de punteros y no como duplicados, lo que garantiza que las
 búsquedas de puntero a puntero se evalúen correctamente.
 
 * **Salvaguardas ante la toma de direcciones:** Las pasadas de promoción
-a registros buscan en funciones y bucles cálculos de direcciones de pila
-(p. ej., `IADD R1, BP`). Si la dirección de memoria de una variable local
-se calcula dinámicamente o se toma, la promoción se cancela
-automáticamente para ese bloque, para garantizar la seguridad de la
-memoria y evitar errores de solapamiento (aliasing).
+a registros buscan en la función entera (no solo en el bucle o tramo que
+se promueve) cálculos de direcciones de pila (p. ej., `IADD R1, BP`,
+`LEA R1, [BP-N]`, `MOV R1, SP`). Si la dirección de memoria de una
+variable local se calcula dinámicamente o se toma en cualquier punto de
+ella, la promoción se cancela automáticamente para esa función, para
+garantizar la seguridad de la memoria y evitar errores de solapamiento
+(aliasing). La elección del registro se apoya en una demostración de vida
+de registros (véase
+[Promoción de Memoria a Registros](#promoción-de-memoria-a-registros--o2)).
 
 * **Reescritura de la pila en la inserción en línea:** Cuando se insertan
 en línea funciones hoja, las lecturas de parámetros que acceden a

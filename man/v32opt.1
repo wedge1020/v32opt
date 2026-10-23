@@ -127,10 +127,13 @@ below).
 .B \-O1
 plus common-subexpression elimination, dead-function elimination,
 global constant propagation and folding over the control-flow
-graph, and frame-pointer elimination in functions that never touch
+graph, frame-pointer elimination in functions that never touch
 .B BP
 (directly or through
-.BR [BP\[+-]N] ).
+.BR [BP\[+-]N] ),
+and the function-level memory-to-register promotion passes
+.RI ( promote\-regs ,
+.IR promote\-leaf ).
 .TP
 .B \-O3
 .B \-O2
@@ -214,10 +217,11 @@ promote\-leaf, promote\-loops
 .fi
 .RE
 .IP
-The three promote-* passes are experimental and are not part of
-any
-.B \-O
-level; enable them explicitly. See
+promote-regs and promote-leaf are part of
+.B \-O2
+and up (use
+.BI \-fno\-promote\- name
+to leave one out); promote-loops is opt-in. See
 .BR "OPTIMIZATION LEVELS" .
 .TP
 .BI \-finline\-max= N
@@ -478,17 +482,53 @@ would have left it. Control its aggressiveness with
 .BR \-finline\-call\-limit ,
 and
 .BR \-finline\-exclude .
-.SS "Experimental (no \-O level)"
-The three memory-to-register promotion passes
+.SS "Memory-to-register promotion"
+The three promotion passes
 .RI ( promote\-regs ,
 .IR promote\-leaf ,
 .IR promote\-loops )
 rewrite frequently accessed
 .B [BP\-N]
-stack slots into unused general-purpose registers, injecting
-loads and flushes at region boundaries. They are not enabled by
-any preset level while undergoing testing; enable them only
-explicitly, and expect to have to bisect.
+stack slots (locals; parameters are left alone) into unused
+general-purpose registers (R1\-R10), injecting a load at the start of
+the region and a store only where the memory copy can still be
+observed: before the
+.B CALL
+that ends a call-free segment
+.RI ( promote\-regs ),
+and after a loop's exit label
+.RI ( promote\-loops ).
+Nothing is stored back before
+.BR RET :
+the frame is dead there.
+.PP
+A function is left alone entirely when its frame or stack address
+escapes anywhere in it
+.RB ( "MOV R1, BP" ,
+.BR "LEA R1, [BP\-N]" ,
+.BR "MOV R1, SP" ,
+\&...), or when it has no
+.B MOV BP, SP
+prologue. A loop or segment is skipped when anything branches into or
+out of its middle. A register is used only if control-flow liveness
+proves it free: R0, and R2 and R3 (v32lua's extra return values), count
+as live at every
+.BR RET ,
+and R11\-R13 (the implicit operands of MOVS/SETS/CMPS) are never used.
+.B promote\-regs
+and
+.B promote\-leaf
+are part of
+.BR \-O2 :
+over about 190 compiler-generated test programs they took a further
+0.8 points of cycles and 1.0 point of code size off
+.BR \-O2 .
+.B promote\-loops
+is correct but opt-in
+.RB ( \-fpromote\-loops ):
+its preheader load costs cycles that nothing yet wins back (the register
+copies it leaves are not cleaned up), so on that corpus it saved a quarter
+of a point of code size and cost a seventh of a point of cycles.
 .SH SOURCE LANGUAGES
 .TP
 .B C
@@ -526,7 +566,9 @@ removed by dce or by peephole-jumps; naming the label (a
 directive, \fBMOV R0, __function_cb\fP) keeps it alive. Labels ending
 in
 .I _start
-are treated as loop headers by promote-loops.
+are treated as loop headers by promote-loops (judged over the
+.B __function_
+they sit in).
 .TP
 .B Disassembled CARTs
 .B disassemble
@@ -586,7 +628,7 @@ v32opt game.asm \-O2 \-v
 .RE
 .PP
 Granular control: global analysis without inlining, but with the
-experimental loop promotion enabled:
+(opt-in) loop register promotion:
 .PP
 .RS
 .nf
@@ -665,13 +707,12 @@ about computed jump targets
 DCE's boundary heuristic can confuse a real function whose name
 ends in
 .BR _return ,
-the experimental promote-* passes are still undergoing
-testing, and optimized disassembly is generally broken by moved ROM
+and optimized disassembly is generally broken by moved ROM
 data (see
 .BR "SOURCE LANGUAGES" ).
 Treat
 .B \-O3
-(and the promote-* passes) as genuinely risky, and even
+as genuinely risky, and even
 .BR \-O1 / \-O2
 output as something to verify by assembling, packing, and running
 both the original and optimized CARTs side by side. When a program
