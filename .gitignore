@@ -56,3 +56,6 @@ dkms.conf
 
 # differential test build products
 testing/differential/work/
+
+# build output
+bin/
