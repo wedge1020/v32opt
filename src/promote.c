@@ -4,8 +4,9 @@
 // promote -- stack-slot-to-register promotion passes
 // ============================================================================
 //
-// Three independent optimization passes, all opt-in and off by default at
-// every -O level (-fpromote-leaf, -fpromote-regs, -fpromote-loops):
+// Three optimization passes (-fpromote-leaf and -fpromote-regs are part of
+// -O2 and up; -fpromote-loops is opt-in -- it is sound, but its preheader
+// load and exit store cost cycles that nothing yet wins back, see ISSUES):
 //
 //   pass_promote_stack_slots    (-fpromote-leaf)  -- whole-function
 //     promotion for CALL-free (leaf) functions only. A promoted register's
@@ -23,24 +24,71 @@
 //   pass_promote_loop_registers (-fpromote-loops) -- loop-invariant
 //     promotion: hoists a repeatedly read/written stack slot into a
 //     register for the duration of a single CALL-free loop, via a true
-//     preheader load (runs once, before the loop header label) and stores
-//     at every exit edge.
+//     preheader load (runs once, before the loop header label) and a store
+//     at the loop's exit.
 //
 // All three follow the same shape: find a [BP-off] stack slot referenced
 // enough times in a safe, CALL-free region to be worth a register, rewrite
 // every reference in that region to the register FIRST, then splice in
 // the load(s)/store(s) needed to keep the stack slot's own backing memory
-// correct at the region's boundaries (function entry/return, segment/CALL
-// boundaries, or loop preheader/exit, respectively) -- always AFTER the
-// rewrite has finished with the original node range, never before (see the
+// correct at the region's boundaries -- always AFTER the rewrite has
+// finished with the original node range, never before (see the
 // "BUG FIX" comments at each insertion site for why that order matters).
-// See each function's own header comment for its specific safety guards.
+//
+// What may be promoted
+//   - locals ([BP-N]) only. Parameters ([BP+N]) and the saved BP / return
+//     address slots are never touched (see slot_promotable).
+//
+// What makes a function ineligible (checked over the WHOLE function, not
+// just the region being promoted -- a pointer made outside a loop is just
+// as capable of aliasing a slot inside it):
+//   - anything that captures or destroys the frame address (see
+//     bp_value_escapes: "MOV R1, BP", "LEA R1, [BP-N]", "IADD R1, BP", ...);
+//   - anything that captures the stack pointer (sp_value_escapes);
+//   - no recognizable "MOV BP, SP" prologue to anchor the first load to.
+//
+// How the register is chosen
+//   A candidate R1..R10 must (a) not appear anywhere in the region, and
+//   (b) be PROVEN dead at the point the load is inserted by the
+//   control-flow-aware liveness query (liveness.c) -- never read on any
+//   path before it is written again, with the ABI's return registers
+//   (R0, and R2/R3 for v32lua's multi-value returns) treated as live at
+//   every RET. (a) alone is what the passes used to rely on; it is
+//   not enough when a value reaches the region from before it (or leaves
+//   it for after) without being named inside it -- e.g. a function that
+//   only passes R2/R3 through from a callee, or a loop whose preheader
+//   sits in front of a register computed earlier and used after the loop.
+//   R11-R13 are never used: they double as MOVS/SETS/CMPS's implicit
+//   CR/SR/DR operands, which no textual scan can see.
+//
+// Stores
+//   A promoted local is NOT stored back before RET: this function's frame
+//   is dead the moment it returns, and no pointer into it can exist (the
+//   eligibility checks above), so the store could never be observed. The
+//   stores that remain are exactly the ones that can be: before the CALL
+//   that ends a segment (promote-regs, the next segment reloads), and at
+//   the loop exit (promote-loops, code after the loop reads the slot).
 //
 // All three report through `-d` like every other pass in this project:
 // insert_debug_comment logs an existing instruction's original text right
 // before it's rewritten in place, and every newly-spliced load/store node
 // gets its own descriptive debug comment immediately after insertion.
 // ============================================================================
+
+#define SLOT_BIAS        128        // slot index = BP-relative offset + SLOT_BIAS
+#define SLOT_COUNT       129        // offsets -128..0
+#define SLOT_MAX_ABS     127        // |offset| tracked; farther slots are left alone
+#define PROMOTE_FIRST_REG  1        // R1 ... R10 (R0 returns values; R11-13 are CR/SR/DR)
+#define PROMOTE_LAST_REG  10
+
+#define MIN_REFS_FUNC     3         // weighted references to promote a slot in a
+                                    // function / CALL-free segment
+#define MIN_REFS_LOOP     2         // ... and in a loop body
+
+// A reference inside a nested loop runs about this many times more often
+// than one outside it.
+#define LOOP_WEIGHT       8
+#define MAX_LOOP_DEPTH    3
 
 // -------------------------------------------------------------------
 // Helper: Rewrite an operand to a general-purpose register
@@ -93,40 +141,60 @@ static bool bp_value_escapes(AsmNode *n) {
         return dst_is_bp || src_is_bp;
     }
 
-    // Non-MOV instructions: direct OR indirect BP use counts (IADD R1, BP
-    // computes a local's address; indirect via non-BP bases is irrelevant).
-    return dst_is_bp || src_is_bp ||
-           (n->has_dst && n->dst_op.mode == MODE_INDIRECT &&
-            str_case_eq(n->dst_op.reg, "BP")) ||
-           (n->has_src && n->src_op.mode == MODE_INDIRECT &&
-            str_case_eq(n->src_op.reg, "BP"));
+    // Any other instruction: a direct BP operand ("IADD R1, BP" computes a
+    // local's address) escapes, and so does LEA of a BP-relative operand
+    // ("LEA R1, [BP-3]" is the address-of-local idiom). A plain indirect
+    // BP-relative OPERAND of any other instruction ("IADD R0, [BP+2]") reads
+    // or writes the slot's contents and is exactly the access pattern being
+    // promoted.
+    if (dst_is_bp || src_is_bp) return true;
+    if (n->type == OP_LEA) {
+        return (n->has_dst && n->dst_op.mode == MODE_INDIRECT &&
+                str_case_eq(n->dst_op.reg, "BP")) ||
+               (n->has_src && n->src_op.mode == MODE_INDIRECT &&
+                str_case_eq(n->src_op.reg, "BP"));
+    }
+    return false;
 }
 
 // -------------------------------------------------------------------
-// Helper: given a RET node, return the node a stack-slot flush must be
-// inserted BEFORE. BUG FIX: the flush used to be inserted directly
-// before the RET itself -- but a standard epilogue ("MOV SP, BP" /
-// "POP BP" / RET) precedes it, and after "POP BP" the register BP has
-// already been restored to the CALLER's frame, so "[BP-off]" in the
-// flushed store addressed the wrong frame entirely. Back up over the
-// epilogue (POP BP, then MOV SP, BP, skipping comments) so the flush
-// executes while this function's frame is still live.
+// Helper: does this instruction copy the STACK POINTER's value out where
+// it can be used as a pointer (and so reach a local, which lives just
+// above SP: "MOV R1, SP", "IADD R1, SP", "LEA R1, [SP+N]")?
+//
+// Plain accesses through SP ("MOV [SP+1], R0" -- staging a call's
+// arguments) are NOT escapes: the argument area sits below the locals,
+// and CALL/PUSH/POP/ISUB SP/MOV SP,BP merely move SP.
 // -------------------------------------------------------------------
-static AsmNode *flush_insertion_point(AsmNode *ret_node) {
-    AsmNode *ins = ret_node;
-    AsmNode *p = ret_node->prev;
-    while (p && p->type == OP_OTHER) p = p->prev;
-    if (p && p->type == OP_POP && p->has_dst &&
-        str_case_eq(p->dst_op.reg, "BP")) {
-        ins = p;
-        p = p->prev;
-        while (p && p->type == OP_OTHER) p = p->prev;
-        if (p && p->type == OP_MOV && p->has_dst && p->has_src &&
-            str_case_eq(p->dst_op.reg, "SP") && str_case_eq(p->src_op.reg, "BP")) {
-            ins = p;
-        }
+static bool sp_value_escapes(AsmNode *n) {
+    if (!n || n->type == OP_PUSH || n->type == OP_POP) return false;
+
+    if (n->type == OP_LEA) {
+        return (n->has_src && n->src_op.mode == MODE_INDIRECT &&
+                str_case_eq(n->src_op.reg, "SP"));
     }
-    return ins;
+    // SP read as a plain register operand (source side), other than the
+    // "MOV BP, SP" frame setup
+    if (n->has_src && n->src_op.mode == MODE_REG &&
+        str_case_eq(n->src_op.reg, "SP")) {
+        if (n->type == OP_MOV && n->has_dst && n->dst_op.mode == MODE_REG &&
+            str_case_eq(n->dst_op.reg, "BP")) {
+            return false;
+        }
+        return true;
+    }
+    // Non-MOV instructions with SP as the register operand also read it
+    // ("IADD SP, 1" modifies it and is fine; "IADD R1, SP" is the src case
+    // above), so nothing more to check on the destination side.
+    return false;
+}
+
+// -------------------------------------------------------------------
+// Helper: is a branch instruction (JMP/JT/JF)?
+// -------------------------------------------------------------------
+static bool is_jump(const AsmNode *n) {
+    return n && (str_case_eq(n->mnemonic, "JMP") || str_case_eq(n->mnemonic, "JT") ||
+                 str_case_eq(n->mnemonic, "JF"));
 }
 
 // -------------------------------------------------------------------
@@ -156,331 +224,477 @@ static char *branch_target_raw(AsmNode *n) {
     return n->dst_op.raw; // JMP: single operand, stored in dst_op
 }
 
+static void branch_target(AsmNode *n, char *out, size_t sz) {
+    char tmp[128];
+    safe_str_copy(tmp, branch_target_raw(n), sizeof(tmp));
+    safe_str_copy(out, trim(tmp), sz);
+}
+
 // -------------------------------------------------------------------
-// Helper: Check if a label is defined inside a loop
+// Helper: is there a label named `name` in [from, to)?
 // -------------------------------------------------------------------
-bool is_inside_loop(const char *target, AsmNode *loop_start, AsmNode *loop_end) {
-    for (AsmNode *n = loop_start->next; n && n != loop_end; n = n->next) {
-        if (n->type == OP_LABEL) {
-            char lbl[128] = {0};
-            safe_str_copy(lbl, n->raw, sizeof(lbl));
-            char *c = strchr(lbl, ':');
-            if (c) *c = '\0';
-            if (str_case_eq(trim(lbl), target)) return true;
-        }
+static bool label_in_range(const char *name, AsmNode *from, AsmNode *to) {
+    char lbl[128];
+    for (AsmNode *n = from; n && n != to; n = n->next) {
+        if (n->type != OP_LABEL) continue;
+        get_label_name(n, lbl, sizeof(lbl));
+        if (str_case_eq(lbl, name)) return true;
     }
     return false;
 }
 
 // -------------------------------------------------------------------
-// Pass: Stack Slot to Register Promotion (Scalar Replacement)
+// Helper: does any branch OUTSIDE [from, to) target a label that sits
+// inside [from, to)?  (`scope_first`..`scope_last` bound the search to
+// the enclosing function: label targets are function-local by this
+// compiler family's own naming convention, and re-scanning the whole
+// program for every candidate region was measured to take minutes on a
+// 300K-line real program.)
+//
+// With `except` non-NULL, branches to that one label are tolerated
+// (a loop's own back-edge target when the caller handles it separately).
 // -------------------------------------------------------------------
-int pass_promote_stack_slots(AsmNode *head) {
-    int optimizations = 0;
-    AsmNode *curr = head ? head->next : NULL;
-
-    while (curr) {
-        // 1. Identify Function Boundaries
-        if (curr->type == OP_LABEL) {
-            char line_copy[8192];
-            safe_str_copy(line_copy, curr->raw, sizeof(line_copy));
-            char *lbl = trim(line_copy);
-
-            size_t lbl_len = strlen(lbl);
-            bool is_return_label = (lbl_len >= 8 && str_case_eq(lbl + lbl_len - 8, "_return:"));
-            bool is_global_scope_init = str_case_eq(lbl, "__global_scope_initialization:");
-            if ((strncmp(lbl, "__function_", 11) != 0 && !is_global_scope_init) || is_return_label) {
-                curr = curr->next;
-                continue;
-            }
-
-            // Find the end of this function body
-            AsmNode *scan = curr->next;
-            AsmNode *end_of_func = curr;
-            while (scan) {
-                if (scan->type == OP_LABEL) {
-                    char next_copy[8192];
-                    safe_str_copy(next_copy, scan->raw, sizeof(next_copy));
-                    char *next_lbl = trim(next_copy);
-                    size_t next_lbl_len = strlen(next_lbl);
-                    bool next_is_return = (next_lbl_len >= 8 && str_case_eq(next_lbl + next_lbl_len - 8, "_return:"));
-                    if ((strncmp(next_lbl, "__function_", 11) == 0 && !next_is_return) ||
-                        strncmp(next_lbl, "__literal_", 10) == 0 ||
-                        (strncmp(next_lbl, "__global_", 9) == 0 && !str_case_eq(next_lbl, "__global_scope_initialization:"))) {
-                        break;
-                    }
-                }
-                end_of_func = scan;
-                scan = scan->next;
-            }
-
-            // ----------------------------------------------------------------
-            // Phase A: Analyze Function Safety & Register Liveness
-            // ----------------------------------------------------------------
-            bool is_leaf_function = true;
-            bool address_taken = false;
-            bool reg_used[16] = {0};
-            int slot_counts[128] = {0};
-
-            for (AsmNode *n = curr->next; n && n != end_of_func->next; n = n->next) {
-                if (str_case_eq(n->mnemonic, "CALL")) {
-                    is_leaf_function = false;
-                }
-
-                // Guardrail: BP's value escapes (address taken or destroyed)
-                if (bp_value_escapes(n)) {
-                    address_taken = true;
-                    break;
-                }
-
-                // Track ALL register usage (direct + indirect)
-                if (n->dst_op.mode == MODE_REG) {
-                    int idx = get_reg_index(n->dst_op.reg);
-                    if (idx >= 0 && idx < 16) reg_used[idx] = true;
-                }
-                if (n->src_op.mode == MODE_REG) {
-                    int idx = get_reg_index(n->src_op.reg);
-                    if (idx >= 0 && idx < 16) reg_used[idx] = true;
-                }
-                if (n->dst_op.mode == MODE_INDIRECT && n->dst_op.reg[0] != '\0') {
-                    int idx = get_reg_index(n->dst_op.reg);
-                    if (idx >= 0 && idx < 16) reg_used[idx] = true;
-                }
-                if (n->src_op.mode == MODE_INDIRECT && n->src_op.reg[0] != '\0') {
-                    int idx = get_reg_index(n->src_op.reg);
-                    if (idx >= 0 && idx < 16) reg_used[idx] = true;
-                }
-
-                // Count references to local stack variables: [BP-offset] where offset < 0
-                if (n->dst_op.mode == MODE_INDIRECT && str_case_eq(n->dst_op.reg, "BP") && n->dst_op.offset < 0) {
-                    int abs_off = -n->dst_op.offset;
-                    if (abs_off < 128) slot_counts[abs_off]++;
-                }
-                if (n->src_op.mode == MODE_INDIRECT && str_case_eq(n->src_op.reg, "BP") && n->src_op.offset < 0) {
-                    int abs_off = -n->src_op.offset;
-                    if (abs_off < 128) slot_counts[abs_off]++;
-                }
-            }
-
-            if (address_taken) {
-                curr = end_of_func->next;
-                continue;
-            }
-
-            // ----------------------------------------------------------------
-            // Phase B: Execute Function-Wide Promotion (Leaf Functions Only)
-            // ----------------------------------------------------------------
-            if (is_leaf_function) {
-                int free_reg_for_off[128] = {0}; // Track which register was assigned to each offset
-
-                for (int off = 1; off < 128; off++) {
-                    if (slot_counts[off] >= 3) {
-                        int free_reg = -1;
-                        for (int r = 1; r <= 13; r++) {
-                            if (!reg_used[r]) {
-                                free_reg = r;
-                                free_reg_for_off[off] = free_reg;
-                                reg_used[r] = true;
-                                break;
-                            }
-                        }
-
-                        if (free_reg == -1) break;
-
-                        // TRIGGER CAP: gate this offset's whole promotion
-                        // (every rewritten reference plus its preheader
-                        // load) as one atomic unit, same granularity as
-                        // pass_promote_regs. free_reg_for_off[off] stays 0
-                        // so phase 2 below (which inserts the matching
-                        // store-before-RET) also skips this offset instead
-                        // of trying to flush a register that was never
-                        // actually loaded.
-                        if (!trigger_allowed()) { free_reg_for_off[off] = 0; continue; }
-
-                        char reg_name[16];
-                        snprintf(reg_name, sizeof(reg_name), "R%d", free_reg);
-
-                        // Find insertion point right after prologue (after `MOV BP, SP`)
-                        AsmNode *prologue_end = curr->next;
-                        bool found_prologue = false;
-                        while (prologue_end && prologue_end != end_of_func) {
-                            if (str_case_eq(prologue_end->mnemonic, "MOV") &&
-                                str_case_eq(prologue_end->dst_op.reg, "BP") &&
-                                str_case_eq(prologue_end->src_op.reg, "SP")) {
-                                found_prologue = true;
-                                // BUG FIX: "MOV BP, SP" is very often
-                                // immediately followed by "ISUB SP, N",
-                                // which is what actually reserves this
-                                // function's local stack space. If we stop
-                                // right at "MOV BP, SP", SP hasn't been
-                                // decremented yet, so a [BP-off] load
-                                // spliced in here reads memory that isn't
-                                // part of this function's frame at all --
-                                // stale/garbage data left over from
-                                // whatever was last above the current SP,
-                                // not the local's real initial value.
-                                // Confirmed live: nostalgick.asm's
-                                // __function_Game_draw_pause_overlay had
-                                // its promoted loads landing between
-                                // "MOV BP, SP" and "ISUB SP, 24" -- reading
-                                // uninitialized stack instead of the real
-                                // locals. This is invisible to the
-                                // optimizer itself (it runs clean either
-                                // way) and only shows up once the
-                                // generated code actually executes.
-                                if (prologue_end->next &&
-                                    str_case_eq(prologue_end->next->mnemonic, "ISUB") &&
-                                    str_case_eq(prologue_end->next->dst_op.reg, "SP")) {
-                                    prologue_end = prologue_end->next;
-                                }
-                                break;
-                            }
-                            prologue_end = prologue_end->next;
-                        }
-
-                        // BUG FIX: the old "if (prologue_end)" check here was
-                        // nearly always true even when the "MOV BP, SP"
-                        // pattern was never found, because the while loop
-                        // above only stops on a match OR on reaching
-                        // end_of_func -- a valid, non-NULL node either way.
-                        // If the pattern was genuinely absent, prologue_end
-                        // silently became end_of_func (the function's LAST
-                        // node), and the load got spliced in right after it
-                        // -- after every real use inside this function, and
-                        // potentially into the following function's own
-                        // code. Every [BP-off] reference below still gets
-                        // rewritten to the register regardless, so that
-                        // register would be read uninitialized throughout.
-                        // Require an actual match; skip promoting this
-                        // offset (not just this insertion) if there isn't
-                        // one, since there's no other verified-safe place to
-                        // put the initial load.
-                        if (!found_prologue) {
-                            free_reg_for_off[off] = 0;
-                            continue;
-                        }
-
-                        // BUG FIX: this rewrite must run BEFORE the load is
-                        // inserted, not after. The old order inserted the
-                        // load first (right after prologue_end, i.e.
-                        // INSIDE the [curr->next, end_of_func->next) range
-                        // the rewrite loop below scans), so the freshly
-                        // created "MOV R_free, [BP-off]" was immediately
-                        // caught by its OWN rewrite -- its src operand IS a
-                        // [BP-off] match for this exact offset -- and
-                        // corrupted into "MOV R_free, R_free", a no-op that
-                        // never actually loads the real stack value.
-                        // Confirmed by direct reproduction: a simple 3-line
-                        // leaf function promoting one local produced exactly
-                        // this "MOV R4, R4" instead of "MOV R4, [BP-1]".
-                        // Doing the rewrite first (over the original body,
-                        // before the load node exists at all) and inserting
-                        // the load only afterward makes it structurally
-                        // impossible for the rewrite to ever see its own
-                        // insertion.
-                        //
-                        // Rewrite all [BP-off] references in the function body to R_free
-                        for (AsmNode *n = curr->next; n && n != end_of_func->next; n = n->next) {
-                            bool modified = false;
-                            if (n->dst_op.mode == MODE_INDIRECT && str_case_eq(n->dst_op.reg, "BP") && n->dst_op.offset == -off) {
-                                promote_operand_to_reg(&n->dst_op, reg_name);
-                                modified = true;
-                            }
-                            if (n->src_op.mode == MODE_INDIRECT && str_case_eq(n->src_op.reg, "BP") && n->src_op.offset == -off) {
-                                promote_operand_to_reg(&n->src_op, reg_name);
-                                modified = true;
-                            }
-                            if (modified) {
-                                // Log the original instruction text before it's
-                                // overwritten below -- same convention every
-                                // other pass in this project follows.
-                                insert_debug_comment(n->prev, OPT_PROMOTE_LEAF, n->raw);
-                                if (n->has_dst && n->has_src) {
-                                    node_set_rawf(n, "    %s %s, %s", n->mnemonic, n->dst_op.raw, n->src_op.raw);
-                                } else if (n->has_dst) {
-                                    node_set_rawf(n, "    %s %s", n->mnemonic, n->dst_op.raw);
-                                }
-                                optimizations++;
-                            }
-                        }
-
-                        // Now insert the pre-header load, safely after the
-                        // rewrite above has already finished with the
-                        // original (pre-insertion) node range.
-                        {
-                            char src_str[32];
-                            snprintf(src_str, sizeof(src_str), "[BP-%d]", off);
-                            char load_raw[64];
-                            snprintf(load_raw, sizeof(load_raw), "    MOV %s, %s", reg_name, src_str);
-
-                            AsmNode *load_node = create_node(load_raw, OP_MOV, "MOV", reg_name, src_str);
-                            load_node->has_dst = true;
-                            load_node->has_src = true;
-                            load_node->dst_op = parse_operand(reg_name);
-                            load_node->src_op = parse_operand(src_str);
-
-                            load_node->next = prologue_end->next;
-                            load_node->prev = prologue_end;
-                            if (prologue_end->next) prologue_end->next->prev = load_node;
-                            prologue_end->next = load_node;
-
-                            // Describe the newly-spliced load itself -- there's
-                            // no "original" instruction to quote here (this
-                            // node didn't exist before), so the debug comment
-                            // states what it's for instead.
-                            char dbg_msg[96];
-                            snprintf(dbg_msg, sizeof(dbg_msg),
-                                     "PROMOTE-LEAF: preheader load of [BP-%d] into %s (whole-function, leaf-only)",
-                                     off, reg_name);
-                            insert_debug_comment(load_node, OPT_PROMOTE_LEAF, dbg_msg);
-                        }
-                    }
-                }
-
-                // Insert stores before RET to save promoted values back to stack
-                for (int off = 1; off < 128; off++) {
-                    if (slot_counts[off] >= 3 && free_reg_for_off[off] != 0) {
-                        char dst_str[32];
-                        snprintf(dst_str, sizeof(dst_str), "[BP-%d]", off);
-                        char reg_name[16];
-                        snprintf(reg_name, sizeof(reg_name), "R%d", free_reg_for_off[off]);
-                        char store_raw[64];
-                        snprintf(store_raw, sizeof(store_raw), "    MOV %s, %s", dst_str, reg_name);
-
-                        for (AsmNode *n = curr->next; n && n != end_of_func->next; n = n->next) {
-                            if (str_case_eq(n->mnemonic, "RET")) {
-                                // BUG FIX: insert before the EPILOGUE, not
-                                // before the RET -- after "POP BP" the store's
-                                // [BP-off] would address the caller's frame.
-                                AsmNode *ins = flush_insertion_point(n);
-                                AsmNode *store_node = create_node(store_raw, OP_MOV, "MOV", dst_str, reg_name);
-                                store_node->prev = ins->prev;
-                                store_node->next = ins;
-                                if (ins->prev) ins->prev->next = store_node;
-                                ins->prev = store_node;
-                                optimizations++;
-
-                                char dbg_msg[96];
-                                snprintf(dbg_msg, sizeof(dbg_msg),
-                                         "PROMOTE-LEAF: flush %s back to [BP-%d] before epilogue",
-                                         reg_name, off);
-                                insert_debug_comment(store_node, OPT_PROMOTE_LEAF, dbg_msg);
-                            }
-                        }
-                    }
-                }
-            }
-
-            curr = end_of_func->next;
-            continue;
+static bool branch_enters_region(AsmNode *scope_first, AsmNode *scope_last,
+                                 AsmNode *from, AsmNode *to, const char *except) {
+    bool inside = false;
+    for (AsmNode *n = scope_first; n; n = n->next) {
+        if (n == from) inside = true;
+        if (n == to)   inside = false;
+        if (!inside && is_jump(n)) {
+            char target[128];
+            branch_target(n, target, sizeof(target));
+            if ((!except || !str_case_eq(target, except)) &&
+                label_in_range(target, from, to)) return true;
         }
-        curr = curr->next;
+        if (n == scope_last) break;
     }
-
-    return optimizations;
+    return false;
 }
 
 // -------------------------------------------------------------------
+// Helper: function boundaries
+// -------------------------------------------------------------------
+static bool is_return_label_text(const char *lbl) {
+    size_t len = strlen(lbl);
+    return len >= 7 && str_case_eq(lbl + len - 7, "_return");
+}
+
+// A function's entry label: "__function_<name>" (not "..._return"), or the
+// Lua compiler's "__global_scope_initialization".
+static bool is_function_entry(const AsmNode *n) {
+    if (!n || n->type != OP_LABEL) return false;
+    char lbl[128];
+    get_label_name(n, lbl, sizeof(lbl));
+    if (str_case_eq(lbl, "__global_scope_initialization")) return true;
+    return strncmp(lbl, "__function_", 11) == 0 && !is_return_label_text(lbl);
+}
+
+// The last node belonging to the function whose entry label is `entry`.
+static AsmNode *function_last(AsmNode *entry) {
+    AsmNode *last = entry;
+    for (AsmNode *s = entry->next; s; s = s->next) {
+        if (s->type == OP_LABEL) {
+            char lbl[128];
+            get_label_name(s, lbl, sizeof(lbl));
+            if ((strncmp(lbl, "__function_", 11) == 0 && !is_return_label_text(lbl)) ||
+                strncmp(lbl, "__literal_", 10) == 0 ||
+                (strncmp(lbl, "__global_", 9) == 0 &&
+                 !str_case_eq(lbl, "__global_scope_initialization"))) {
+                break;
+            }
+        }
+        last = s;
+    }
+    return last;
+}
+
+// -------------------------------------------------------------------
+// Helper: whole-function eligibility. A frame address (or SP value) that
+// escapes anywhere in the function lets a pointer alias any slot at any
+// time, so no slot of that function can be kept in a register.
+// -------------------------------------------------------------------
+static bool function_frame_escapes(AsmNode *first, AsmNode *last) {
+    for (AsmNode *n = first; n; n = n->next) {
+        if (bp_value_escapes(n) || sp_value_escapes(n)) return true;
+        if (n == last) break;
+    }
+    return false;
+}
+
+// -------------------------------------------------------------------
+// Helper: find the prologue's "MOV BP, SP" in [from, to) and return the
+// node after which function-frame loads may go -- the "ISUB SP, N" that
+// reserves the locals when it follows (BUG FIX: a load spliced in between
+// "MOV BP, SP" and "ISUB SP, N" reads memory outside the frame --
+// uninitialized stack, not the local's real initial value. Confirmed live
+// on nostalgick.asm's __function_Game_draw_pause_overlay.). NULL if the
+// prologue isn't there: there is no other verified-safe place for the
+// initial load, so the caller must skip the function.
+// -------------------------------------------------------------------
+static AsmNode *prologue_anchor(AsmNode *from, AsmNode *to) {
+    for (AsmNode *p = from; p && p != to; p = p->next) {
+        if (p->type == OP_MOV && p->has_dst && p->has_src &&
+            str_case_eq(p->dst_op.reg, "BP") && str_case_eq(p->src_op.reg, "SP")) {
+            AsmNode *q = p->next;
+            while (q && q != to && q->type == OP_OTHER) q = q->next;
+            if (q && q != to && str_case_eq(q->mnemonic, "ISUB") &&
+                q->has_dst && str_case_eq(q->dst_op.reg, "SP")) {
+                return q;
+            }
+            return p;
+        }
+    }
+    return NULL;
+}
+
+// -------------------------------------------------------------------
+// Region scan: which registers appear, and how often (and how often
+// when weighted by loop nesting) each BP-relative slot is referenced.
+// -------------------------------------------------------------------
+typedef struct {
+    bool reg_used[16];
+    int  refs[SLOT_COUNT];       // weighted reference count
+    bool written[SLOT_COUNT];    // appears as a destination at least once
+} RegionInfo;
+
+// Only locals ([BP-N]). Parameters ([BP+N], N >= 2) are deliberately left
+// alone: promoting one costs a load and, with the cleanup passes there are
+// today, saves nothing (the register copy that replaces each read still
+// executes). [BP+0] / [BP+1] are the saved BP and the return address.
+static bool slot_promotable(int off) {
+    return off <= -1 && off >= -SLOT_MAX_ABS;
+}
+
+static void note_reg(RegionInfo *ri, const Operand *op) {
+    if ((op->mode == MODE_REG || (op->mode == MODE_INDIRECT && op->reg[0] != '\0'))) {
+        int idx = get_reg_index(op->reg);
+        if (idx >= 0 && idx < 16) ri->reg_used[idx] = true;
+    }
+}
+
+// weights[i] is the weight of the i-th node of the region, or NULL for 1.
+static void scan_region(AsmNode *from, AsmNode *to, const int *weights, RegionInfo *ri) {
+    memset(ri, 0, sizeof(*ri));
+    int i = 0;
+    for (AsmNode *n = from; n && n != to; n = n->next, i++) {
+        int w = weights ? weights[i] : 1;
+        if (n->has_dst) note_reg(ri, &n->dst_op);
+        if (n->has_src) note_reg(ri, &n->src_op);
+        if (n->has_dst && n->dst_op.mode == MODE_INDIRECT && str_case_eq(n->dst_op.reg, "BP") &&
+            slot_promotable(n->dst_op.offset)) {
+            ri->refs[n->dst_op.offset + SLOT_BIAS] += w;
+            ri->written[n->dst_op.offset + SLOT_BIAS] = true;
+        }
+        if (n->has_src && n->src_op.mode == MODE_INDIRECT && str_case_eq(n->src_op.reg, "BP") &&
+            slot_promotable(n->src_op.offset)) {
+            ri->refs[n->src_op.offset + SLOT_BIAS] += w;
+        }
+    }
+}
+
+// -------------------------------------------------------------------
+// Loop-nesting weights for the nodes of [from, to): every backward branch
+// (to a label earlier in the region) marks the nodes between its target
+// label and itself as one loop deeper. Returns a malloc'd array of
+// per-node weights (NULL if the region is empty or allocation failed --
+// callers treat NULL as "all 1"), and the node count in *count.
+// -------------------------------------------------------------------
+typedef struct { char name[128]; int idx; } LabelRef;
+
+static int cmp_labelref(const void *a, const void *b) {
+    const LabelRef *x = a, *y = b;
+    int c = strcasecmp(x->name, y->name);
+    return c ? c : x->idx - y->idx;
+}
+
+static int *loop_weights(AsmNode *from, AsmNode *to, int *count) {
+    int n_nodes = 0, n_labels = 0;
+    for (AsmNode *n = from; n && n != to; n = n->next) {
+        n_nodes++;
+        if (n->type == OP_LABEL) n_labels++;
+    }
+    *count = n_nodes;
+    if (n_nodes == 0) return NULL;
+
+    AsmNode **nodes = malloc((size_t)n_nodes * sizeof(AsmNode *));
+    int *delta = calloc((size_t)n_nodes + 1, sizeof(int));
+    int *weights = malloc((size_t)n_nodes * sizeof(int));
+    LabelRef *labels = malloc((size_t)(n_labels ? n_labels : 1) * sizeof(LabelRef));
+    if (!nodes || !delta || !weights || !labels) {
+        free(nodes); free(delta); free(weights); free(labels);
+        return NULL;
+    }
+
+    int i = 0, li = 0;
+    for (AsmNode *n = from; n && n != to; n = n->next, i++) {
+        nodes[i] = n;
+        if (n->type == OP_LABEL) {
+            get_label_name(n, labels[li].name, sizeof(labels[li].name));
+            labels[li].idx = i;
+            li++;
+        }
+    }
+    qsort(labels, (size_t)n_labels, sizeof(LabelRef), cmp_labelref);
+
+    char target[128];
+    for (int j = 0; j < n_nodes; j++) {
+        if (!is_jump(nodes[j])) continue;
+        branch_target(nodes[j], target, sizeof(target));
+        // the label with this name that sits furthest back, at or before j
+        LabelRef key;
+        safe_str_copy(key.name, target, sizeof(key.name));
+        int lo = 0, hi = n_labels - 1, first = -1;
+        while (lo <= hi) {                                   // first entry with this name
+            int mid = (lo + hi) / 2;
+            int c = strcasecmp(labels[mid].name, key.name);
+            if (c < 0) lo = mid + 1; else { if (c == 0) first = mid; hi = mid - 1; }
+        }
+        if (first >= 0 && labels[first].idx <= j) {
+            delta[labels[first].idx]++;
+            delta[j + 1]--;
+        }
+    }
+    int depth = 0;
+    for (int k = 0; k < n_nodes; k++) {
+        depth += delta[k];
+        int d = depth > MAX_LOOP_DEPTH ? MAX_LOOP_DEPTH : depth;
+        int w = 1;
+        while (d-- > 0) w *= LOOP_WEIGHT;
+        weights[k] = w;
+    }
+    free(nodes); free(delta); free(labels);
+    return weights;
+}
+
+// -------------------------------------------------------------------
+// Helper: can control come back to [from, to) after leaving it -- is there
+// a jump AFTER the region to a label BEFORE it (an enclosing loop)? A loop
+// that is entered again re-reads its slots from memory in the preheader, so
+// what it left in a register at the last exit still has to be stored.
+// -------------------------------------------------------------------
+static bool region_reentered(AsmNode *scope_first, AsmNode *scope_last, AsmNode *from, AsmNode *to) {
+    int before = 0;
+    for (AsmNode *n = scope_first; n && n != from; n = n->next) if (n->type == OP_LABEL) before++;
+    if (before == 0) return false;
+    LabelRef *labels = malloc((size_t)before * sizeof(LabelRef));
+    if (!labels) return true;                        // can't tell: assume it can
+    int li = 0;
+    for (AsmNode *n = scope_first; n && n != from; n = n->next) {
+        if (n->type != OP_LABEL) continue;
+        get_label_name(n, labels[li].name, sizeof(labels[li].name));
+        labels[li].idx = li;
+        li++;
+    }
+    qsort(labels, (size_t)before, sizeof(LabelRef), cmp_labelref);
+
+    bool again = false;
+    bool after = false;
+    for (AsmNode *n = scope_first; n && !again; n = n->next) {
+        if (n == to) after = true;
+        if (after && is_jump(n)) {
+            LabelRef key;
+            branch_target(n, key.name, sizeof(key.name));
+            int lo = 0, hi = before - 1;
+            while (lo <= hi) {
+                int mid = (lo + hi) / 2;
+                int c = strcasecmp(labels[mid].name, key.name);
+                if (c == 0) { again = true; break; }
+                if (c < 0) lo = mid + 1; else hi = mid - 1;
+            }
+        }
+        if (n == scope_last) break;
+    }
+    free(labels);
+    return again;
+}
+
+// -------------------------------------------------------------------
+// Helper: choose a register for a promotion whose load will be spliced in
+// BEFORE `at`: not mentioned in the region (ri->reg_used) and provably
+// dead from `at` on (see the file header). Marks it used and returns its
+// number, or -1.
+// -------------------------------------------------------------------
+static int pick_register(AsmNode *at, RegionInfo *ri) {
+    for (int r = PROMOTE_FIRST_REG; r <= PROMOTE_LAST_REG; r++) {
+        if (ri->reg_used[r]) continue;
+        char name[8];
+        snprintf(name, sizeof(name), "R%d", r);
+        if (!reg_dead_from(at, name)) continue;
+        ri->reg_used[r] = true;
+        return r;
+    }
+    return -1;
+}
+
+// -------------------------------------------------------------------
+// Helper: rewrite every reference to [BP+off] in [from, to) to `reg_name`.
+// BUG FIX (kept from the original passes): callers rewrite BEFORE they
+// splice the load in. Inserting the load first put "MOV R_free,
+// [BP-off]" inside the very range scanned here, where it was caught by
+// its own rewrite and corrupted into "MOV R_free, R_free" -- a no-op that
+// never loads anything. Confirmed by direct reproduction. Doing the
+// rewrite first, over the original body, makes that structurally
+// impossible.
+// Returns the number of rewritten instructions.
+// -------------------------------------------------------------------
+static int rewrite_slot(AsmNode *from, AsmNode *to, int off, const char *reg_name, OptType t) {
+    int count = 0;
+    for (AsmNode *n = from; n && n != to; n = n->next) {
+        bool modified = false;
+        if (n->has_dst && n->dst_op.mode == MODE_INDIRECT && str_case_eq(n->dst_op.reg, "BP") &&
+            n->dst_op.offset == off) {
+            promote_operand_to_reg(&n->dst_op, reg_name);
+            modified = true;
+        }
+        if (n->has_src && n->src_op.mode == MODE_INDIRECT && str_case_eq(n->src_op.reg, "BP") &&
+            n->src_op.offset == off) {
+            promote_operand_to_reg(&n->src_op, reg_name);
+            modified = true;
+        }
+        if (modified) {
+            // Log the original instruction text before it's overwritten
+            // below -- same convention every other pass follows.
+            insert_debug_comment(n->prev, t, n->raw);
+            if (n->has_dst && n->has_src) {
+                node_set_rawf(n, "    %s %s, %s", n->mnemonic, n->dst_op.raw, n->src_op.raw);
+            } else if (n->has_dst) {
+                node_set_rawf(n, "    %s %s", n->mnemonic, n->dst_op.raw);
+            }
+            count++;
+        }
+    }
+    return count;
+}
+
+// -------------------------------------------------------------------
+// Helper: is [BP+off] READ anywhere in the function outside [from, to)?
+// Slots are only reachable through their literal operands here (the
+// escape checks guarantee it), so a slot nobody reads outside the region
+// has an unobservable value once the region is left: the store that would
+// keep memory current can be left out. A source operand is a read; so is
+// the destination of anything but a plain MOV (a read-modify-write).
+// -------------------------------------------------------------------
+static bool slot_read_outside(AsmNode *scope_first, AsmNode *scope_last,
+                              AsmNode *from, AsmNode *to, int off) {
+    bool inside = false;
+    for (AsmNode *n = scope_first; n; n = n->next) {
+        if (n == from) inside = true;
+        if (n == to)   inside = false;
+        if (!inside) {
+            if (n->has_src && n->src_op.mode == MODE_INDIRECT &&
+                str_case_eq(n->src_op.reg, "BP") && n->src_op.offset == off) return true;
+            if (n->has_dst && n->dst_op.mode == MODE_INDIRECT &&
+                str_case_eq(n->dst_op.reg, "BP") && n->dst_op.offset == off &&
+                n->type != OP_MOV) return true;
+        }
+        if (n == scope_last) break;
+    }
+    return false;
+}
+
+// -------------------------------------------------------------------
+// Helper: build "MOV <dst>, <src>" and splice it in before / after a node
+// -------------------------------------------------------------------
+static AsmNode *make_mov(const char *dst, const char *src) {
+    char raw[96];
+    snprintf(raw, sizeof(raw), "    MOV %s, %s", dst, src);
+    return create_node(raw, OP_MOV, "MOV", dst, src);
+}
+
+static void link_before(AsmNode *pos, AsmNode *nn) {
+    nn->prev = pos->prev;
+    nn->next = pos;
+    if (pos->prev) pos->prev->next = nn;
+    pos->prev = nn;
+}
+
+static void link_after(AsmNode *pos, AsmNode *nn) {
+    nn->prev = pos;
+    nn->next = pos->next;
+    if (pos->next) pos->next->prev = nn;
+    pos->next = nn;
+}
+
+static void slot_text(int off, char *buf, size_t sz) {
+    snprintf(buf, sz, "[BP%+d]", off);
+}
+
+// ===================================================================
+// Pass: Stack Slot to Register Promotion (Scalar Replacement)
+// ===================================================================
+int pass_promote_stack_slots(AsmNode *head) {
+    int optimizations = 0;
+    AsmNode *curr = head ? head->next : NULL;
+    liveness_begin(head);
+
+    while (curr) {
+        if (!is_function_entry(curr)) { curr = curr->next; continue; }
+
+        AsmNode *end_of_func = function_last(curr);
+        AsmNode *first = curr->next;
+        AsmNode *limit = end_of_func->next;
+
+        // Phase A: Analyze Function Safety & Register Liveness
+        bool is_leaf = true;
+        for (AsmNode *n = first; n && n != limit; n = n->next) {
+            if (str_case_eq(n->mnemonic, "CALL")) { is_leaf = false; break; }
+        }
+        AsmNode *anchor = NULL;
+        if (is_leaf && !function_frame_escapes(first, end_of_func)) {
+            anchor = prologue_anchor(first, limit);
+        }
+
+        // Phase B: Execute Function-Wide Promotion (Leaf Functions Only)
+        if (anchor) {
+            int count;
+            int *w = loop_weights(first, limit, &count);
+            RegionInfo ri;
+            scan_region(first, limit, w, &ri);
+            free(w);
+
+            for (int idx = 0; idx < SLOT_COUNT; idx++) {
+                int off = idx - SLOT_BIAS;
+                if (!slot_promotable(off) || ri.refs[idx] < MIN_REFS_FUNC) continue;
+
+                // TRIGGER CAP: gate this offset's whole promotion (every
+                // rewritten reference plus its load) as one atomic unit.
+                if (!trigger_allowed()) continue;
+
+                int r = pick_register(anchor->next, &ri);
+                if (r < 0) break;
+                char reg_name[16], slot[24];
+                snprintf(reg_name, sizeof(reg_name), "R%d", r);
+                slot_text(off, slot, sizeof(slot));
+
+                optimizations += rewrite_slot(first, limit, off, reg_name, OPT_PROMOTE_LEAF);
+
+                char dbg[128];
+                if (reg_dead_from(anchor->next, reg_name)) {
+                    // every path writes the register before reading it: the
+                    // slot's incoming value is never used, so there is nothing to load
+                    snprintf(dbg, sizeof(dbg),
+                             "PROMOTE-LEAF: %s lives in %s (always written before read: no load)",
+                             slot, reg_name);
+                    insert_debug_comment(anchor, OPT_PROMOTE_LEAF, dbg);
+                } else {
+                    AsmNode *load = make_mov(reg_name, slot);
+                    link_after(anchor, load);
+                    snprintf(dbg, sizeof(dbg),
+                             "PROMOTE-LEAF: load of %s into %s after the prologue (whole-function, leaf-only)",
+                             slot, reg_name);
+                    insert_debug_comment(load, OPT_PROMOTE_LEAF, dbg);
+                }
+            }
+        }
+
+        curr = limit;
+    }
+
+    liveness_end();
+    return optimizations;
+}
+
+// ===================================================================
 // Pass: Stack Slot to Register Promotion (CALL-free segments)
 //
 // promote-leaf (pass_promote_stack_slots, above) only ever promotes a
@@ -506,872 +720,446 @@ int pass_promote_stack_slots(AsmNode *head) {
 // Note: for a function that happens to have NO calls at all, this
 // reduces to exactly one segment covering the whole function -- the same
 // promotion pass_promote_stack_slots (promote-leaf) would already do.
-// Enabling both -fpromote-leaf and -fpromote-regs is safe (harmless,
-// idempotent overlap on leaf functions specifically) but redundant on
-// them; promote-regs's actual value-add is entirely in non-leaf
-// functions.
-// -------------------------------------------------------------------
+// Enabling both is safe (harmless, idempotent overlap on leaf functions
+// specifically) but redundant on them; promote-regs's actual value-add
+// is entirely in non-leaf functions.
+// ===================================================================
 int pass_promote_regs(AsmNode *head) {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;
+    liveness_begin(head);
 
     while (curr) {
-        // 1. Identify Function Boundaries (identical to pass_promote_stack_slots)
-        if (curr->type == OP_LABEL) {
-            char line_copy[8192];
-            safe_str_copy(line_copy, curr->raw, sizeof(line_copy));
-            char *lbl = trim(line_copy);
+        if (!is_function_entry(curr)) { curr = curr->next; continue; }
 
-            size_t lbl_len = strlen(lbl);
-            bool is_return_label = (lbl_len >= 8 && str_case_eq(lbl + lbl_len - 8, "_return:"));
-            bool is_global_scope_init = str_case_eq(lbl, "__global_scope_initialization:");
-            if ((strncmp(lbl, "__function_", 11) != 0 && !is_global_scope_init) || is_return_label) {
-                curr = curr->next;
-                continue;
-            }
+        AsmNode *end_of_func = function_last(curr);
+        AsmNode *func_first = curr->next;
+        AsmNode *func_limit = end_of_func->next;
 
-            // Find the end of this function body
-            AsmNode *scan = curr->next;
-            AsmNode *end_of_func = curr;
-            while (scan) {
-                if (scan->type == OP_LABEL) {
-                    char next_copy[8192];
-                    safe_str_copy(next_copy, scan->raw, sizeof(next_copy));
-                    char *next_lbl = trim(next_copy);
-                    size_t next_lbl_len = strlen(next_lbl);
-                    bool next_is_return = (next_lbl_len >= 8 && str_case_eq(next_lbl + next_lbl_len - 8, "_return:"));
-                    if ((strncmp(next_lbl, "__function_", 11) == 0 && !next_is_return) ||
-                        strncmp(next_lbl, "__literal_", 10) == 0 ||
-                        (strncmp(next_lbl, "__global_", 9) == 0 && !str_case_eq(next_lbl, "__global_scope_initialization:"))) {
-                        break;
-                    }
-                }
-                end_of_func = scan;
-                scan = scan->next;
-            }
-
-            // GUARD: function-wide address-taken check -- identical
-            // reasoning to pass_promote_stack_slots. If BP's address is
-            // used anywhere (LEA, or any non-MOV/PUSH/POP instruction
-            // touching BP directly or indirectly), no stack slot in this
-            // function can be trusted to be reachable only via a literal
-            // [BP-off] operand, so skip the whole function -- CALL
-            // segmentation doesn't change this; it's unrelated to leafness.
-            bool address_taken = false;
-            for (AsmNode *n = curr->next; n && n != end_of_func->next; n = n->next) {
-                if (bp_value_escapes(n)) {
-                    address_taken = true;
-                    break;
-                }
-            }
-            if (address_taken) {
-                curr = end_of_func->next;
-                continue;
-            }
-
-            // ----------------------------------------------------------------
-            // Walk the function in CALL-free segments: [seg_start, seg_limit)
-            // where seg_limit is either the next CALL or end_of_func->next
-            // (the function's end). Apply scalar replacement independently
-            // within each segment -- nothing promoted in one segment is
-            // ever assumed live in another.
-            // ----------------------------------------------------------------
-            AsmNode *seg_start = curr->next;
-            while (seg_start && seg_start != end_of_func->next) {
-                bool is_first_segment = (seg_start->prev == curr);
-
-                AsmNode *seg_limit = seg_start;
-                while (seg_limit && seg_limit != end_of_func->next &&
-                       !str_case_eq(seg_limit->mnemonic, "CALL")) {
-                    seg_limit = seg_limit->next;
-                }
-                // seg_limit is now either the CALL ending this segment, or
-                // end_of_func->next (the function's end) -- an EXCLUSIVE
-                // upper bound either way.
-
-                // ----------------------------------------------------------------
-                // BUG FIX / SAFETY GUARD: a segment only behaves like the
-                // straight-line, single-entry/single-exit region this pass's
-                // "load once at the top, flush once at the natural end (RET
-                // or the ending CALL)" model assumes if NOTHING branches
-                // into or out of its middle. Two ways that can be violated,
-                // either of which lets code run with a promoted register's
-                // value silently diverged from the real [BP-off] memory:
-                //
-                //   (a) a branch INSIDE the segment (JT/JF/JMP) jumps to a
-                //       label OUTSIDE it -- an early exit that reaches code
-                //       after the segment without ever running the flush
-                //       this pass places at the segment's natural end.
-                //   (b) a branch OUTSIDE the segment jumps to a label
-                //       INSIDE it -- e.g. a loop back-edge landing on a
-                //       loop header that happens to sit inside this
-                //       CALL-free stretch -- reaching the segment's
-                //       promoted code without ever running the load this
-                //       pass places at the segment's start.
-                //
-                // Confirmed by direct reproduction: a synthetic function
-                // with "JF R5, __after_call" jumping past a promoted
-                // variable's flush-before-CALL left the promoted register
-                // holding the right value while the stack slot it should
-                // have been flushed to was never written -- code reached
-                // via that branch read stale/garbage data straight from
-                // memory. This is the exact failure reported against real
-                // game code: a blank screen and 100% CPU immediately on
-                // start, consistent with an early guard-clause branch (an
-                // extremely common pattern -- parameter checks, short-
-                // circuits) corrupting a promoted variable the very first
-                // time it fired.
-                //
-                // -fpromote-loops already guards against this same class of
-                // bug for loop bodies (its Rule 3 and "other entry" checks)
-                // -- pass_promote_regs never had an equivalent, because
-                // straight-line-only segments (no branches at all) were all
-                // that got exercised by this pass's own test coverage
-                // before now. Rather than track and patch every individual
-                // entry/exit edge, require the segment be free of both
-                // problems before promoting anything in it at all -- same
-                // conservative approach already proven correct in
-                // -fpromote-loops. This does cost some optimization
-                // opportunities on segments with internal branching (common
-                // in real code), but a segment that fails this check gets
-                // skipped entirely -- promotion in every OTHER, cleaner
-                // segment of the same function is unaffected.
-                // ----------------------------------------------------------------
-                bool segment_safe = true;
-
-                // (a) every branch inside the segment must target a label
-                // that is itself inside the segment.
-                for (AsmNode *m = seg_start; segment_safe && m != seg_limit; m = m->next) {
-                    if (str_case_eq(m->mnemonic, "JT") || str_case_eq(m->mnemonic, "JF") ||
-                        str_case_eq(m->mnemonic, "JMP")) {
-                        char target[128] = {0};
-                        safe_str_copy(target, trim(branch_target_raw(m)), sizeof(target));
-                        bool internal = false;
-                        for (AsmNode *chk = seg_start; chk != seg_limit; chk = chk->next) {
-                            if (chk->type == OP_LABEL) {
-                                char lbl_copy[128] = {0};
-                                safe_str_copy(lbl_copy, chk->raw, sizeof(lbl_copy));
-                                char *c = strchr(lbl_copy, ':');
-                                if (c) *c = '\0';
-                                if (str_case_eq(trim(lbl_copy), target)) { internal = true; break; }
-                            }
-                        }
-                        if (!internal) segment_safe = false;
-                    }
-                }
-
-                // (b) no branch anywhere else in the enclosing function may
-                // target a label inside the segment (bounded to the
-                // function, not the whole program, for the same performance
-                // reason -fpromote-loops's equivalent check is bounded --
-                // label targets are function-local by this compiler's own
-                // naming convention).
-                if (segment_safe) {
-                    bool inside_seg = false;
-                    for (AsmNode *n = curr->next; n && n != end_of_func->next; n = n->next) {
-                        if (n == seg_start) inside_seg = true;
-                        if (!inside_seg &&
-                            (str_case_eq(n->mnemonic, "JMP") || str_case_eq(n->mnemonic, "JT") ||
-                             str_case_eq(n->mnemonic, "JF"))) {
-                            char target[128] = {0};
-                            safe_str_copy(target, trim(branch_target_raw(n)), sizeof(target));
-                            for (AsmNode *chk = seg_start; chk != seg_limit; chk = chk->next) {
-                                if (chk->type == OP_LABEL) {
-                                    char lbl_copy[128] = {0};
-                                    safe_str_copy(lbl_copy, chk->raw, sizeof(lbl_copy));
-                                    char *c = strchr(lbl_copy, ':');
-                                    if (c) *c = '\0';
-                                    if (str_case_eq(trim(lbl_copy), target)) { segment_safe = false; break; }
-                                }
-                            }
-                        }
-                        if (n == seg_limit) inside_seg = false;
-                        if (!segment_safe) break;
-                    }
-                }
-
-                if (!segment_safe) {
-                    seg_start = (seg_limit == end_of_func->next) ? end_of_func->next
-                                                                   : (seg_limit ? seg_limit->next : NULL);
-                    continue;
-                }
-
-                // ---- Analyze this segment: register usage + BP-off refs ----
-                bool reg_used[16] = {0};
-                int slot_counts[128] = {0};
-                for (AsmNode *m = seg_start; m != seg_limit; m = m->next) {
-                    if (m->dst_op.mode == MODE_REG) {
-                        int idx = get_reg_index(m->dst_op.reg);
-                        if (idx >= 0 && idx < 16) reg_used[idx] = true;
-                    }
-                    if (m->src_op.mode == MODE_REG) {
-                        int idx = get_reg_index(m->src_op.reg);
-                        if (idx >= 0 && idx < 16) reg_used[idx] = true;
-                    }
-                    if (m->dst_op.mode == MODE_INDIRECT && m->dst_op.reg[0] != '\0') {
-                        int idx = get_reg_index(m->dst_op.reg);
-                        if (idx >= 0 && idx < 16) reg_used[idx] = true;
-                    }
-                    if (m->src_op.mode == MODE_INDIRECT && m->src_op.reg[0] != '\0') {
-                        int idx = get_reg_index(m->src_op.reg);
-                        if (idx >= 0 && idx < 16) reg_used[idx] = true;
-                    }
-                    if (m->dst_op.mode == MODE_INDIRECT && str_case_eq(m->dst_op.reg, "BP") && m->dst_op.offset < 0) {
-                        int abs_off = -m->dst_op.offset;
-                        if (abs_off < 128) slot_counts[abs_off]++;
-                    }
-                    if (m->src_op.mode == MODE_INDIRECT && str_case_eq(m->src_op.reg, "BP") && m->src_op.offset < 0) {
-                        int abs_off = -m->src_op.offset;
-                        if (abs_off < 128) slot_counts[abs_off]++;
-                    }
-                }
-
-                // For the FIRST segment (right after the function label),
-                // loads must be inserted after the "MOV BP, SP" prologue,
-                // exactly like pass_promote_stack_slots -- inserting before
-                // it would read [BP-off] using the CALLER's BP, before this
-                // function's own frame even exists. For every LATER segment
-                // (one that starts right after a CALL), there's no prologue
-                // to find or skip -- the insertion point is simply
-                // seg_start itself.
-                AsmNode *insert_after = NULL; // valid only when is_first_segment
-                bool first_segment_prologue_found = false;
-                if (is_first_segment) {
-                    AsmNode *p = seg_start;
-                    while (p && p != seg_limit) {
-                        if (str_case_eq(p->mnemonic, "MOV") &&
-                            str_case_eq(p->dst_op.reg, "BP") &&
-                            str_case_eq(p->src_op.reg, "SP")) {
-                            insert_after = p;
-                            first_segment_prologue_found = true;
-                            // BUG FIX: same trap as pass_promote_stack_slots
-                            // -- "MOV BP, SP" is very often immediately
-                            // followed by "ISUB SP, N", which is what
-                            // actually reserves this function's local stack
-                            // space. Stopping at "MOV BP, SP" alone means
-                            // the load lands before SP is decremented, so it
-                            // reads memory outside this function's frame
-                            // (stale/garbage, not the local's real initial
-                            // value). Skip past the ISUB too when present.
-                            if (p->next &&
-                                str_case_eq(p->next->mnemonic, "ISUB") &&
-                                str_case_eq(p->next->dst_op.reg, "SP")) {
-                                insert_after = p->next;
-                            }
-                            break;
-                        }
-                        p = p->next;
-                    }
-                }
-
-                for (int off = 1; off < 128; off++) {
-                    if (slot_counts[off] < 3) continue;
-
-                    // BUG-CLASS GUARD (see pass_promote_stack_slots's own
-                    // fix for the same trap): if this is the first segment
-                    // and no "MOV BP, SP" was found, don't guess an
-                    // insertion point -- skip promoting this offset rather
-                    // than risk reading through the wrong BP.
-                    if (is_first_segment && !first_segment_prologue_found) continue;
-
-                    // TRIGGER CAP: gate the WHOLE promotion of this one
-                    // offset (its load, every rewritten reference, and its
-                    // flush(es)) as a single atomic unit -- same granularity
-                    // remove_with_debug() uses for a node group elsewhere.
-                    // Applying only part of a promotion (e.g. the load but
-                    // not a later rewrite) would produce code that doesn't
-                    // correspond to any real pass state, so the cap must not
-                    // be able to split one promotion across the boundary.
-                    if (!trigger_allowed()) continue;
-
-                    int free_reg = -1;
-                    for (int r = 1; r <= 13; r++) {
-                        if (!reg_used[r]) { free_reg = r; reg_used[r] = true; break; }
-                    }
-                    if (free_reg == -1) break;
-
-                    char reg_name[16];
-                    snprintf(reg_name, sizeof(reg_name), "R%d", free_reg);
-                    char src_str[32];
-                    snprintf(src_str, sizeof(src_str), "[BP-%d]", off);
-                    char load_raw[64];
-                    snprintf(load_raw, sizeof(load_raw), "    MOV %s, %s", reg_name, src_str);
-
-                    // BUG FIX: the rewrite below must happen BEFORE the
-                    // load node is inserted, not after -- see
-                    // pass_promote_stack_slots's identical fix and comment
-                    // for the reproduction. Inserting first (specifically
-                    // via the "insert_after" placement, which lands INSIDE
-                    // the [seg_start, seg_limit) range this rewrite scans)
-                    // let the rewrite catch and corrupt its own freshly
-                    // created "MOV R_free, [BP-off]" into "MOV R_free,
-                    // R_free". Rewriting the original segment first, before
-                    // the load node exists at all, makes that impossible.
-                    bool slot_written = false;
-                    for (AsmNode *m = seg_start; m != seg_limit; m = m->next) {
-                        bool modified = false;
-                        if (m->dst_op.mode == MODE_INDIRECT && str_case_eq(m->dst_op.reg, "BP") && m->dst_op.offset == -off) {
-                            promote_operand_to_reg(&m->dst_op, reg_name);
-                            modified = true;
-                            slot_written = true;
-                        }
-                        if (m->src_op.mode == MODE_INDIRECT && str_case_eq(m->src_op.reg, "BP") && m->src_op.offset == -off) {
-                            promote_operand_to_reg(&m->src_op, reg_name);
-                            modified = true;
-                        }
-                        if (modified) {
-                            // Log the original instruction text before it's
-                            // overwritten below -- same convention every
-                            // other pass in this project follows.
-                            insert_debug_comment(m->prev, OPT_PROMOTE_REGS, m->raw);
-                            if (m->has_dst && m->has_src) {
-                                node_set_rawf(m, "    %s %s, %s", m->mnemonic, m->dst_op.raw, m->src_op.raw);
-                            } else if (m->has_dst) {
-                                node_set_rawf(m, "    %s %s", m->mnemonic, m->dst_op.raw);
-                            }
-                            optimizations++;
-                        }
-                    }
-
-                    AsmNode *load_node = create_node(load_raw, OP_MOV, "MOV", reg_name, src_str);
-                    load_node->has_dst = true;
-                    load_node->has_src = true;
-                    load_node->dst_op = parse_operand(reg_name);
-                    load_node->src_op = parse_operand(src_str);
-
-                    if (insert_after) {
-                        // First segment, prologue found: splice right after
-                        // it, same placement pass_promote_stack_slots uses.
-                        load_node->next = insert_after->next;
-                        load_node->prev = insert_after;
-                        if (insert_after->next) insert_after->next->prev = load_node;
-                        insert_after->next = load_node;
-                    } else {
-                        // A later segment (starts right after a CALL): splice
-                        // right before seg_start -- already OUTSIDE the
-                        // [seg_start, seg_limit) range the rewrite above
-                        // scanned, so this placement was never at risk of
-                        // the same self-catch bug. seg_start->prev is kept
-                        // in sync by each insertion, so promoting multiple
-                        // offsets in the same segment chains correctly.
-                        load_node->prev = seg_start->prev;
-                        load_node->next = seg_start;
-                        if (seg_start->prev) seg_start->prev->next = load_node;
-                        seg_start->prev = load_node;
-                    }
-
-                    // Describe the newly-spliced load -- no "original"
-                    // instruction to quote (this node is brand new), so the
-                    // debug comment states what it's for and which segment
-                    // it belongs to instead.
-                    {
-                        char dbg_msg[128];
-                        snprintf(dbg_msg, sizeof(dbg_msg),
-                                 "PROMOTE-REGS: %s-segment load of [BP-%d] into %s (CALL-free segment, independent of any other segment)",
-                                 is_first_segment ? "first" : "later", off, reg_name);
-                        insert_debug_comment(load_node, OPT_PROMOTE_REGS, dbg_msg);
-                    }
-
-                    // Flush back to the stack slot at EVERY exit from this
-                    // segment: any RET inside it, and the CALL that ends
-                    // the segment (if any) -- that flush is what keeps a
-                    // LATER segment's independent, fresh reload of the same
-                    // offset correct.
-                    if (slot_written) {
-                        char dst_str[32];
-                        snprintf(dst_str, sizeof(dst_str), "[BP-%d]", off);
-                        char store_raw[64];
-                        snprintf(store_raw, sizeof(store_raw), "    MOV %s, %s", dst_str, reg_name);
-
-                        for (AsmNode *m = seg_start; m != seg_limit; m = m->next) {
-                            if (str_case_eq(m->mnemonic, "RET")) {
-                                // BUG FIX: insert before the EPILOGUE, not
-                                // before the RET (same frame-lifetime issue
-                                // as pass_promote_stack_slots's flush).
-                                AsmNode *ins = flush_insertion_point(m);
-                                AsmNode *store_node = create_node(store_raw, OP_MOV, "MOV", dst_str, reg_name);
-                                store_node->prev = ins->prev;
-                                store_node->next = ins;
-                                if (ins->prev) ins->prev->next = store_node;
-                                ins->prev = store_node;
-                                optimizations++;
-
-                                char dbg_msg[96];
-                                snprintf(dbg_msg, sizeof(dbg_msg),
-                                         "PROMOTE-REGS: flush %s back to [BP-%d] before epilogue",
-                                         reg_name, off);
-                                insert_debug_comment(store_node, OPT_PROMOTE_REGS, dbg_msg);
-                            }
-                        }
-                        if (seg_limit && str_case_eq(seg_limit->mnemonic, "CALL")) {
-                            AsmNode *store_node = create_node(store_raw, OP_MOV, "MOV", dst_str, reg_name);
-                            store_node->prev = seg_limit->prev;
-                            store_node->next = seg_limit;
-                            if (seg_limit->prev) seg_limit->prev->next = store_node;
-                            seg_limit->prev = store_node;
-                            optimizations++;
-
-                            char dbg_msg[128];
-                            snprintf(dbg_msg, sizeof(dbg_msg),
-                                     "PROMOTE-REGS: flush %s back to [BP-%d] before CALL ends this segment (next segment reloads independently)",
-                                     reg_name, off);
-                            insert_debug_comment(store_node, OPT_PROMOTE_REGS, dbg_msg);
-                        }
-                    }
-                }
-
-                // BUG FIX: advancing to seg_limit->next unconditionally
-                // overran the function boundary whenever a segment ended at
-                // end_of_func->next (i.e. no further CALL -- the function's
-                // last segment) rather than at an actual CALL node. In that
-                // case seg_limit->next is ONE NODE PAST the function's own
-                // end, and since the outer "while (seg_start != end_of_func
-                // ->next)" condition compares by identity, a seg_start that
-                // has skipped past that exact node never satisfies it again
-                // -- the loop kept walking forward through the REST OF THE
-                // PROGRAM as if it were still more segments of THIS
-                // function, reusing this function's now-stale curr/
-                // end_of_func. Confirmed by reproduction: -O3 combined with
-                // -fpromote-regs did not finish in over a minute on a
-                // 300K-line real program (isolated -fpromote-regs alone
-                // converged in under a second -- the -O3 combination just
-                // gave the bug more chances to fire across repeated
-                // do-while passes). Setting seg_start to end_of_func->next
-                // directly whenever this was the last segment makes the
-                // outer loop's own termination check see it immediately,
-                // instead of stepping past it.
-                seg_start = (seg_limit == end_of_func->next) ? end_of_func->next
-                                                               : (seg_limit ? seg_limit->next : NULL);
-            }
-
-            curr = end_of_func->next;
-            continue;
+        // GUARD: function-wide frame-escape check -- see the file header.
+        // CALL segmentation doesn't change this; it's unrelated to leafness.
+        AsmNode *anchor = NULL;
+        if (!function_frame_escapes(func_first, end_of_func)) {
+            // The prologue must be recognizable for the function to be
+            // trusted at all (a function with no "MOV BP, SP" -- naked, or
+            // hand-written assembly -- has no frame of its own to promote
+            // slots of); the first segment's loads go right after it.
+            anchor = prologue_anchor(func_first, func_limit);
         }
-        curr = curr->next;
+        if (!anchor) { curr = func_limit; continue; }
+
+        // ----------------------------------------------------------------
+        // Walk the function in CALL-free segments: [seg_start, seg_limit)
+        // where seg_limit is either the next CALL or func_limit (the
+        // function's end). Apply scalar replacement independently within
+        // each segment -- nothing promoted in one segment is ever assumed
+        // live in another.
+        // ----------------------------------------------------------------
+        AsmNode *seg_start = func_first;
+        while (seg_start && seg_start != func_limit) {
+            bool is_first_segment = (seg_start == func_first);
+
+            AsmNode *seg_limit = seg_start;
+            while (seg_limit && seg_limit != func_limit &&
+                   !str_case_eq(seg_limit->mnemonic, "CALL")) {
+                seg_limit = seg_limit->next;
+            }
+            AsmNode *next_seg_start = (seg_limit == func_limit) ? func_limit
+                                       : (seg_limit ? seg_limit->next : NULL);
+            // (BUG FIX kept from the original: advancing to seg_limit->next
+            // unconditionally overran the function boundary on the last
+            // segment and walked the REST OF THE PROGRAM as more segments of
+            // this function -- -O3 + -fpromote-regs did not finish in over a
+            // minute on a 300K-line program.)
+
+            // ------------------------------------------------------------
+            // SAFETY GUARD: a segment only behaves like the straight-line,
+            // single-entry/single-exit region this pass's "load once at the
+            // top, flush once at the natural end (the ending CALL)" model
+            // assumes if NOTHING branches into or out of its middle:
+            //   (a) a branch INSIDE the segment (JT/JF/JMP) jumps to a
+            //       label OUTSIDE it -- an early exit that reaches code
+            //       after the segment without ever running the flush this
+            //       pass places before the ending CALL;
+            //   (b) a branch OUTSIDE the segment jumps to a label INSIDE it
+            //       -- e.g. a loop back-edge landing on a loop header that
+            //       sits inside this CALL-free stretch -- reaching the
+            //       segment's promoted code without ever running the load.
+            // (Confirmed by reproduction: a guard-clause "JF R5, __after_call"
+            // jumping past a promoted variable's flush-before-CALL left the
+            // stack slot unwritten; code reached via that branch read stale
+            // memory -- the real-game blank-screen-at-start failure.)
+            // Computed jumps ("JMP R1") have no label target and so also
+            // fail (a).
+            // ------------------------------------------------------------
+            bool segment_safe = true;
+            for (AsmNode *m = seg_start; segment_safe && m != seg_limit; m = m->next) {
+                if (!is_jump(m)) continue;
+                char target[128];
+                branch_target(m, target, sizeof(target));
+                if (!label_in_range(target, seg_start, seg_limit)) segment_safe = false;
+            }
+            if (segment_safe &&
+                branch_enters_region(func_first, end_of_func, seg_start, seg_limit, NULL)) {
+                segment_safe = false;
+            }
+            if (!segment_safe) { seg_start = next_seg_start; continue; }
+
+            // The first segment's loads go right after the prologue, so the
+            // prologue has to be inside it (a CALL ahead of "MOV BP, SP"
+            // would put the load in a later segment's territory).
+            if (is_first_segment) {
+                bool anchor_inside = false;
+                for (AsmNode *m = seg_start; m && m != seg_limit; m = m->next) {
+                    if (m == anchor) { anchor_inside = true; break; }
+                }
+                if (!anchor_inside) { seg_start = next_seg_start; continue; }
+            }
+
+            // ---- Analyze this segment: register usage + BP-off refs ----
+            int count;
+            int *w = loop_weights(seg_start, seg_limit, &count);
+            RegionInfo ri;
+            scan_region(seg_start, seg_limit, w, &ri);
+            free(w);
+
+            for (int idx = 0; idx < SLOT_COUNT; idx++) {
+                int off = idx - SLOT_BIAS;
+                if (!slot_promotable(off) || ri.refs[idx] < MIN_REFS_FUNC) continue;
+
+                // The load goes right after the prologue in the first
+                // segment, right before seg_start in a later one (after the
+                // CALL; for the first segment that must not be before the
+                // frame exists).
+                AsmNode *load_at = is_first_segment ? anchor->next : seg_start;
+
+                // TRIGGER CAP: gate the WHOLE promotion of this one offset
+                // (its load, every rewritten reference, and its flush) as a
+                // single atomic unit -- applying only part of a promotion
+                // would produce code that corresponds to no real pass state.
+                if (!trigger_allowed()) continue;
+
+                int r = pick_register(load_at, &ri);
+                if (r < 0) break;
+                char reg_name[16], slot[24];
+                snprintf(reg_name, sizeof(reg_name), "R%d", r);
+                slot_text(off, slot, sizeof(slot));
+
+                optimizations += rewrite_slot(seg_start, seg_limit, off, reg_name, OPT_PROMOTE_REGS);
+
+                // A write must reach the stack slot before the CALL that ends
+                // the segment if anything reads the slot afterwards (the next
+                // segment reloads it). The last segment ends in RET, where the
+                // frame dies: no flush. A slot nobody else reads needs none.
+                char dbg[160];
+                if (ri.written[idx] && seg_limit && str_case_eq(seg_limit->mnemonic, "CALL") &&
+                    slot_read_outside(func_first, end_of_func, seg_start, seg_limit, off)) {
+                    AsmNode *store = make_mov(slot, reg_name);
+                    link_before(seg_limit, store);
+                    optimizations++;
+                    snprintf(dbg, sizeof(dbg),
+                             "PROMOTE-REGS: flush %s back to %s before the CALL that ends this segment (next segment reloads independently)",
+                             reg_name, slot);
+                    insert_debug_comment(store, OPT_PROMOTE_REGS, dbg);
+                }
+
+                // The load is needed only if some path reads the register
+                // before writing it (asked AFTER the flush above, which is a
+                // read of the register too).
+                if (reg_dead_from(load_at, reg_name)) {
+                    snprintf(dbg, sizeof(dbg),
+                             "PROMOTE-REGS: %s lives in %s (always written before read: no load)",
+                             slot, reg_name);
+                    insert_debug_comment(load_at->prev, OPT_PROMOTE_REGS, dbg);
+                } else {
+                    AsmNode *load = make_mov(reg_name, slot);
+                    if (is_first_segment) link_after(anchor, load);
+                    else                  link_before(seg_start, load);
+                    snprintf(dbg, sizeof(dbg),
+                             "PROMOTE-REGS: %s-segment load of %s into %s (CALL-free segment, independent of any other segment)",
+                             is_first_segment ? "first" : "later", slot, reg_name);
+                    insert_debug_comment(load, OPT_PROMOTE_REGS, dbg);
+                }
+            }
+
+            seg_start = next_seg_start;
+        }
+
+        curr = func_limit;
     }
 
+    liveness_end();
     return optimizations;
 }
 
 // -------------------------------------------------------------------
-// Pass: Loop-Invariant Register Promotion (CALL-Free Loops)
+// Loop header test. Matches common compiler patterns after stripping one
+// trailing "_<digits>" disambiguation index.
+//
+// BUG FIX (kept): crisp-lib's (C-mode) labels carry the distinguishing
+// number BEFORE the role suffix ("__do_101780_start:"), while the Lua-mode
+// compiler appends it AFTER ("__Background_draw_clouds_for_gen_start_0:"),
+// so a literal-suffix match never fired under Lua mode (38 of 38 real
+// loop headers in nostalgick.asm missed). The strip only ever removes one
+// "_<digits>" group preceded by an underscore.
 // -------------------------------------------------------------------
+static bool is_loop_header_name(const char *name) {
+    char norm[128];
+    safe_str_copy(norm, name, sizeof(norm));
+    size_t len = strlen(norm);
+    size_t i = len;
+    while (i > 0 && isdigit((unsigned char)norm[i - 1])) i--;
+    if (i > 0 && i < len && norm[i - 1] == '_') { norm[i - 1] = '\0'; len = i - 1; }
+
+    return (len >= 6 && str_case_eq(norm + len - 6, "_start")) ||
+           (len >= 5 && str_case_eq(norm + len - 5, "_for_")) ||
+           (len >= 7 && str_case_eq(norm + len - 7, "_while_"));
+}
+
+// Weighted candidate list for the loop pass, heaviest slot first.
+typedef struct { int idx; int weight; } SlotCand;
+
+static int cmp_cand(const void *a, const void *b) {
+    const SlotCand *x = a, *y = b;
+    if (x->weight != y->weight) return y->weight - x->weight;
+    return x->idx - y->idx;
+}
+
+// ===================================================================
+// Pass: Loop-Invariant Register Promotion (CALL-Free Loops)
+//
+// Per loop ("header: ... jump back to header", then the loop's exit label):
+//   - the whole function must be free of frame/stack-pointer escapes;
+//   - nothing outside the loop may branch to a label inside it (including
+//     the header: that would skip the preheader load) or to its exit
+//     label (that would run the exit store with nothing loaded);
+//   - no CALL / RET / HLT inside, every branch inside stays inside, goes
+//     back to the header, or goes to the exit label.
+// Slots are taken heaviest first (references weighted by how deeply
+// nested they are) until the registers that are provably free run out.
+// A loop that fails any check is skipped on its own: loops nested inside
+// it are still considered.
+// ===================================================================
 int pass_promote_loop_registers(AsmNode *head) {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;
+    liveness_begin(head);
+
+    // per-function escape-check cache
+    AsmNode *cached_entry = NULL;
+    bool     cached_valid = false;
+    bool     cached_escapes = false;
 
     while (curr) {
         // 1. Identify Loop Headers (e.g., __for_1_start:, __while_1_start:)
-        if (curr->type == OP_LABEL) {
-            char start_lbl[128] = {0};
-            safe_str_copy(start_lbl, curr->raw, sizeof(start_lbl));
-            char *colon = strchr(start_lbl, ':');
-            if (colon) *colon = '\0';
-            trim(start_lbl);
+        if (curr->type != OP_LABEL) { curr = curr->next; continue; }
+        char start_lbl[128];
+        get_label_name(curr, start_lbl, sizeof(start_lbl));
+        if (!is_loop_header_name(start_lbl)) { curr = curr->next; continue; }
 
-            size_t len = strlen(start_lbl);
+        // The enclosing function [func_first, func_last]. Hand-written code
+        // with no "__function_" labels counts as one big function.
+        AsmNode *entry = curr;
+        while (entry && !is_function_entry(entry)) entry = entry->prev;
+        AsmNode *func_first, *func_last;
+        if (entry) {
+            func_first = entry->next;
+            func_last  = function_last(entry);
+        } else {
+            func_first = head->next;
+            func_last  = head;
+            while (func_last->next) func_last = func_last->next;
+        }
+        bool in_function = false;
+        for (AsmNode *n = func_first; n; n = n->next) {
+            if (n == curr) { in_function = true; break; }
+            if (n == func_last) break;
+        }
+        if (!in_function) { curr = curr->next; continue; }
 
-            // BUG FIX: match against the label with one trailing "_<digits>"
-            // disambiguation index stripped, not the raw label. This
-            // heuristic was written against crisp-lib's (C-mode) own
-            // labeling convention, where a distinguishing numeric ID
-            // appears BEFORE the role suffix -- e.g. "__do_101780_start:"
-            // -- so matching the literal last 6/5/7 characters works fine
-            // there. The Lua-mode compiler instead appends its
-            // disambiguating index AFTER the role suffix, to tell multiple
-            // loops in the same function apart -- e.g.
-            // "__Background_draw_clouds_for_gen_start_0:",
-            // "__Game_draw_pause_overlay_for_start_3:". Against nostalgick
-            // .asm specifically, every single real loop header (38 of them)
-            // uses this trailing-index form and NONE matched the old
-            // literal-suffix check -- this pass was silently a complete
-            // no-op under Lua mode, not "no qualifying loops found". The
-            // strip only ever removes one "_<digits>" group and only when
-            // it's preceded by an underscore, so it does nothing to labels
-            // that don't have one (crisp-lib's own labels are unaffected --
-            // their digits are already mid-string, not trailing).
-            char norm_lbl[128];
-            safe_str_copy(norm_lbl, start_lbl, sizeof(norm_lbl));
-            size_t norm_len = len;
-            {
-                size_t i = norm_len;
-                while (i > 0 && isdigit((unsigned char)norm_lbl[i - 1])) i--;
-                if (i > 0 && i < norm_len && norm_lbl[i - 1] == '_') {
-                    norm_lbl[i - 1] = '\0';
-                    norm_len = i - 1;
-                }
+        // GUARD: a frame / stack address that escapes ANYWHERE in the
+        // function -- not just inside this loop -- can alias a slot.
+        // BUG FIX: only the loop body used to be checked. A pointer made
+        // before the loop ("int *p = &v;", or a struct local whose address
+        // was taken) aliases the very slot the loop reads and writes
+        // directly, and the exit store then overwrote what the loop had
+        // written through the pointer. Confirmed by direct reproduction
+        // (v += 1; *p += 10 inside the loop lost every *p update).
+        if (!cached_valid || cached_entry != entry) {
+            cached_entry = entry;
+            cached_valid = true;
+            cached_escapes = function_frame_escapes(func_first, func_last);
+        }
+        if (cached_escapes) { curr = curr->next; continue; }
+
+        // 2. Find the Loop Back-Edge (a JMP/JT/JF back to start_lbl)
+        AsmNode *end_jmp = NULL;
+        for (AsmNode *scan = curr->next; scan; scan = scan->next) {
+            if (scan->type == OP_LABEL) {
+                char l[128];
+                get_label_name(scan, l, sizeof(l));
+                if (strncmp(l, "__function_", 11) == 0) break;
             }
-
-            // Match common compiler patterns
-            bool is_loop_label = (norm_len >= 6 && str_case_eq(norm_lbl + norm_len - 6, "_start")) ||
-                                 (norm_len >= 5 && str_case_eq(norm_lbl + norm_len - 5, "_for_")) ||
-                                 (norm_len >= 7 && str_case_eq(norm_lbl + norm_len - 7, "_while_"));
-            if (!is_loop_label) {
-                curr = curr->next;
-                continue;
+            if (is_jump(scan)) {
+                char target[128];
+                branch_target(scan, target, sizeof(target));
+                if (str_case_eq(target, start_lbl)) { end_jmp = scan; break; }
             }
+        }
+        if (!end_jmp) { curr = curr->next; continue; }
+        AsmNode *body_end = end_jmp->next;          // exclusive end of [curr, end_jmp]
 
-            // 2. Find the Loop Back-Edge (Unconditional JMP back to start_lbl)
-            AsmNode *end_jmp = NULL;
-            AsmNode *scan = curr->next;
-            while (scan) {
-                if (scan->type == OP_LABEL && strncmp(trim(scan->raw), "__function_", 11) == 0) {
-                    break;
-                }
-                if ((str_case_eq(scan->mnemonic, "JMP") ||
-                    str_case_eq(scan->mnemonic, "JT") ||
-                    str_case_eq(scan->mnemonic, "JF")) &&
-                    str_case_eq(trim(branch_target_raw(scan)), start_lbl)) {
-                    end_jmp = scan;
-                    break;
-                }
-                scan = scan->next;
-            }
-
-            if (!end_jmp) {
-                curr = curr->next;
-                continue;
-            }
-
-            // ----------------------------------------------------------------
-            // GUARD: a preheader load (inserted just before start_lbl, so it
-            // runs once on fall-through entry and is never touched by the
-            // back-edge, which jumps straight to the label) is only sound if
-            // fall-through is the ONLY way execution first reaches start_lbl.
-            // A jump from WITHIN this loop's own body back to start_lbl is
-            // fine (e.g. a "continue" -- it's just an alternate back-edge:
-            // by the time it runs, the preheader has already executed on
-            // first entry, exactly like the recognized back-edge). What's
-            // NOT fine is a jump from OUTSIDE the loop -- a stray jump from
-            // elsewhere in the function, or another loop reusing this label
-            // -- landing on start_lbl directly, which would skip the
-            // preheader and read the promoted register uninitialized.
-            //
-            // Bounded to the enclosing function rather than the whole
-            // program: label targets are function-local by this compiler's
-            // own naming convention (nothing legitimately jumps into a
-            // "__forN_start"/"__whileN_start" label from a different
-            // function), and re-scanning the full program for every loop
-            // found was measured to take minutes on a 300K-line real
-            // program -- proportional to function size instead keeps this
-            // guard cheap.
-            // ----------------------------------------------------------------
-            AsmNode *func_start = curr;
-            while (func_start->prev && !(func_start->prev->type == OP_LABEL &&
-                   strncmp(trim(func_start->prev->raw), "__function_", 11) == 0)) {
-                func_start = func_start->prev;
-            }
-            AsmNode *func_end = end_jmp;
-            while (func_end->next && !(func_end->next->type == OP_LABEL &&
-                   strncmp(trim(func_end->next->raw), "__function_", 11) == 0)) {
-                func_end = func_end->next;
-            }
-
-            bool other_entry = false;
-            bool inside_loop_range = false;
-            for (AsmNode *n = func_start; n; n = n->next) {
-                if (n == curr) inside_loop_range = true;
-                if (!inside_loop_range &&
-                    (str_case_eq(n->mnemonic, "JMP") || str_case_eq(n->mnemonic, "JT") ||
-                     str_case_eq(n->mnemonic, "JF")) &&
-                    str_case_eq(trim(branch_target_raw(n)), start_lbl)) {
-                    other_entry = true;
-                    break;
-                }
-                if (n == end_jmp) inside_loop_range = false;
-                if (n == func_end) break;
-            }
-            if (other_entry) {
-                curr = end_jmp->next;
-                continue;
-            }
-
-            // 3. Find the designated Loop Exit Label
-            AsmNode *exit_label_node = end_jmp->next;
-            while (exit_label_node && exit_label_node->type == OP_OTHER &&
-                  (exit_label_node->raw[0] == '\0' || exit_label_node->raw[0] == ';')) {
-                exit_label_node = exit_label_node->next;
-            }
-
-            if (!exit_label_node || exit_label_node->type != OP_LABEL) {
-                curr = end_jmp->next;
-                continue;
-            }
-
-            char exit_lbl[128] = {0};
-            safe_str_copy(exit_lbl, exit_label_node->raw, sizeof(exit_lbl));
-            colon = strchr(exit_lbl, ':');
-            if (colon) *colon = '\0';
-            trim(exit_lbl);
-
-            // ----------------------------------------------------------------
-            // Phase A: Safety Scan across the Loop Body
-            // ----------------------------------------------------------------
-            bool loop_safe = true;
-            bool reg_used[16] = {0};
-            int slot_read[128] = {0};
-            int slot_written[128] = {0};
-
-            for (AsmNode *n = curr->next; n && n != end_jmp; n = n->next) {
-                // Rule 1: No CALLs, RETs, or HLTs inside the loop
-                if (str_case_eq(n->mnemonic, "CALL") || str_case_eq(n->mnemonic, "RET") || str_case_eq(n->mnemonic, "HLT")) {
-                    loop_safe = false;
-                    break;
-                }
-
-                // Rule 2: No BP Address-Taking (direct or indirect)
-                if (bp_value_escapes(n)) {
-                    loop_safe = false;
-                    break;
-                }
-
-                // Rule 3: Verify all branches jump inside loop, to start, or to exit
-                if (str_case_eq(n->mnemonic, "JT") || str_case_eq(n->mnemonic, "JF") || str_case_eq(n->mnemonic, "JMP")) {
-                    char target[128] = {0};
-                    safe_str_copy(target, trim(branch_target_raw(n)), sizeof(target));
-                    if (!str_case_eq(target, start_lbl) && !str_case_eq(target, exit_lbl)) {
-                        bool internal_lbl = false;
-                        for (AsmNode *chk = curr->next; chk && chk != end_jmp; chk = chk->next) {
-                            if (chk->type == OP_LABEL) {
-                                char int_copy[128] = {0};
-                                safe_str_copy(int_copy, chk->raw, sizeof(int_copy));
-                                char *c = strchr(int_copy, ':');
-                                if (c) *c = '\0';
-                                if (str_case_eq(trim(int_copy), target)) { internal_lbl = true; break; }
-                            }
-                        }
-                        if (!internal_lbl) { loop_safe = false; break; }
-                    }
-                }
-
-                // Track ALL register usage (direct + indirect)
-                if (n->dst_op.mode == MODE_REG) {
-                    int idx = get_reg_index(n->dst_op.reg);
-                    if (idx >= 0 && idx < 16) reg_used[idx] = true;
-                }
-                if (n->src_op.mode == MODE_REG) {
-                    int idx = get_reg_index(n->src_op.reg);
-                    if (idx >= 0 && idx < 16) reg_used[idx] = true;
-                }
-                if (n->dst_op.mode == MODE_INDIRECT && n->dst_op.reg[0] != '\0') {
-                    int idx = get_reg_index(n->dst_op.reg);
-                    if (idx >= 0 && idx < 16) reg_used[idx] = true;
-                }
-                if (n->src_op.mode == MODE_INDIRECT && n->src_op.reg[0] != '\0') {
-                    int idx = get_reg_index(n->src_op.reg);
-                    if (idx >= 0 && idx < 16) reg_used[idx] = true;
-                }
-
-                // Track stack slot reads and writes
-                if (n->dst_op.mode == MODE_INDIRECT && str_case_eq(n->dst_op.reg, "BP") && n->dst_op.offset < 0) {
-                    int abs_off = -n->dst_op.offset;
-                    if (abs_off < 128) slot_written[abs_off]++;
-                }
-                if (n->src_op.mode == MODE_INDIRECT && str_case_eq(n->src_op.reg, "BP") && n->src_op.offset < 0) {
-                    int abs_off = -n->src_op.offset;
-                    if (abs_off < 128) slot_read[abs_off]++;
-                }
-            }
-
-            if (!loop_safe) {
-                curr = end_jmp->next;
-                continue;
-            }
-
-            // ----------------------------------------------------------------
-            // Phase B: Execute Loop Promotion
-            // ----------------------------------------------------------------
-            AsmNode *store_insert_pt = exit_label_node;
-            int free_reg_for_off[128] = {0}; // Track register assignment per offset
-
-            for (int off = 1; off < 128; off++) {
-                if (slot_read[off] + slot_written[off] >= 2) {
-                    int free_reg = -1;
-                    for (int r = 1; r <= 13; r++) {
-                        if (!reg_used[r]) {
-                            free_reg = r;
-                            free_reg_for_off[off] = free_reg;
-                            reg_used[r] = true;
-                            break;
-                        }
-                    }
-
-                    if (free_reg == -1) break;
-
-                    // TRIGGER CAP: gate this offset's whole promotion
-                    // (preheader load, main-exit store, and every rewritten
-                    // reference inside the loop body) as one atomic unit.
-                    // free_reg_for_off[off] stays 0 so the second loop below
-                    // (which adds stores at the OTHER, secondary exits) also
-                    // skips this offset instead of flushing a register that
-                    // was never actually loaded.
-                    if (!trigger_allowed()) { free_reg_for_off[off] = 0; continue; }
-
-                    char reg_name[16];
-                    snprintf(reg_name, sizeof(reg_name), "R%d", free_reg);
-
-                    // 1. Insert Pre-Header Load BEFORE the loop start label.
-                    //
-                    // BUG FIX: inserting the load AFTER the label (the
-                    // previous behavior) put it INSIDE the loop body --
-                    // the back-edge jumps straight to the label, so anything
-                    // placed right after it re-runs on every iteration. That
-                    // reloaded the ORIGINAL stack value every single pass
-                    // through the loop, silently discarding whatever the
-                    // loop body had just computed into the register.
-                    // Confirmed by direct reproduction: a synthetic counting
-                    // loop's increment was lost on every iteration under the
-                    // old placement (it "worked" only by coincidence, in
-                    // ways that could not be relied on -- see below).
-                    // Inserting before the label instead makes this a true
-                    // preheader: it runs exactly once, on the fall-through
-                    // entry into the loop (the GUARD added above confirms
-                    // fall-through is the only way in), and the back-edge
-                    // never touches it again.
-                    //
-                    // This placement also fixes a second, independent bug
-                    // the old one caused as a side effect: the rewrite loop
-                    // below (which retargets every [BP-off] reference inside
-                    // the loop body to this register) scans starting at
-                    // curr->next -- exactly where the old code inserted the
-                    // load itself. So the freshly-inserted
-                    // "MOV R_free, [BP-off]" was immediately caught by its
-                    // OWN rewrite and corrupted into "MOV R_free, R_free" --
-                    // a no-op that never actually loaded anything, leaving
-                    // the register's starting value to whatever it happened
-                    // to already hold. Inserting before curr keeps the load
-                    // outside the [curr->next, end_jmp) range the rewrite
-                    // loop scans, so it can no longer see or corrupt itself.
-                    char src_str[32];
-                    snprintf(src_str, sizeof(src_str), "[BP-%d]", off);
-                    char load_raw[64];
-                    snprintf(load_raw, sizeof(load_raw), "    MOV %s, %s", reg_name, src_str);
-
-                    AsmNode *load_node = create_node(load_raw, OP_MOV, "MOV", reg_name, src_str);
-                    load_node->has_dst = true;
-                    load_node->has_src = true;
-                    load_node->dst_op = parse_operand(reg_name);
-                    load_node->src_op = parse_operand(src_str);
-
-                    // Insert BEFORE the loop label (true preheader).
-                    load_node->prev = curr->prev;
-                    load_node->next = curr;
-                    if (curr->prev) curr->prev->next = load_node;
-                    curr->prev = load_node;
-
-                    // Describe the newly-spliced preheader load -- no
-                    // "original" instruction to quote (this node is brand
-                    // new), so the debug comment states what it's for.
-                    {
-                        char dbg_msg[96];
-                        snprintf(dbg_msg, sizeof(dbg_msg),
-                                 "PROMOTE-LOOPS: preheader load of [BP-%d] into %s (runs once, before %s)",
-                                 off, reg_name, start_lbl);
-                        insert_debug_comment(load_node, OPT_PROMOTE_LOOPS, dbg_msg);
-                    }
-
-                    // 2. Insert Exit Store AFTER loop exit label (if slot was written)
-                    if (slot_written[off] > 0) {
-                        char dst_str[32];
-                        snprintf(dst_str, sizeof(dst_str), "[BP-%d]", off);
-                        char store_raw[64];
-                        snprintf(store_raw, sizeof(store_raw), "    MOV %s, %s", dst_str, reg_name);
-
-                        AsmNode *store_node = create_node(store_raw, OP_MOV, "MOV", dst_str, reg_name);
-                        store_node->has_dst = true;
-                        store_node->has_src = true;
-                        store_node->dst_op = parse_operand(dst_str);
-                        store_node->src_op = parse_operand(reg_name);
-
-                        store_node->next = store_insert_pt->next;
-                        store_node->prev = store_insert_pt;
-                        if (store_insert_pt->next) store_insert_pt->next->prev = store_node;
-                        store_insert_pt->next = store_node;
-                        store_insert_pt = store_node;
-
-                        char dbg_msg[96];
-                        snprintf(dbg_msg, sizeof(dbg_msg),
-                                 "PROMOTE-LOOPS: flush %s back to [BP-%d] at main loop exit (%s)",
-                                 reg_name, off, exit_lbl);
-                        insert_debug_comment(store_node, OPT_PROMOTE_LOOPS, dbg_msg);
-                    }
-
-                    // 3. Rewrite all [BP-off] references inside loop body to R_free
-                    for (AsmNode *n = curr->next; n && n != end_jmp; n = n->next) {
-                        bool modified = false;
-                        if (n->dst_op.mode == MODE_INDIRECT && str_case_eq(n->dst_op.reg, "BP") && n->dst_op.offset == -off) {
-                            promote_operand_to_reg(&n->dst_op, reg_name);
-                            modified = true;
-                        }
-                        if (n->src_op.mode == MODE_INDIRECT && str_case_eq(n->src_op.reg, "BP") && n->src_op.offset == -off) {
-                            promote_operand_to_reg(&n->src_op, reg_name);
-                            modified = true;
-                        }
-                        if (modified) {
-                            // Log the original instruction text before it's
-                            // overwritten below -- same convention every
-                            // other pass in this project follows.
-                            insert_debug_comment(n->prev, OPT_PROMOTE_LOOPS, n->raw);
-                            if (n->has_dst && n->has_src) {
-                                node_set_rawf(n, "    %s %s, %s", n->mnemonic, n->dst_op.raw, n->src_op.raw);
-                            } else if (n->has_dst) {
-                                node_set_rawf(n, "    %s %s", n->mnemonic, n->dst_op.raw);
-                            }
-                            optimizations++;
-                        }
-                    }
-                }
-            }
-
-            // Insert stores at ALL loop exits (not just the main one)
-            for (int off = 1; off < 128; off++) {
-                if (slot_read[off] + slot_written[off] >= 2 && free_reg_for_off[off] != 0 && slot_written[off] > 0) {
-                    char dst_str[32];
-                    snprintf(dst_str, sizeof(dst_str), "[BP-%d]", off);
-                    char reg_name[16];
-                    snprintf(reg_name, sizeof(reg_name), "R%d", free_reg_for_off[off]);
-                    char store_raw[64];
-                    snprintf(store_raw, sizeof(store_raw), "    MOV %s, %s", dst_str, reg_name);
-
-                    // Find all jumps that exit the loop
-                    for (AsmNode *n = curr->next; n && n != end_jmp; n = n->next) {
-                        if ((str_case_eq(n->mnemonic, "JT") || str_case_eq(n->mnemonic, "JF") ||
-                             str_case_eq(n->mnemonic, "JMP"))) {
-                            char target[128] = {0};
-                            safe_str_copy(target, trim(branch_target_raw(n)), sizeof(target));
-                            if (!is_inside_loop(target, curr, end_jmp) &&
-                                !str_case_eq(target, start_lbl) &&
-                                !str_case_eq(target, exit_lbl)) {
-                                // This is an exit - find the target label and insert store before it
-                                AsmNode *exit_target = n->next;
-                                while (exit_target && exit_target->type != OP_LABEL) {
-                                    exit_target = exit_target->next;
-                                }
-                                if (exit_target) {
-                                    AsmNode *store_node = create_node(store_raw, OP_MOV, "MOV", dst_str, reg_name);
-                                    store_node->prev = exit_target->prev;
-                                    store_node->next = exit_target;
-                                    if (exit_target->prev) exit_target->prev->next = store_node;
-                                    exit_target->prev = store_node;
-                                    optimizations++;
-
-                                    char dbg_msg[128];
-                                    snprintf(dbg_msg, sizeof(dbg_msg),
-                                             "PROMOTE-LOOPS: flush %s back to [BP-%d] at secondary loop exit (%s)",
-                                             reg_name, off, target);
-                                    insert_debug_comment(store_node, OPT_PROMOTE_LOOPS, dbg_msg);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            curr = end_jmp->next;
+        // GUARD: a preheader load (inserted just before the header, so it
+        // runs once on fall-through entry and is never touched by the
+        // back-edge, which jumps straight to the label) is only sound if
+        // fall-through is the ONLY way execution first reaches the loop.
+        // A jump from WITHIN the loop back to the header (a "continue")
+        // is just another back-edge; a jump from OUTSIDE to the header --
+        // or to any other label in the body (a "goto" into the loop) --
+        // would skip the preheader and read the promoted register
+        // uninitialized.
+        if (branch_enters_region(func_first, func_last, curr, body_end, NULL)) {
+            curr = curr->next;
             continue;
         }
-        curr = curr->next;
+
+        // 3. Find the designated Loop Exit Label
+        AsmNode *exit_label_node = end_jmp->next;
+        while (exit_label_node && exit_label_node->type == OP_OTHER &&
+              (exit_label_node->raw[0] == '\0' || exit_label_node->raw[0] == ';')) {
+            exit_label_node = exit_label_node->next;
+        }
+        if (!exit_label_node || exit_label_node->type != OP_LABEL) { curr = curr->next; continue; }
+        char exit_lbl[128];
+        get_label_name(exit_label_node, exit_lbl, sizeof(exit_lbl));
+
+        // GUARD: only the loop itself may branch to the exit label -- the
+        // exit store runs with the register loaded by the preheader, which a
+        // jump from elsewhere (e.g. a guard before the header) skips.
+        bool exit_shared = false;
+        for (AsmNode *n = func_first; n; n = n->next) {
+            if (n == curr) { n = end_jmp; }           // skip the loop itself
+            else if (is_jump(n)) {
+                char target[128];
+                branch_target(n, target, sizeof(target));
+                if (str_case_eq(target, exit_lbl)) { exit_shared = true; break; }
+            }
+            if (n == func_last) break;
+        }
+        if (exit_shared) { curr = curr->next; continue; }
+
+        // Phase A: Safety Scan across the Loop Body
+        bool loop_safe = true;
+        for (AsmNode *n = curr->next; n && n != end_jmp; n = n->next) {
+            // Rule 1: No CALLs, RETs, or HLTs inside the loop
+            if (str_case_eq(n->mnemonic, "CALL") || str_case_eq(n->mnemonic, "RET") ||
+                str_case_eq(n->mnemonic, "HLT")) { loop_safe = false; break; }
+            // Rule 2 (the whole function was checked above): no frame writes
+            // by name either
+            // Rule 3: Verify all branches jump inside loop, to start, or to exit
+            if (is_jump(n)) {
+                char target[128];
+                branch_target(n, target, sizeof(target));
+                if (!str_case_eq(target, start_lbl) && !str_case_eq(target, exit_lbl) &&
+                    !label_in_range(target, curr->next, end_jmp)) { loop_safe = false; break; }
+            }
+        }
+        if (!loop_safe) { curr = curr->next; continue; }
+
+        // Phase B: Execute Loop Promotion
+        int count;
+        int *w = loop_weights(curr->next, body_end, &count);
+        RegionInfo ri;
+        scan_region(curr->next, body_end, w, &ri);
+        free(w);
+
+        SlotCand cand[SLOT_COUNT];
+        int ncand = 0;
+        for (int idx = 0; idx < SLOT_COUNT; idx++) {
+            int off = idx - SLOT_BIAS;
+            if (!slot_promotable(off) || ri.refs[idx] < MIN_REFS_LOOP) continue;
+            cand[ncand].idx = idx;
+            cand[ncand].weight = ri.refs[idx];
+            ncand++;
+        }
+        qsort(cand, (size_t)ncand, sizeof(SlotCand), cmp_cand);
+
+        bool enclosed = ncand > 0 && region_reentered(func_first, func_last, curr, body_end);
+        int promoted = 0;
+        for (int c = 0; c < ncand; c++) {
+            int idx = cand[c].idx;
+            int off = idx - SLOT_BIAS;
+
+            // TRIGGER CAP: gate this offset's whole promotion (preheader
+            // load, exit store, every rewritten reference) as one unit.
+            if (!trigger_allowed()) continue;
+
+            int r = pick_register(curr, &ri);
+            if (r < 0) break;
+            char reg_name[16], slot[24];
+            snprintf(reg_name, sizeof(reg_name), "R%d", r);
+            slot_text(off, slot, sizeof(slot));
+
+            // Rewrite all references inside the loop body to the register
+            optimizations += rewrite_slot(curr->next, body_end, off, reg_name, OPT_PROMOTE_LOOPS);
+
+            // Exit store right after the exit label, if the loop writes the
+            // slot. It is only a candidate at first: it also counts as a
+            // read of the register when asking whether the preheader load is
+            // needed, and may be dropped afterwards (below).
+            char dbg[160];
+            AsmNode *store = NULL;
+            if (ri.written[idx]) {
+                store = make_mov(slot, reg_name);
+                link_after(exit_label_node, store);
+            }
+
+            // The preheader load goes BEFORE the loop label -- unless every
+            // path through the loop writes the register before reading it.
+            bool need_load = !reg_dead_from(curr, reg_name);
+
+            // The store can go if nothing outside the loop reads the slot and
+            // the loop is not re-entered with its preheader load re-reading
+            // memory (an enclosing loop): the value would be unobservable.
+            if (store && !slot_read_outside(func_first, func_last, curr, body_end, off) &&
+                !(need_load && enclosed)) {
+                remove_node(store);
+                store = NULL;
+                need_load = !reg_dead_from(curr, reg_name);
+            }
+            if (store) {
+                snprintf(dbg, sizeof(dbg),
+                         "PROMOTE-LOOPS: flush %s back to %s at the loop exit (%s)",
+                         reg_name, slot, exit_lbl);
+                insert_debug_comment(store, OPT_PROMOTE_LOOPS, dbg);
+            }
+
+            // BUG FIX (kept): the load must not go AFTER the label -- that
+            // put it INSIDE the loop body, where the back-edge re-ran it every
+            // iteration and discarded whatever the body had just computed into
+            // the register (and, being inside the rewrite range, it was itself
+            // corrupted into "MOV R, R").
+            if (!need_load) {
+                snprintf(dbg, sizeof(dbg),
+                         "PROMOTE-LOOPS: %s lives in %s inside %s (always written before read: no preheader load)",
+                         slot, reg_name, start_lbl);
+                insert_debug_comment(curr->prev, OPT_PROMOTE_LOOPS, dbg);
+            } else {
+                AsmNode *load = make_mov(reg_name, slot);
+                link_before(curr, load);
+                snprintf(dbg, sizeof(dbg),
+                         "PROMOTE-LOOPS: preheader load of %s into %s (runs once, before %s)",
+                         slot, reg_name, start_lbl);
+                insert_debug_comment(load, OPT_PROMOTE_LOOPS, dbg);
+            }
+            promoted++;
+        }
+
+        // A promoted loop's body is fully rewritten (inner loops included);
+        // otherwise look for loops nested inside this one.
+        curr = promoted ? end_jmp->next : curr->next;
     }
 
+    liveness_end();
     return optimizations;
 }

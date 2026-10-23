@@ -1,12 +1,18 @@
 ; ===================================================================
 ; TEST: promote-loops - Compiler-Style Patterns
 ; Run with: ./v32opt promote-loops.asm -fpromote-loops -v
+;
+; Each scenario is its own "__function_" so the whole-function safety checks
+; (a frame address that escapes ANYWHERE in the function disables the pass)
+; apply to it alone. Functions that need the frame, call/return behavior
+; and the nested/alias/goto cases are covered by testing/promote/.
 ; ===================================================================
 
 ; ===================================================================
 ; ✅ SCENARIO 1: Simple While Loop (SHOULD PROMOTE)
 ; Matches typical compiler output for: while (cond) { ... }
 ; ===================================================================
+__function_scenario1:
 __while_1_start:
     MOV R1, [BP-4]      ; Load local var
     IADD R1, 1          ; Use it
@@ -19,6 +25,7 @@ __while_1_exit:
 ; ✅ SCENARIO 2: For Loop (SHOULD PROMOTE)
 ; Matches typical compiler output for: for (i=0; i<N; i++) { ... }
 ; ===================================================================
+__function_scenario2:
 __for_1_start:
     MOV [BP-4], R1      ; Local var i
     MOV R2, [BP-4]      ; Read i
@@ -31,6 +38,7 @@ __for_1_exit:
 ; ===================================================================
 ; ✅ SCENARIO 3: Loop with Multiple Locals (SHOULD PROMOTE)
 ; ===================================================================
+__function_scenario3:
 __for_2_start:
     MOV [BP-4], R1      ; Local var 1
     MOV [BP-8], R2      ; Local var 2
@@ -47,6 +55,7 @@ __for_2_exit:
 ; ✅ SCENARIO 4: Loop with Exit Label (SHOULD PROMOTE)
 ; Matches compiler output with explicit exit label
 ; ===================================================================
+__function_scenario4:
 __while_2_start:
     MOV [BP-4], R1
     MOV R2, [BP-4]
@@ -60,6 +69,7 @@ __while_2_exit:
 ; ===================================================================
 ; ❌ SCENARIO 5: Loop with CALL (MUST NOT PROMOTE)
 ; ===================================================================
+__function_scenario5:
 __for_3_start:
     CALL _some_func     ; Safety check fails
     MOV [BP-4], R1
@@ -72,6 +82,7 @@ _some_func:
 ; ===================================================================
 ; ❌ SCENARIO 6: Loop with BP Usage (MUST NOT PROMOTE)
 ; ===================================================================
+__function_scenario6:
 __for_4_start:
     MOV R1, BP          ; Direct BP usage
     MOV [BP-4], R1
