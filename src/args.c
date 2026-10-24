@@ -18,6 +18,8 @@ static void set_opt_level(OptConfig *cfg, int level) {
     cfg -> opt_peephole_reduce           = false;
     cfg -> opt_peephole_shifts           = false;
     cfg -> opt_peephole_zero_test        = false;
+    cfg -> opt_peephole_dead_regs        = false;
+    cfg -> opt_peephole_copies           = false;
     cfg -> opt_cse                       = false;
     cfg -> opt_constant_folding          = false;
     cfg -> opt_dce                       = false;
@@ -45,20 +47,22 @@ static void set_opt_level(OptConfig *cfg, int level) {
     cfg -> opt_peephole_reduce           = true;
     cfg -> opt_peephole_shifts           = true;
     cfg -> opt_peephole_zero_test        = true;
+    cfg -> opt_peephole_dead_regs        = true;
+    cfg -> opt_peephole_copies           = true;
 
     if (level                           == 1) return;
 
     // -O2: add CSE, DCE, constant folding, omit-frame-pointers, and the
-    // function-level memory-to-register promotion (it analyses whole
-    // functions, unlike the -O1 peepholes). promote-loops stays opt-in: it
-    // is sound but saves no cycles until the register copies it leaves can
-    // be cleaned up (see ISSUES).
+    // memory-to-register promotion passes (they analyse whole functions and
+    // loops, unlike the -O1 peepholes; the copy cleanup at -O1 is what
+    // makes them pay).
     cfg -> opt_cse                       = true;
     cfg -> opt_constant_folding          = true;
     cfg -> opt_dce                       = true;
     cfg -> opt_omit_frame_pointers       = true;
     cfg -> opt_promote_regs              = true;
     cfg -> opt_promote_leaf              = true;
+    cfg -> opt_promote_loops             = true;
 
     if (level                           == 2) return;
 
@@ -89,6 +93,8 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
         else if (strcmp(name, "peephole-immediate-prop") == 0) cfg->opt_peephole_immediate_prop = false;
         else if (strcmp(name, "peephole-jmp-chain") == 0) cfg->opt_peephole_jmp_chain = false;
         else if (strcmp(name, "peephole-zero-test") == 0) cfg->opt_peephole_zero_test = false;
+        else if (strcmp(name, "peephole-dead-regs") == 0) cfg->opt_peephole_dead_regs = false;
+        else if (strcmp(name, "peephole-copies") == 0) cfg->opt_peephole_copies = false;
         else if (strcmp(name, "cse") == 0) cfg->opt_cse = false;
         else if (strcmp(name, "dce") == 0) cfg->opt_dce = false;
         else if (strcmp(name, "constant-folding") == 0) cfg->opt_constant_folding = false;
@@ -134,6 +140,8 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
     else if (strcmp(arg, "peephole-immediate-prop") == 0) cfg->opt_peephole_immediate_prop = true;
     else if (strcmp(arg, "peephole-jmp-chain") == 0) cfg->opt_peephole_jmp_chain = true;
     else if (strcmp(arg, "peephole-zero-test") == 0) cfg->opt_peephole_zero_test = true;
+    else if (strcmp(arg, "peephole-dead-regs") == 0) cfg->opt_peephole_dead_regs = true;
+    else if (strcmp(arg, "peephole-copies") == 0) cfg->opt_peephole_copies = true;
     else if (strcmp(arg, "cse") == 0) cfg->opt_cse = true;
     else if (strcmp(arg, "dce") == 0) cfg->opt_dce = true;
     else if (strcmp(arg, "constant-folding") == 0) cfg->opt_constant_folding = true;
@@ -175,7 +183,7 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "  -O1                      Local peephole passes\n");
     fprintf(stdout, "  -O2                      -O1 + cse, dce, constant-folding,\n");
     fprintf(stdout, "                           omit-frame-pointers, promote-regs,\n");
-    fprintf(stdout, "                           promote-leaf\n");
+    fprintf(stdout, "                           promote-leaf, promote-loops\n");
     fprintf(stdout, "  -O3                      -O2 + inline (aggressive; could break)\n");
     fprintf(stdout, "  -Os                      Currently identical to -O3\n\n");
     fprintf(stdout, "Individual Optimization Toggles:\n");
@@ -188,7 +196,7 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "  peephole-loads, peephole-immediate-prop, peephole-jmp-chain,\n");
     fprintf(stdout, "  inline, cse, dce, constant-folding, promote-regs, promote-leaf,\n");
     fprintf(stdout, "  promote-loops, omit-frame-pointers, peephole-compiler-myopia,\n");
-    fprintf(stdout, "  peephole-zero-test\n\n");
+    fprintf(stdout, "  peephole-zero-test, peephole-dead-regs, peephole-copies\n\n");
     fprintf(stdout, "Diagnostic Flags:\n");
     fprintf(stdout, "  -finline-max=N           Cap inlinable function body size, in body\n");
     fprintf(stdout, "                           instructions (clamped to 0..%d; default 8)\n", MAX_BODY_INS);
@@ -210,9 +218,8 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "                           transform applied (in program order, across all\n");
     fprintf(stdout, "                           passes) is the one to inspect. Combine with -d to\n");
     fprintf(stdout, "                           see exactly which transform that was.\n\n");
-    fprintf(stdout, "NOTE: promote-regs and promote-leaf keep stack locals in registers and are\n");
-    fprintf(stdout, "part of -O2 and up. promote-loops does the same for loops but is opt-in\n");
-    fprintf(stdout, "(-fpromote-loops): it is correct, but saves no cycles on its own yet.\n\n");
+    fprintf(stdout, "NOTE: promote-regs, promote-leaf and promote-loops keep stack locals in\n");
+    fprintf(stdout, "registers; they are part of -O2 and up (-fno-promote-... to leave one out).\n\n");
 }
 
 // --- Main Argument Processor ----------------------------------------------

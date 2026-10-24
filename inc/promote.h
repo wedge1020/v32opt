@@ -4,9 +4,9 @@
 // ===========================================================================
 // promote.h -- memory-to-register promotion passes (src/promote.c)
 // ---------------------------------------------------------------------------
-// stack-slot-to-register promotion for leaf functions and for CALL-free
-// segments of any function (-fpromote-leaf, -fpromote-regs: part of -O2
-// and up), and for single CALL-free loops (-fpromote-loops: opt-in).
+// Part of -O2 and up (-fno-promote-<leaf|regs|loops> to leave one out):
+// stack-slot-to-register promotion for leaf functions, for CALL-free
+// segments of any function, and for single CALL-free loops.
 // ===========================================================================
 
 void  promote_operand_to_reg       (Operand    *, const char *);

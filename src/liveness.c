@@ -18,7 +18,9 @@
 //                         live; if it overwrites it on every path, it
 //                         is dead; if some path returns with it
 //                         untouched, analysis continues after the CALL
-//   - RET              -> live iff is_live_out_register(reg)
+//   - RET              -> live iff the ABI says the register is returned
+//                         (is_live_out_register) or some caller of the
+//                         function reads it after the call (see "outputs")
 //   - HLT              -> dead
 //
 // It is a "may be read" analysis and every unknown answers LIVE:
@@ -30,6 +32,15 @@
 // Only R0..R10 can be queried. R11-R13 are also CR/SR/DR (implicitly
 // read by MOVS/SETS/CMPS), R14/R15 are BP/SP; aliases make textual
 // operand matching unreliable for those, so they always answer LIVE.
+//
+// OUTPUTS. Which registers a function returns is a convention, and not every
+// callee follows the compiler's: v32cc's unsigned-divide helper returns the
+// quotient in R0 and the remainder in R1, and a write to R1 just before its
+// RET is not dead. For every function that is the target of a direct CALL,
+// liveness_begin() finds the registers it writes without saving (no PUSH)
+// and asks, at each call site, whether the caller reads them after the call;
+// those become live at the function's RET, to a fixed point. Functions that
+// are only called indirectly keep the ABI default.
 //
 // The label index is built once by liveness_begin() and must be rebuilt
 // if labels are added or removed. Removing or rewriting ordinary
@@ -53,16 +64,20 @@ static int        *g_stamp       = NULL;   // per-label visit stamp
 static int         g_stamp_id    = 0;
 static signed char (*g_callee)[11] = NULL; // per-label, per-reg cache (-1 = unknown)
 static int         g_steps       = 0;
+static unsigned short *g_extra   = NULL;   // per-label: registers (bit n = Rn) a direct caller reads after the call
+static signed char *g_is_fn      = NULL;   // per-label: target of a direct CALL
 
 static int cmp_label(const void *a, const void *b) {
     return strcasecmp(((const LabelEntry *)a)->name, ((const LabelEntry *)b)->name);
 }
 
 void liveness_end(void) {
-    free(g_labels); free(g_stamp); free(g_callee);
-    g_labels = NULL; g_stamp = NULL; g_callee = NULL;
+    free(g_labels); free(g_stamp); free(g_callee); free(g_extra); free(g_is_fn);
+    g_labels = NULL; g_stamp = NULL; g_callee = NULL; g_extra = NULL; g_is_fn = NULL;
     g_label_count = 0;
 }
+
+static void compute_outputs(AsmNode *head);
 
 void liveness_begin(AsmNode *head) {
     liveness_end();
@@ -88,6 +103,11 @@ void liveness_begin(AsmNode *head) {
         if (strcasecmp(g_labels[i].name, g_labels[i + 1].name) == 0)
             g_labels[i].node = g_labels[i + 1].node = NULL;
     g_stamp_id = 0;
+
+    g_extra = calloc((size_t)g_label_count + 1, sizeof(unsigned short));
+    g_is_fn = calloc((size_t)g_label_count + 1, 1);
+    if (!g_extra || !g_is_fn) { liveness_end(); return; }
+    compute_outputs(head);
 }
 
 static int find_label(const char *name) {
@@ -115,6 +135,13 @@ static const char *branch_target(const AsmNode *n) {
 }
 
 static int flow(AsmNode *node, const char *reg, int ridx, int depth, int stamp);
+
+// Is Rridx live when `ret` executes: returned by the ABI, or read after a
+// call by some direct caller of the function `ret` belongs to?
+static bool ret_live_out(const AsmNode *ret, const char *reg, int ridx) {
+    if (is_live_out_register(reg)) return true;
+    return g_extra && ret->lv_fn > 0 && ((g_extra[ret->lv_fn - 1] >> ridx) & 1u);
+}
 
 // Callee summary for (label, reg): LV_LIVE and/or LV_PASSTHRU bits.
 static int callee_summary(int lbl, const char *reg, int ridx, int depth) {
@@ -146,7 +173,12 @@ static int flow(AsmNode *node, const char *reg, int ridx, int depth, int stamp) 
         }
 
         if (n->type == OP_HLT) return result;
-        if (n->type == OP_RET) return result | LV_PASSTHRU;
+        if (n->type == OP_RET) {
+            // at the top level a RET hands the register to the caller; inside a
+            // callee summary it passes through to the call site
+            if (depth == 0 && ret_live_out(n, reg, ridx)) return result | LV_LIVE;
+            return result | LV_PASSTHRU;
+        }
 
         if (n->type == OP_CALL) {
             const char *t = branch_target(n);
@@ -211,4 +243,90 @@ bool reg_dead_at_label(const char *label, const char *reg) {
     int li = find_label(label);
     if (li < 0) return false;
     return reg_dead_from(g_labels[li].node, reg);
+}
+
+// ===================================================================
+// OUTPUTS: registers a function leaves for its direct callers to read
+// ===================================================================
+typedef struct { AsmNode *call; int target; } CallSite;
+
+#define LV_MAX_OUTPUT_QUERIES 400000
+
+static void compute_outputs(AsmNode *head) {
+    int nl = g_label_count;
+    int ncalls = 0;
+    for (AsmNode *n = head; n; n = n->next) if (n->type == OP_CALL) ncalls++;
+
+    CallSite *sites = malloc((size_t)(ncalls ? ncalls : 1) * sizeof(CallSite));
+    unsigned short *written = calloc((size_t)nl + 1, sizeof(unsigned short));
+    unsigned short *pushed  = calloc((size_t)nl + 1, sizeof(unsigned short));
+    if (!sites || !written || !pushed) {
+        free(sites); free(written); free(pushed);
+        for (AsmNode *n = head; n; n = n->next) n->lv_fn = 0;
+        return;
+    }
+
+    // 1. direct CALL targets
+    int ns = 0;
+    for (AsmNode *n = head; n; n = n->next) {
+        if (n->type != OP_CALL) continue;
+        const char *t = branch_target(n);
+        int li = (t && !is_register_operand(t)) ? find_label(t) : -1;
+        if (li < 0) continue;
+        g_is_fn[li] = 1;
+        sites[ns].call = n; sites[ns].target = li; ns++;
+    }
+
+    // 2. which function each node belongs to (from one call-target label to the
+    // next), and which registers each function writes / pushes
+    int cur = 0;
+    for (AsmNode *n = head; n; n = n->next) {
+        if (n->type == OP_LABEL) {
+            int li = label_index_of(n);
+            if (li >= 0 && g_is_fn[li]) cur = li + 1;
+        }
+        n->lv_fn = cur;
+        if (cur == 0 || !n->has_dst || n->dst_op.mode != MODE_REG) continue;
+        const char *rn = n->dst_op.reg;
+        int r = get_reg_index(rn);
+        if (r < 1 || r > 10 || (rn[0] != 'R' && rn[0] != 'r')) continue;
+        if (n->type == OP_PUSH) pushed[cur - 1] |= (unsigned short)(1u << r);
+        else if (n->type != OP_JMP && n->type != OP_JT && n->type != OP_JF && n->type != OP_CALL)
+            written[cur - 1] |= (unsigned short)(1u << r);
+    }
+
+    // registers the ABI already returns need no help
+    unsigned short abi = 0;
+    for (int r = 1; r <= 10; r++) {
+        char nm[8]; snprintf(nm, sizeof(nm), "R%d", r);
+        if (is_live_out_register(nm)) abi |= (unsigned short)(1u << r);
+    }
+
+    // 3. fixed point: a register a function writes without saving is an output
+    // if some direct caller reads it after the call
+    long queries = 0;
+    bool changed = true, gave_up = false;
+    for (int round = 0; changed && round < 8; round++) {
+        changed = false;
+        memset(g_callee, -1, (size_t)nl * sizeof(*g_callee));
+        for (int i = 0; i < ns && !gave_up; i++) {
+            int t = sites[i].target;
+            unsigned short cand = (unsigned short)(written[t] & ~pushed[t] & ~abi & ~g_extra[t]);
+            for (int r = 1; r <= 10 && cand; r++) {
+                if (!((cand >> r) & 1u)) continue;
+                char nm[8]; snprintf(nm, sizeof(nm), "R%d", r);
+                if (++queries > LV_MAX_OUTPUT_QUERIES) { gave_up = true; break; }
+                if (!sites[i].call->next || !reg_dead_from(sites[i].call->next, nm)) {
+                    g_extra[t] |= (unsigned short)(1u << r);
+                    changed = true;
+                }
+            }
+        }
+        if (gave_up) break;
+    }
+    if (gave_up || changed) {                      // no fixed point: assume the worst
+        for (int t = 0; t < nl; t++) g_extra[t] |= (unsigned short)(written[t] & ~pushed[t] & ~abi);
+    }
+    memset(g_callee, -1, (size_t)nl * sizeof(*g_callee));
+    free(sites); free(written); free(pushed);
 }

@@ -131,9 +131,10 @@ graph, frame-pointer elimination in functions that never touch
 .B BP
 (directly or through
 .BR [BP\[+-]N] ),
-and the function-level memory-to-register promotion passes
+and the memory-to-register promotion passes
 .RI ( promote\-regs ,
-.IR promote\-leaf ).
+.IR promote\-leaf ,
+.IR promote\-loops ).
 .TP
 .B \-O3
 .B \-O2
@@ -211,17 +212,20 @@ peephole\-pairs, peephole\-algebra, peephole\-compiler\-myopia,
 peephole\-forwarding, peephole\-jumps, peephole\-movs,
 peephole\-immediates, peephole\-reduce, peephole\-shifts,
 peephole\-dead\-stores, peephole\-loads, peephole\-immediate\-prop,
-peephole\-jmp\-chain, peephole\-zero\-test, cse, dce,
+peephole\-jmp\-chain, peephole\-zero\-test,
+peephole\-dead\-regs, peephole\-copies, cse, dce,
 constant\-folding, omit\-frame\-pointers, inline, promote\-regs,
 promote\-leaf, promote\-loops
 .fi
 .RE
 .IP
-promote-regs and promote-leaf are part of
+The three promote passes are part of
 .B \-O2
-and up (use
-.BI \-fno\-promote\- name
-to leave one out); promote-loops is opt-in. See
+and up, the two cleanup passes of
+.BR \-O1 ;
+use
+.BI \-fno\- name
+to leave one out. See
 .BR "OPTIMIZATION LEVELS" .
 .TP
 .BI \-finline\-max= N
@@ -369,6 +373,17 @@ proof follows jumps and looks into called functions, and any doubt
 (computed targets, R11\-R15, a callee that may read the register)
 leaves the code alone. Integer compares only.
 .TP
+.I peephole\-dead\-regs
+Removes instructions whose only effect is a register write that no path
+reads again (control\-flow liveness; also honours registers a callee
+returns besides R0). Never touches IN, POP, divisions or other
+instructions with side effects.
+.TP
+.I peephole\-copies
+Cancels register copies: renames a copy\-in / operate / copy\-out window
+onto the original register, and propagates a copy into the reads that
+follow it.
+.TP
 .I peephole\-dead\-stores
 Removes stores to registers or memory that are overwritten before
 any possible read (only a pure
@@ -511,24 +526,35 @@ escapes anywhere in it
 .B MOV BP, SP
 prologue. A loop or segment is skipped when anything branches into or
 out of its middle. A register is used only if control-flow liveness
-proves it free: R0, and R2 and R3 (v32lua's extra return values), count
-as live at every
+proves it free: R0 (and R2 and R3 in
+.BR "\-L lua" )
+count as live at every
 .BR RET ,
 and R11\-R13 (the implicit operands of MOVS/SETS/CMPS) are never used.
-.B promote\-regs
-and
-.B promote\-leaf
-are part of
-.BR \-O2 :
-over about 190 compiler-generated test programs they took a further
-0.8 points of cycles and 1.0 point of code size off
+Outside
+.B \-L lua
+the stock compiler's callee-save convention applies: a promoted local
+goes into a register the function already saves, or a PUSH/POP pair is
+added at the entry and at every exit; if that is not possible the slot
+stays in memory.
+.PP
+All three passes are part of
 .BR \-O2 .
-.B promote\-loops
-is correct but opt-in
-.RB ( \-fpromote\-loops ):
-its preheader load costs cycles that nothing yet wins back (the register
-copies it leaves are not cleaned up), so on that corpus it saved a quarter
-of a point of code size and cost a seventh of a point of cycles.
+Promotion itself keeps the cycle count; the gain comes from the
+.B \-O1
+passes
+.B peephole\-copies
+and
+.BR peephole\-dead\-regs ,
+which cancel the register copies it leaves. Over about 190 compiler
+generated test programs, cycles / code size against
+.BR \-O0 :
+.B \-O1
+\-3.4% / \-3.8%,
+.B \-O2
+\-6.9% / \-6.0%,
+.B \-O3
+\-7.9% / \-6.0%.
 .SH SOURCE LANGUAGES
 .TP
 .B C
@@ -627,12 +653,12 @@ v32opt game.asm \-O2 \-v
 .fi
 .RE
 .PP
-Granular control: global analysis without inlining, but with the
-(opt-in) loop register promotion:
+Granular control: global analysis without inlining and without loop
+register promotion:
 .PP
 .RS
 .nf
-v32opt game.asm \-O2 \-fno\-inline \-fpromote\-loops
+v32opt game.asm \-O2 \-fno\-inline \-fno\-promote\-loops
 .fi
 .RE
 .PP

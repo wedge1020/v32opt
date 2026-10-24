@@ -142,10 +142,10 @@ dans les fonctions qui ne touchent jamais à
 .B BP
 (directement ou par
 .BR [BP\[+-]N] ),
-et les passes de promotion de la mémoire en registres au niveau des
-fonctions
+et les passes de promotion de la mémoire en registres
 .RI ( promote\-regs ,
-.IR promote\-leaf ).
+.IR promote\-leaf ,
+.IR promote\-loops ).
 .TP
 .B \-O3
 .B \-O2
@@ -227,17 +227,20 @@ peephole\-pairs, peephole\-algebra, peephole\-compiler\-myopia,
 peephole\-forwarding, peephole\-jumps, peephole\-movs,
 peephole\-immediates, peephole\-reduce, peephole\-shifts,
 peephole\-dead\-stores, peephole\-loads, peephole\-immediate\-prop,
-peephole\-jmp\-chain, peephole\-zero\-test, cse, dce,
+peephole\-jmp\-chain, peephole\-zero\-test,
+peephole\-dead\-regs, peephole\-copies, cse, dce,
 constant\-folding, omit\-frame\-pointers, inline, promote\-regs,
 promote\-leaf, promote\-loops
 .fi
 .RE
 .IP
-promote-regs et promote-leaf font partie de
+Les trois passes promote font partie de
 .B \-O2
-et des niveaux supérieurs (utilisez
-.BI \-fno\-promote\- nom
-pour en écarter une) ; promote-loops est optionnelle. Voir
+et des niveaux supérieurs, les deux passes de nettoyage de
+.BR \-O1 ;
+utilisez
+.BI \-fno\- nom
+pour en écarter une. Voir
 .BR "NIVEAUX D'OPTIMISATION" .
 .TP
 .BI \-finline\-max= N
@@ -392,6 +395,17 @@ sauts et examine les fonctions appelées, et le moindre doute (cibles
 calculées, R11\-R15, une fonction appelée susceptible de lire le
 registre) laisse le code intact. Comparaisons entières uniquement.
 .TP
+.I peephole\-dead\-regs
+Supprime les instructions dont le seul effet est d'écrire un registre
+qu'aucun chemin ne relit (vivacité sensible au flot de contrôle ; tient
+compte des registres qu'une fonction renvoie en plus de R0). Ne touche
+jamais à IN, POP, aux divisions ni aux instructions à effets de bord.
+.TP
+.I peephole\-copies
+Annule les copies de registres : renomme une fenêtre copie\-entrée /
+opération / copie\-sortie sur le registre d'origine et propage une copie
+dans les lectures qui la suivent.
+.TP
 .I peephole\-dead\-stores
 Supprime les écritures dans des registres ou en mémoire écrasées avant
 toute lecture possible (seule une écriture
@@ -541,26 +555,35 @@ cadre ou de pile s'échappe en un point quelconque
 .BR "MOV BP, SP" .
 Une boucle ou un tronçon est écarté lorsque quelque chose branche dans son
 corps ou depuis celui-ci. Un registre n'est utilisé que si la vivacité
-des registres, sensible au flot de contrôle, prouve qu'il est libre : R0,
-ainsi que R2 et R3 (les valeurs de retour supplémentaires de v32lua),
+des registres, sensible au flot de contrôle, prouve qu'il est libre : R0
+(et R2 et R3 avec
+.BR "\-L lua" )
 comptent comme vivants à chaque
 .BR RET ,
 et R11\-R13 (opérandes implicites de MOVS/SETS/CMPS) ne sont jamais
-utilisés. Sur environ 190 programmes de test générés par compilateur,
-.B promote\-regs
-et
-.B promote\-leaf
-(partie de
-.BR \-O2 )
-ont retiré 0,8 point de cycles et 1,0 point de taille de code de plus à
+utilisés. Hors
+.BR "\-L lua" ,
+la convention callee-save du compilateur standard s'applique : un local
+promu va dans un registre que la fonction sauvegarde déjà, ou une paire
+PUSH/POP est ajoutée à l'entrée et à chaque sortie ; sinon
+l'emplacement reste en mémoire.
+.PP
+Les trois passes font partie de
 .BR \-O2 .
-.B promote\-loops
-est correcte mais optionnelle
-.RB ( \-fpromote\-loops ) :
-sa lecture de préheader coûte des cycles que rien ne récupère encore (les
-copies de registre qu'elle laisse ne sont pas nettoyées) ; sur cet
-ensemble, elle a économisé un quart de point de taille de code et coûté un
-septième de point de cycles.
+La promotion seule conserve les cycles ; le gain vient des passes
+.B \-O1
+.B peephole\-copies
+et
+.BR peephole\-dead\-regs ,
+qui annulent les copies de registre qu'elle laisse. Sur environ 190
+programmes de test générés par compilateur, cycles / taille par rapport à
+.BR \-O0 :
+.B \-O1
+\-3,4 % / \-3,8 %,
+.B \-O2
+\-6,9 % / \-6,0 %,
+.B \-O3
+\-7,9 % / \-6,0 %.
 .SH "LANGAGES SOURCES"
 .TP
 .B C
@@ -662,12 +685,12 @@ v32opt game.asm \-O2 \-v
 .fi
 .RE
 .PP
-Contrôle fin : analyse globale sans intégration, mais avec la promotion en
-registres dans les boucles (optionnelle) :
+Contrôle fin : analyse globale sans intégration ni promotion en registres
+dans les boucles :
 .PP
 .RS
 .nf
-v32opt game.asm \-O2 \-fno\-inline \-fpromote\-loops
+v32opt game.asm \-O2 \-fno\-inline \-fno\-promote\-loops
 .fi
 .RE
 .PP

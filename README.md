@@ -423,8 +423,8 @@ v32opt <input.asm> [-o output.asm] [options]
 | Flag | Description | Included Passes |
 | --- | --- | --- |
 | `-O0` | **No Optimization** | Disables all optimization passes (default). |
-| `-O1` | **Local Peephole** | Enables all 14 local window peephole optimizations. |
-| `-O2` | **Global Analysis** | Enables all `-O1` passes + **CSE**, **Dead Code Elimination (DCE)**, **Global Constant Folding**, **Frame Pointer Elimination** & **Memory-to-Register Promotion** (`promote-regs`, `promote-leaf`). |
+| `-O1` | **Local Peephole** | Enables all 16 local peephole optimizations (14 window passes, plus the liveness-driven **dead register write** and **copy cleanup**). |
+| `-O2` | **Global Analysis** | Enables all `-O1` passes + **CSE**, **Dead Code Elimination (DCE)**, **Global Constant Folding**, **Frame Pointer Elimination** & **Memory-to-Register Promotion** (`promote-regs`, `promote-leaf`, `promote-loops`). |
 | `-O3` | **Aggressive** | Enables all `-O2` passes + **Function Inlining**. |
 | `-Os` | **Space Saving** | Currently identical to `-O3` (a placeholder for a dedicated size-focused tier). |
 | `-o <file>` | **Output File** | Where to write the optimized assembly (default: `<input>Opt.asm`). |
@@ -492,8 +492,8 @@ You can enable or disable specific passes granularly using `-f<name>` and
 `-fno-<name>`:
 
 ```bash
-# Example: Run O2 but disable jump chaining, and add loop register promotion
-$ v32opt game.asm -O2 -fno-peephole-jmp-chain -fpromote-loops
+# Example: Run O2 but disable jump chaining and loop register promotion
+$ v32opt game.asm -O2 -fno-peephole-jmp-chain -fno-promote-loops
 ```
 
 ---
@@ -693,6 +693,56 @@ treats `-0.0` as zero, while `JF` tests the raw bits.
 
 v32lua emits  this shape  in every  inline table  lookup, so  on Lua-mode
 programs it removes roughly 3% of all instructions.
+
+### Dead Register Writes (`peephole-dead-regs`)
+
+Compiler  output  (and  the  output  of the  promote  passes)  is  full  of
+instructions that  only write a  register nobody reads again:  a temporary
+copied  into place  and  never  used, a  value overwritten  by  the next
+instruction, a comparison result thrown away. This pass removes them.
+
+```vircon32
+; BEFORE                             ; AFTER
+MOV  R1, R6                          ; (R1 is never read again)
+ILT  R0, R6                          ILT  R0, R6
+MOV  R0, R4                          ; (R0 is overwritten at the loop top)
+JMP  __loop                          JMP  __loop
+```
+
+Only instructions whose  sole effect is the register write  are candidates
+(`MOV`, `LEA`,  the integer and  float arithmetic, shifts, logic,  the compares
+and the conversions): never `IN`/`POP`, the divisions and `MOD`s and the
+transcendental functions (they  can raise errors), `MOVS`/`SETS`/`CMPS`,
+`CALL`. A  write is removed  only when `liveness.c` -- the  control-flow-aware
+query `peephole-zero-test` uses -- proves the register is never read on any
+path (it follows jumps  and looks into callees; anything it cannot follow
+counts as "read"). `R0` is live at every `RET` (the return value), and so
+is any register a  direct caller reads after the call:  v32cc's unsigned-
+divide helper returns the remainder in `R1`, and a write to it is not dead.
+
+### Copy Cleanup (`peephole-copies`)
+
+Cancels the register copies  that are left once a value has  been moved
+into a register  to be worked on. Two  rewrites, both on straight-line code
+(no label, jump or call in between):
+
+```vircon32
+; BEFORE                             ; AFTER
+MOV  R1, R4                          IADD R4, 1
+IADD R1, 1
+MOV  R4, R1                          ; (copy in, operate, copy back: R1 dead)
+
+MOV  R1, R6                          ; (R1 now dead: removed)
+ILT  R0, R1                          ILT  R0, R6
+```
+
+*Coalescing:* `MOV Rt, Rs / ... / MOV Rs, Rt` around a window that never
+mentions `Rs`, with `Rt` dead afterwards, is the window renamed onto `Rs`
+with both copies gone. *Propagation:* after `MOV Rt, Rs` the reads of `Rt`
+up to the next write of either register read `Rs`; the copy then goes if
+`Rt` is dead. Together with `peephole-dead-regs` this is what makes
+register promotion pay: promotion turns `[BP-2]` into `R4` but leaves a
+copy for each use, and these two passes cancel them.
 
 ### Dead Store Elimination (`peephole-dead-stores`)
 
@@ -949,12 +999,13 @@ up  and  tear down  of  a  function). But  it  also  is considered  quite
 The Vircon32 C compiler keeps every local variable in memory
 (`[BP-1]`, `[BP-2]`, ...) and goes through a register for each use. Three
 passes move frequently used locals into otherwise unused registers
-(`R1`-`R10`) for the stretch of code in which that is safe, so the
-copies between memory and registers can be forwarded and cancelled by the
-`-O1` peepholes that run alongside. `promote-regs` and `promote-leaf` are
-part of `-O2` (and so of `-O3` and `-Os`; `-fno-promote-regs` and
-`-fno-promote-leaf` leave one out). `promote-loops` is sound and tested
-the same way but opt-in (`-fpromote-loops`); see below for why.
+(`R1`-`R10`) for the stretch of code in which that is safe. On its own
+that costs the same number of cycles (`MOV R0, [BP-2]` and `MOV R0, R4` take
+one each); what pays is that the register copies it leaves can then be
+cancelled by the `-O1` passes `peephole-copies` and `peephole-dead-regs`, and
+that a register can no longer alias a pointer the way a memory slot can.
+All three are part of `-O2` (and so of `-O3` and `-Os`); `-fno-promote-regs`,
+`-fno-promote-leaf` and `-fno-promote-loops` leave any of them out.
 
 All three work the same way: pick a local referenced often enough in a
 region, rewrite every reference in the region to a register, then add
@@ -964,33 +1015,31 @@ store) at the region's edges.
 ### Stack Slot Promotion (`promote-leaf` / `promote-regs`)
 
 * `promote-leaf` works on whole **leaf functions** (no `CALL`): the load
-  goes in right after the prologue (`MOV BP, SP` / `ISUB SP, N`).
+  goes in right after the prologue (`MOV BP, SP` / `ISUB SP, N` / saves).
 
 * `promote-regs` applies the same logic to ordinary functions, separately
   within each `CALL`-free stretch (before the first `CALL`, between
   calls, after the last), and only where that stretch is
   single-entry/single-exit. A local written in a stretch is stored back
-  just before the `CALL` that ends it; the next stretch reloads it.
+  just before the `CALL` that ends it if anything reads it afterwards.
 
 ```vircon32
-; BEFORE                      ; AFTER (promote-regs)
+; BEFORE                      ; AFTER (promote-regs, then the -O1 cleanup)
 __function_f:                 __function_f:
     ...                           ...
     CALL __function_g             CALL __function_g
     MOV R0, [BP-1]                MOV R4, [BP-1]       ; (load once, after the CALL)
-    IADD R0, R1                   MOV R0, R4           ; (uses now read the register)
-    MOV [BP-1], R0                IADD R0, R1
-    MOV R0, [BP-1]                MOV R4, R0
-    IMUL R0, 2                    MOV R0, R4
-    MOV [BP-1], R0                IMUL R0, 2
-__function_f_return:              MOV R4, R0
-                              __function_f_return:
+    IADD R0, R1                   IADD R4, R1          ; (the copies cancel out)
+    MOV [BP-1], R0
+    MOV R0, [BP-1]                MOV R0, R4
+    IMUL R0, 2                    IMUL R0, 2
+    MOV [BP-1], R0
 ```
 
 Nothing is stored back before `RET`: the frame is dead the moment the
 function returns, and no pointer into it can exist (see below).
 
-### Loop-Invariant Register Promotion (`promote-loops`, opt-in)
+### Loop-Invariant Register Promotion (`promote-loops`)
 
 Targets `CALL`-free loops (`__for_N_start`, `__while_N_start`, ...) and
 promotes the locals referenced inside the body: the load goes in front of
@@ -1008,13 +1057,11 @@ __for_1_start:                               MOV R4, [BP-2]       ; (preheader)
     MOV R0, [BP-2]                       __for_1_start:
     ...                                      MOV R0, R4
     MOV R0, [BP-2]                           ...
-    IADD R0, 1                               MOV R0, R4
-    MOV [BP-2], R0                           IADD R0, 1
-    JMP __for_1_start                        MOV R4, R0
-__for_1_end:                                 JMP __for_1_start
-    ...                                  __for_1_end:
-                                             MOV [BP-2], R4       ; (flush at the exit)
-                                             ...
+    IADD R0, 1                               IADD R4, 1           ; (after the cleanup)
+    MOV [BP-2], R0                           JMP __for_1_start
+    JMP __for_1_start                    __for_1_end:
+__for_1_end:                                 ...
+    ...
 ```
 
 References are weighted by loop nesting, so when there are not enough free
@@ -1022,17 +1069,30 @@ registers for every candidate the innermost loops' variables win. A loop
 that cannot be promoted (it contains a `CALL`, a `RET`, ...) is skipped
 on its own; loops nested inside it are still considered.
 
-**Why it is not in `-O2`.** Turning `MOV R0, [BP-2]` into `MOV R0, R4` is
-the same number of cycles; the preheader load (and the exit store, where
-something reads the slot afterwards) is extra. What promotion gains is that
-the register copies it leaves can be cancelled -- `MOV R1, R4 / IADD R1, 1 /
-MOV R4, R1` is one `IADD R4, 1` -- and nothing cancels them yet. On the test
-corpus the function-level passes more than pay for themselves through
-forwarding (see below); the loop pass, on top of them, saved about a quarter
-of a point of code size and *cost* about a seventh of a point of cycles, with
-some short loops 2-5% slower. Once the copy cleanup exists (see
-[doc/loop-optimizations.md](doc/loop-optimizations.md)) it should flip to a
-clear win and move to `-O2`.
+### Calling convention: whose registers are they?
+
+A promoted local needs a register, and the registers belong to somebody.
+The **stock Vircon32 C compiler is callee-save**: a function pushes every
+register it uses (`R1` and up) right after `ISUB SP, N` and pops them before
+`MOV SP, BP`, because its callers keep live temporaries in `R1`, `R2`, ...
+across a `CALL` -- an expression like `h(f(1), f(2)) + f(3) * (f(4) + ...)`
+holds up to eight partial results in registers across calls. A promoted local
+in a register the function never saved would silently destroy the caller's
+value (an earlier version of these passes did exactly that to stock-compiled
+programs). So outside `-L lua`:
+
+* a register the function already saves can be used for free;
+* otherwise the pass adds a `PUSH` after the existing ones and a `POP`
+  before the existing pops of **every** exit -- if every exit is a
+  recognizable `MOV SP, BP / POP BP / RET` epilogue and nothing jumps out
+  of the function; and only when the references justify the 2 extra
+  instructions per call (`R4`-`R10`; `R2`/`R3` stay out);
+* if neither works the local stays in memory.
+
+`-L lua` is **caller-save** (v32lua spills around calls and its callees
+clobber freely; `R0`, `R2` and `R3` return values), so nothing needs saving.
+v32cc, which also clobbers freely, is handled as the stock compiler: a
+needless push/pop pair, but never a wrong result.
 
 ### What keeps a slot in memory
 
@@ -1050,35 +1110,34 @@ inside it as one made inside.
   the loop's exit label), or from inside to somewhere that would skip the
   store.
 * Parameters (`[BP+N]`) are never promoted: a copy of one costs a load
-  and, today, saves nothing.
+  and saves nothing.
 
 ### Choosing the register
 
 A register is only used when it is **provably free**: it does not appear
 in the region, and the control-flow-aware liveness query that
-`peephole-zero-test` already uses (`liveness.c`) shows it is never read
-before being written again on any path from the load. `R0` and, because
-`v32lua` returns the 2nd and 3rd value of a multi-value return in `R2` and
-`R3`, those two are treated as live at every `RET` -- a function that merely
-passes them through from a callee keeps them. `R11`-`R13` double as the
-implicit operands of `MOVS`/`SETS`/`CMPS` and are never used.
+`peephole-zero-test` uses (`liveness.c`) shows it is never read
+before being written again on any path from the load. `R11`-`R13` double as
+the implicit operands of `MOVS`/`SETS`/`CMPS` and are never used.
 
 ### What to expect
 
-Promotion by itself mostly turns memory operands into register operands
-(smaller code: a `[BP-N]` operand is two words, a register one); the cycle
-savings come from the `-O1` passes finding copies to cancel once nothing
-can alias the slot (a load after a store through a pointer can be forwarded
-only when the slot cannot be the pointer's target). Over ~190 compiler-
-generated test programs (loop-heavy, call-heavy, with address-taken
-locals) `promote-regs` + `promote-leaf` took a further 0.8 points of cycles
-and 1.0 point of code size off `-O2` (`-1.6%` -> `-2.4%` cycles, `-3.1%` ->
-`-4.1%` size, against `-O0`): faster in 72 programs (best -10%), the same
-in 117, slower in 4 (worst +0.4%). Straight-line code with a local used
-several times between stores through pointers gains most. `-d` marks every
-load and store a pass adds (`; [DEBUG promote-regs] ...`), and
-`--trigger-max` counts one slot per promoted variable, so a suspected
-miscompile can be bisected like any other pass.
+Over about 190 compiler-generated test programs run in the simulator
+(loop- and call-heavy, with address-taken locals; ~175 more through the
+stock compiler), cycles / code size against `-O0`:
+
+| | v32cc | stock `compile` |
+| --- | --- | --- |
+| `-O2` before the promote passes and the copy cleanup | -1.6% / -3.1% | -1.6% / -5.6% |
+| `-O1` (now with the cleanup) | -3.4% / -3.8% | -3.0% / -6.1% |
+| `-O2` | -6.9% / -6.0% | -4.9% / -14.5% |
+| `-O3` | -7.9% / -6.0% | -7.0% / -14.4% |
+
+Most of the `-O2` gain over `-O1` is promotion; individual programs gain
+up to 30%. `-d` marks every load and store a pass adds
+(`; [DEBUG promote-regs] ...`), and `--trigger-max` counts one slot per
+promoted variable, so a suspected miscompile can be bisected like any other
+pass.
 
 ---
 

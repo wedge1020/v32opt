@@ -141,9 +141,10 @@ nunca tocan
 .B BP
 (directamente o a través de
 .BR [BP\[+-]N] ),
-y las pasadas de promoción de memoria a registros a nivel de función
+y las pasadas de promoción de memoria a registros
 .RI ( promote\-regs ,
-.IR promote\-leaf ).
+.IR promote\-leaf ,
+.IR promote\-loops ).
 .TP
 .B \-O3
 .B \-O2
@@ -226,17 +227,20 @@ peephole\-pairs, peephole\-algebra, peephole\-compiler\-myopia,
 peephole\-forwarding, peephole\-jumps, peephole\-movs,
 peephole\-immediates, peephole\-reduce, peephole\-shifts,
 peephole\-dead\-stores, peephole\-loads, peephole\-immediate\-prop,
-peephole\-jmp\-chain, peephole\-zero\-test, cse, dce,
+peephole\-jmp\-chain, peephole\-zero\-test,
+peephole\-dead\-regs, peephole\-copies, cse, dce,
 constant\-folding, omit\-frame\-pointers, inline, promote\-regs,
 promote\-leaf, promote\-loops
 .fi
 .RE
 .IP
-promote-regs y promote-leaf forman parte de
+Las tres pasadas promote forman parte de
 .B \-O2
-y superiores (usa
-.BI \-fno\-promote\- nombre
-para dejar fuera una); promote-loops es opcional. Véase
+y superiores, las dos de limpieza de
+.BR \-O1 ;
+usa
+.BI \-fno\- nombre
+para dejar fuera una. Véase
 .BR "NIVELES DE OPTIMIZACIÓN" .
 .TP
 .BI \-finline\-max= N
@@ -393,6 +397,17 @@ cualquier duda (destinos calculados, R11\-R15, una función llamada que
 pueda leer el registro) deja el código como está. Solo comparaciones de
 enteros.
 .TP
+.I peephole\-dead\-regs
+Elimina instrucciones cuyo único efecto es escribir un registro que
+ningún camino vuelve a leer (vida con flujo de control; respeta también
+los registros que una función devuelve además de R0). Nunca toca IN,
+POP, divisiones ni otras instrucciones con efectos.
+.TP
+.I peephole\-copies
+Cancela copias de registro: renombra una ventana copia\-entrada /
+operación / copia\-salida sobre el registro original y propaga una copia
+en las lecturas que la siguen.
+.TP
 .I peephole\-dead\-stores
 Elimina los almacenamientos en registros o en memoria que se sobrescriben
 antes de cualquier lectura posible (solo un almacenamiento
@@ -542,24 +557,35 @@ pila escapa en cualquier punto de ella
 .BR "MOV BP, SP" .
 Un bucle o tramo se omite cuando algo salta hacia dentro o desde el
 interior de su cuerpo. Un registro solo se usa si la vida de registros
-con flujo de control demuestra que está libre: R0, y R2 y R3 (los valores
-de retorno adicionales de v32lua), cuentan como vivos en cada
+con flujo de control demuestra que está libre: R0 (y R2 y R3 en
+.BR "\-L lua" )
+cuentan como vivos en cada
 .BR RET ,
-y R11\-R13 (operandos implícitos de MOVS/SETS/CMPS) no se usan nunca. En
-unos 190 programas de prueba generados por compilador,
-.B promote\-regs
-y
-.B promote\-leaf
-(parte de
-.BR \-O2 )
-quitaron 0,8 puntos más de ciclos y 1,0 punto de tamaño de código a
+y R11\-R13 (operandos implícitos de MOVS/SETS/CMPS) no se usan nunca.
+Fuera de
+.B \-L lua
+rige la convención callee-save del compilador estándar: un local
+promovido va a un registro que la función ya guarda, o se añade un par
+PUSH/POP en la entrada y en cada salida; si no es posible, la posición
+queda en memoria.
+.PP
+Las tres pasadas forman parte de
 .BR \-O2 .
-.B promote\-loops
-es correcta pero opcional
-.RB ( \-fpromote\-loops ):
-su carga de preheader cuesta ciclos que nada recupera todavía (las copias
-de registro que deja no se limpian), así que en ese conjunto ahorró un
-cuarto de punto de tamaño de código y costó un séptimo de punto de ciclos.
+La promoción por sí sola conserva los ciclos; la ganancia viene de las
+pasadas de
+.B \-O1
+.B peephole\-copies
+y
+.BR peephole\-dead\-regs ,
+que cancelan las copias de registro que deja. En unos 190 programas de
+prueba generados por compilador, ciclos / tamaño frente a
+.BR \-O0 :
+.B \-O1
+\-3,4% / \-3,8%,
+.B \-O2
+\-6,9% / \-6,0%,
+.B \-O3
+\-7,9% / \-6,0%.
 .SH "LENGUAJES DE ORIGEN"
 .TP
 .B C
@@ -662,12 +688,12 @@ v32opt game.asm \-O2 \-v
 .fi
 .RE
 .PP
-Control detallado: análisis global sin inserción en línea, pero con la
-promoción de registros en bucles (opcional):
+Control detallado: análisis global sin inserción en línea ni promoción de
+registros en bucles:
 .PP
 .RS
 .nf
-v32opt game.asm \-O2 \-fno\-inline \-fpromote\-loops
+v32opt game.asm \-O2 \-fno\-inline \-fno\-promote\-loops
 .fi
 .RE
 .PP

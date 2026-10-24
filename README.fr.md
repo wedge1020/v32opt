@@ -462,8 +462,8 @@ v32opt <entrée.asm> [-o sortie.asm] [options]
 | Option | Description | Passes Incluses |
 | --- | --- | --- |
 | `-O0` | **Aucune Optimisation** | Désactive toutes les passes d'optimisation (par défaut). |
-| `-O1` | **Lucarne Locale** | Active les 14 optimisations locales à lucarne (peephole) sur fenêtre. |
-| `-O2` | **Analyse Globale** | Active toutes les passes de `-O1` + **CSE**, **Élimination du Code Mort (DCE)**, **Repliement Global des Constantes**, **Élimination du Pointeur de Cadre** et **Promotion de la Mémoire en Registres** (`promote-regs`, `promote-leaf`). |
+| `-O1` | **Lucarne Locale** | Active les 16 optimisations locales (14 à lucarne sur fenêtre, plus l'**écriture morte de registre** et le **nettoyage des copies**, guidés par la vivacité des registres). |
+| `-O2` | **Analyse Globale** | Active toutes les passes de `-O1` + **CSE**, **Élimination du Code Mort (DCE)**, **Repliement Global des Constantes**, **Élimination du Pointeur de Cadre** et **Promotion de la Mémoire en Registres** (`promote-regs`, `promote-leaf`, `promote-loops`). |
 | `-O3` | **Agressif** | Active toutes les passes de `-O2` + **Intégration des Fonctions (inlining)**. |
 | `-Os` | **Gain de Place** | Actuellement identique à `-O3` (un emplacement réservé pour un niveau dédié à la taille). |
 | `-o <fichier>` | **Fichier de Sortie** | Où écrire l'assembleur optimisé (par défaut : `<entrée>Opt.asm`). |
@@ -537,7 +537,7 @@ Vous pouvez activer ou désactiver des passes précises avec `-f<nom>` et
 
 ```bash
 # Exemple : lancer O2 mais désactiver les chaînes de sauts et ajouter la promotion en registres dans les boucles
-$ v32opt game.asm -O2 -fno-peephole-jmp-chain -fpromote-loops
+$ v32opt game.asm -O2 -fno-peephole-jmp-chain -fno-promote-loops
 ```
 
 ---
@@ -746,6 +746,53 @@ traite `-0.0` comme zéro, alors que `JF` teste les bits bruts.
 v32lua produit cette forme à chaque consultation de table en ligne : sur
 les programmes en mode Lua, cette passe supprime donc environ 3 % de
 toutes les instructions.
+
+### Écritures Mortes de Registre (`peephole-dead-regs`)
+
+La sortie du compilateur (et des passes promote) regorge d'instructions
+qui n'écrivent qu'un registre que personne ne relit. Cette passe les
+supprime.
+
+```vircon32
+; AVANT                              ; APRÈS
+MOV  R1, R6                          ; (R1 n'est plus lu)
+ILT  R0, R6                          ILT  R0, R6
+MOV  R0, R4                          ; (R0 est réécrit en tête de boucle)
+JMP  __loop                          JMP  __loop
+```
+
+Seules les instructions dont le seul effet est l'écriture sont candidates
+(`MOV`, `LEA`, arithmétique, décalages, logique, comparaisons,
+conversions) : jamais `IN`/`POP`, divisions, `MOD`, fonctions
+transcendantes, `MOVS`/`SETS`/`CMPS` ni `CALL`. Elle n'est supprimée que
+si `liveness.c` (la requête sensible au flot de contrôle de
+`peephole-zero-test`) prouve qu'aucun chemin ne lit le registre. `R0` est
+vivant à chaque `RET`, ainsi que tout registre qu'un appelant direct lit
+après l'appel (l'auxiliaire de division non signée de v32cc renvoie le
+reste dans `R1`).
+
+### Nettoyage des Copies (`peephole-copies`)
+
+Annule les copies de registres laissées une fois une valeur déplacée dans
+un registre pour être traitée. Deux réécritures sur du code linéaire
+(sans étiquette, saut ni appel) :
+
+```vircon32
+; AVANT                              ; APRÈS
+MOV  R1, R4                          IADD R4, 1
+IADD R1, 1
+MOV  R4, R1                          ; (copie d'entrée, opération, copie de sortie)
+
+MOV  R1, R6                          ; (R1 désormais mort : supprimé)
+ILT  R0, R1                          ILT  R0, R6
+```
+
+*Coalescence :* `MOV Rt, Rs / ... / MOV Rs, Rt` autour d'une fenêtre qui
+ne mentionne pas `Rs`, avec `Rt` mort ensuite, renomme la fenêtre sur `Rs`.
+*Propagation :* après `MOV Rt, Rs`, les lectures de `Rt` jusqu'à la
+prochaine écriture de l'un ou l'autre lisent `Rs` ; la copie disparaît si
+`Rt` est mort. Avec `peephole-dead-regs`, c'est ce qui rend la promotion
+rentable.
 
 ### Élimination des Écritures Mortes (`peephole-dead-stores`)
 
@@ -1019,152 +1066,91 @@ la libération d'une fonction). Mais elle est aussi considérée comme assez
 ## Promotion de la Mémoire en Registres (`-O2`)
 
 Le compilateur C de Vircon32 garde chaque variable locale en mémoire
-(`[BP-1]`, `[BP-2]`, ...) et passe par un registre à chaque utilisation.
-Trois passes déplacent les locales les plus utilisées dans des registres
-autrement inutilisés (`R1`-`R10`), le temps d'un tronçon de code où c'est
-sûr, de sorte que les copies entre mémoire et registres puissent être
-transmises et annulées par les passes à fenêtre glissante de `-O1` qui
-tournent en parallèle. `promote-regs` et `promote-leaf` font partie de
-`-O2` (donc de `-O3` et `-Os` ; `-fno-promote-regs` et `-fno-promote-leaf`
-en écartent une). `promote-loops` est correcte et testée de la même façon,
-mais optionnelle (`-fpromote-loops`) ; voir plus bas pourquoi.
-
-Les trois fonctionnent de la même façon : choisir une locale assez
-référencée dans une région, réécrire toutes les références de la région
-vers un registre, puis ajouter la lecture (et, seulement là où la copie en
-mémoire peut encore être observée, l'écriture) aux bords de la région.
+(`[BP-1]`, `[BP-2]`, ...) et passe par un registre à chaque usage. Trois
+passes déplacent les locales les plus utilisées dans des registres libres
+(`R1`-`R10`) sur la portion de code où c'est sûr. Seule, elle coûte les
+mêmes cycles ; ce qui rapporte, c'est que les copies qu'elle laisse sont
+ensuite annulées par les passes `-O1` `peephole-copies` et
+`peephole-dead-regs`. Les trois font partie de `-O2` (donc de `-O3` et
+`-Os`) ; `-fno-promote-regs`, `-fno-promote-leaf` et `-fno-promote-loops`
+en écartent une.
 
 ### Promotion des Emplacements de Pile (`promote-leaf` / `promote-regs`)
 
 * `promote-leaf` travaille sur des **fonctions feuilles** entières (sans
-  `CALL`) : la lecture est placée juste après le prologue (`MOV BP, SP` /
-  `ISUB SP, N`).
+  `CALL`) : la lecture est placée juste après le prologue.
+* `promote-regs` applique la même logique aux fonctions ordinaires, séparément
+  dans chaque tronçon sans `CALL`, et seulement s'il a une entrée et une
+  sortie. Une locale écrite dans un tronçon est réécrite juste avant le
+  `CALL` qui le termine, si quelque chose la lit ensuite.
 
-* `promote-regs` applique la même logique aux fonctions ordinaires,
-  séparément dans chaque tronçon sans `CALL` (avant le premier `CALL`,
-  entre les appels, après le dernier), et seulement là où ce tronçon a une
-  seule entrée et une seule sortie. Une locale écrite dans un tronçon est
-  rangée juste avant le `CALL` qui le termine ; le tronçon suivant la
-  relit.
+Rien n'est réécrit avant `RET` : le cadre est mort et aucun pointeur ne
+peut le viser (voir plus bas).
 
-```vircon32
-; AVANT                       ; APRÈS (promote-regs)
-__function_f:                 __function_f:
-    ...                           ...
-    CALL __function_g             CALL __function_g
-    MOV R0, [BP-1]                MOV R4, [BP-1]       ; (une lecture, après le CALL)
-    IADD R0, R1                   MOV R0, R4           ; (les usages lisent le registre)
-    MOV [BP-1], R0                IADD R0, R1
-    MOV R0, [BP-1]                MOV R4, R0
-    IMUL R0, 2                    MOV R0, R4
-    MOV [BP-1], R0                IMUL R0, 2
-__function_f_return:              MOV R4, R0
-                              __function_f_return:
-```
+### Promotion en Registres Invariante dans les Boucles (`promote-loops`)
 
-Rien n'est rangé avant `RET` : le cadre est mort dès que la fonction
-retourne, et aucun pointeur vers lui ne peut exister (voir plus bas).
+Agit sur les boucles sans `CALL` et promeut les locales utilisées dans le
+corps : la lecture va avant l'étiquette d'en-tête (un vrai préheader) et
+l'écriture après l'étiquette de sortie. La lecture est omise si tout
+chemin écrit le registre avant de le lire, l'écriture si rien hors de la
+boucle ne lit l'emplacement (sauf boucle imbriquée, qui est ré-entrée). Les
+références sont pondérées par l'imbrication (x8 par niveau) : avec peu de
+registres, les boucles les plus internes gagnent. Une boucle non
+promouvable est écartée seule ; ses boucles imbriquées restent examinées.
 
-### Promotion en Registres Invariante dans les Boucles (`promote-loops`, optionnelle)
+### Convention d'appel : à qui sont les registres ?
 
-Cible les boucles sans `CALL` (`__for_N_start`, `__while_N_start`, ...) et
-promeut les locales référencées dans le corps : la lecture est placée
-devant l'étiquette d'en-tête de la boucle (un vrai préheader, exécuté une
-fois), l'écriture juste après son étiquette de sortie. L'une comme l'autre
-est omise quand elle ne peut pas compter : pas de lecture si tous les
-chemins de la boucle écrivent le registre avant de le lire, pas d'écriture
-si rien en dehors de la boucle ne lit l'emplacement (un compteur de `for`
-mort ensuite) -- sauf si la boucle est dans une autre, qui la ré-entre et
-relit l'emplacement dans le préheader.
+Le compilateur standard de Vircon32 est **callee-save** : une fonction
+sauvegarde (`PUSH`) chaque registre qu'elle utilise et le restaure avant
+`MOV SP, BP`, car ses appelants gardent des temporaires vivants dans `R1`,
+`R2`, ... à travers un `CALL`. Une locale promue dans un registre que la
+fonction n'a pas sauvegardé détruirait la valeur de l'appelant. Donc, hors
+`-L lua` :
 
-```vircon32
-; AVANT                                  ; APRÈS
-    MOV [BP-2], R0                           MOV [BP-2], R0
-__for_1_start:                               MOV R4, [BP-2]       ; (préheader)
-    MOV R0, [BP-2]                       __for_1_start:
-    ...                                      MOV R0, R4
-    MOV R0, [BP-2]                           ...
-    IADD R0, 1                               MOV R0, R4
-    MOV [BP-2], R0                           IADD R0, 1
-    JMP __for_1_start                        MOV R4, R0
-__for_1_end:                                 JMP __for_1_start
-    ...                                  __for_1_end:
-                                             MOV [BP-2], R4       ; (vidage à la sortie)
-                                             ...
-```
+* un registre que la fonction sauvegarde déjà s'utilise gratuitement ;
+* sinon, un `PUSH` est ajouté après les existants et un `POP` avant les
+  existants sur **chaque** sortie (seulement si toutes les sorties sont des
+  épilogues reconnaissables et que les références justifient les 2
+  instructions de plus ; `R4`-`R10`) ;
+* sinon, la locale reste en mémoire.
 
-Les références sont pondérées par la profondeur d'imbrication : quand il
-n'y a pas assez de registres libres pour tous les candidats, les
-variables des boucles les plus internes l'emportent. Une boucle qui ne
-peut pas être promue (elle contient un `CALL`, un `RET`, ...) est écartée
-à elle seule ; les boucles imbriquées en elle sont toujours examinées.
-
-**Pourquoi elle n'est pas dans `-O2`.** Transformer `MOV R0, [BP-2]` en
-`MOV R0, R4` coûte le même nombre de cycles ; la lecture du préheader (et
-l'écriture à la sortie, quand quelque chose lit ensuite l'emplacement) est
-en plus. Ce que gagne la promotion, c'est que les copies de registre
-qu'elle laisse peuvent être annulées -- `MOV R1, R4 / IADD R1, 1 /
-MOV R4, R1` n'est qu'un seul `IADD R4, 1` -- et rien ne les annule encore.
-Sur l'ensemble de tests, les passes au niveau des fonctions se paient
-largement par le transfert (voir plus bas) ; la passe des boucles, par
-dessus elles, a économisé environ un quart de point de taille de code et
-*coûté* environ un septième de point de cycles, certaines boucles courtes
-étant de 2 à 5 % plus lentes. Quand ce nettoyage des copies existera (voir
-[doc/loop-optimizations.md](doc/loop-optimizations.md)), elle devrait
-devenir un net gain et passer dans `-O2`.
+`-L lua` est **caller-save** (v32lua sauvegarde autour des appels) : rien
+à sauvegarder. La sortie de v32cc est traitée comme celle du compilateur
+standard : au pire une paire inutile, jamais un résultat faux.
 
 ### Ce qui garde un emplacement en mémoire
 
-Ces vérifications portent sur la **fonction entière**, pas seulement sur
-la région promue : un pointeur créé avant une boucle peut viser un
-emplacement à l'intérieur de celle-ci tout autant qu'un pointeur créé
-dedans.
+Ces contrôles portent sur **toute la fonction**, pas seulement la région :
 
-* L'adresse du cadre s'échappe : `MOV R1, BP`, `LEA R1, [BP-N]` (prendre
-  l'adresse d'une locale, d'une structure, d'un tableau), `IADD R1, BP`,
-  ... De même tout ce qui copie `SP` vers l'extérieur (`MOV R1, SP`,
-  `LEA R1, [SP+N]`).
-* Pas de prologue `MOV BP, SP` (le code écrit à la main ou `naked` n'a pas
-  de cadre propre dont promouvoir les emplacements).
-* Un tronçon ou une boucle dans lequel (ou depuis lequel) autre chose
-  branche : un saut depuis l'extérieur vers une étiquette intérieure (un
-  `goto` dans le corps d'une boucle, ou vers son étiquette de sortie), ou
-  depuis l'intérieur vers un point qui contournerait l'écriture.
-* Les paramètres (`[BP+N]`) ne sont jamais promus : une copie de l'un
-  d'eux coûte une lecture et, aujourd'hui, n'économise rien.
+* L'adresse du cadre s'échappe : `MOV R1, BP`, `LEA R1, [BP-N]`,
+  `IADD R1, BP`, ... ; de même pour toute copie de `SP`.
+* Pas de prologue `MOV BP, SP`.
+* Un tronçon ou une boucle où quelque chose saute de l'extérieur, ou de
+  l'intérieur vers un point qui éviterait l'écriture.
+* Les paramètres (`[BP+N]`) ne sont jamais promus.
 
 ### Choix du registre
 
-Un registre n'est utilisé que lorsqu'il est **prouvé libre** : il
-n'apparaît pas dans la région, et la requête de vivacité des registres,
-sensible au flot de contrôle, que `peephole-zero-test` utilise déjà
-(`liveness.c`), montre qu'il n'est jamais lu avant d'être réécrit sur
-aucun chemin depuis la lecture. `R0` et -- parce que `v32lua` renvoie les
-2e et 3e valeurs d'un retour multiple dans `R2` et `R3` -- ces deux-là sont
-traités comme vivants à chaque `RET` : une fonction qui ne fait que les
-laisser passer depuis un appelé les conserve. `R11`-`R13` servent
-d'opérandes implicites à `MOVS`/`SETS`/`CMPS` et ne sont jamais utilisés.
+Un registre n'est utilisé que s'il est **prouvé libre** : absent de la
+région, et la requête de vivacité (`liveness.c`) montre qu'il n'est lu
+avant réécriture sur aucun chemin depuis la lecture. `R11`-`R13` (opérandes
+implicites de `MOVS`/`SETS`/`CMPS`) ne sont jamais utilisés.
 
 ### À quoi s'attendre
 
-La promotion transforme surtout, à elle seule, des opérandes mémoire en
-opérandes registre (code plus petit : un opérande `[BP-N]` occupe deux
-mots, un registre un seul) ; le gain en cycles vient de ce que les passes
-de `-O1` trouvent des copies à annuler une fois que rien ne peut aliaser
-l'emplacement (une lecture après une écriture par un pointeur ne peut être
-transmise que si l'emplacement ne peut pas être la cible du pointeur). Sur
-environ 190 programmes de test générés par compilateur (riches en boucles
-et en appels, avec des locales dont l'adresse est prise), `promote-regs` +
-`promote-leaf` ont retiré 0,8 point de cycles et 1,0 point de taille de
-code de plus à `-O2` (`-1,6 %` -> `-2,4 %` de cycles, `-3,1 %` -> `-4,1 %`
-de taille, par rapport à `-O0`) : plus rapides dans 72 programmes (le
-meilleur -10 %), identiques dans 117, plus lents dans 4 (le pire +0,4 %).
-Le code linéaire avec une locale utilisée plusieurs fois entre des
-écritures par pointeur gagne le plus. `-d` signale chaque lecture et
-écriture qu'une passe ajoute (`; [DEBUG promote-regs] ...`), et
-`--trigger-max` compte un emplacement par variable promue : un soupçon de
-mauvaise compilation peut donc être cerné par bissection comme avec
-n'importe quelle autre passe.
+Sur environ 190 programmes générés par compilateur (et ~175 de plus via le
+compilateur standard), cycles / taille par rapport à `-O0` :
+
+| | v32cc | `compile` standard |
+| --- | --- | --- |
+| `-O2` avant promote et nettoyage | -1,6 % / -3,1 % | -1,6 % / -5,6 % |
+| `-O1` (désormais avec le nettoyage) | -3,4 % / -3,8 % | -3,0 % / -6,1 % |
+| `-O2` | -6,9 % / -6,0 % | -4,9 % / -14,5 % |
+| `-O3` | -7,9 % / -6,0 % | -7,0 % / -14,4 % |
+
+`-d` marque chaque lecture et écriture qu'une passe ajoute
+(`; [DEBUG promote-regs] ...`), et `--trigger-max` compte un emplacement
+par variable promue : un défaut se bissecte comme avec toute autre passe.
 
 ---
 

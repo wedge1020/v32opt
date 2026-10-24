@@ -15,7 +15,7 @@ see README.md in this directory for the variables that point elsewhere.
 Test programs `#include "check.h"` (the v32cc tests' CHECK(); a copy is in
 this directory) and end with CHECK(...) calls; gen.py makes such programs.
 """
-import os, re, struct, subprocess, sys, collections
+import os, re, shutil, struct, subprocess, sys, collections
 from concurrent.futures import ThreadPoolExecutor
 
 HERE  = os.path.dirname(os.path.abspath(__file__))
@@ -23,6 +23,8 @@ ROOT  = os.path.abspath(os.path.join(HERE, '..', '..', '..'))
 V32CC  = os.environ.get('V32CC',  os.path.join(ROOT, 'v32cc', 'src', 'v32cc'))
 V32AS  = os.environ.get('V32AS',  os.path.join(ROOT, 'v32as', 'bin', 'v32as'))
 V32SIM = os.environ.get('V32SIM', os.path.join(ROOT, 'v32sim', 'bin', 'v32sim'))
+STOCK  = os.environ.get('COMPILER') == 'stock'      # compile with the stock Vircon32 `compile` instead of v32cc
+V32STOCK = os.environ.get('V32STOCK', 'compile')    # ... which must be built (ComputerSoftware/DevelopmentTools)
 V32OPT = os.environ.get('V32OPT', os.path.join(HERE, '..', '..', 'bin', 'v32opt'))
 WORK   = os.environ.get('WORK', os.path.join(HERE, 'work'))
 STRICT = bool(os.environ.get('STRICT'))
@@ -50,11 +52,23 @@ _BASE = {}      # source -> (asm, error): each program is compiled once, before 
 
 def build_base(src):
     if src in _BASE: return _BASE[src]
+    if src.endswith('.asm'):                 # hand-written assembly: used as is
+        _BASE[src] = (os.path.abspath(src), None)
+        return _BASE[src]
     base = os.path.join(WORK, os.path.splitext(os.path.basename(src))[0])
     asm = base + '.base.asm'
-    r = sh([V32CC, '--standard', '--keep-data', '--data-base', '0', '-w',
-            '-I', HERE, src, '-o', asm])
-    _BASE[src] = (asm, None) if r.returncode == 0 else (None, 'v32cc: ' + (r.stdout + r.stderr)[:300])
+    if STOCK:
+        sys.path.insert(0, HERE)
+        from tostock import to_stock
+        d = os.path.join(WORK, 'stockinc')
+        os.makedirs(d, exist_ok=True)
+        open(os.path.join(d, 'check.h'), 'w').write(open(os.path.join(HERE, 'check_stock.h')).read())
+        ts = os.path.join(d, os.path.basename(src))
+        open(ts, 'w').write(to_stock(open(src).read()))
+        r = sh([V32STOCK, '-w', '-o', asm, ts])
+    else:
+        r = sh([V32CC, '--standard', '--keep-data', '--data-base', '0', '-w', '-I', HERE, src, '-o', asm])
+    _BASE[src] = (asm, None) if r.returncode == 0 else (None, 'compiler: ' + (r.stdout + r.stderr)[:300])
     return _BASE[src]
 
 def with_counters(text):
@@ -70,7 +84,7 @@ def with_counters(text):
 def run_one(src, flags, tag):
     asm, err = build_base(src)
     if err: return dict(err=err)
-    base = asm.replace('.base.asm', '') + '.' + tag
+    base = os.path.join(WORK, os.path.splitext(os.path.basename(asm))[0].replace('.base', '') + '.' + tag)
     text = open(asm).read()
     if flags is not None:
         r = sh([V32OPT, asm, '-o', base + '.opt.asm'] + flags.split())
@@ -87,6 +101,9 @@ def run_one(src, flags, tag):
     if r.returncode != 0: return dict(err='v32sim rc=%d: %s' % (r.returncode, (r.stdout + r.stderr)[-300:]))
     vals = [int(l) for l in r.stdout.split('\n') if re.fullmatch(r'-?\d+', l.strip())]
     if len(vals) < NDUMP: return dict(err='short RAM dump')
+    if src.endswith('.asm'):                 # no self-check counters: only the RAM image counts
+        return dict(fails=0, checks=0, cyc=vals[CYC] + 250000 * vals[CYC + 1],
+                    words=(os.path.getsize(base + '.vbin') - 12) // 4, ram=vals[:CYC])
     return dict(fails=vals[0], checks=vals[1], cyc=vals[CYC] + 250000 * vals[CYC + 1],
                 words=(os.path.getsize(base + '.vbin') - 12) // 4, ram=vals[:CYC])
 
@@ -97,8 +114,8 @@ def main():
     files = args
     if not files:
         print(__doc__); sys.exit(2)
-    missing = [(n, p) for n, p in (('V32CC', V32CC), ('V32AS', V32AS), ('V32SIM', V32SIM), ('V32OPT', V32OPT))
-               if not os.access(p, os.X_OK)]
+    missing = [(n, p) for n, p in (('V32CC', V32STOCK if STOCK else V32CC), ('V32AS', V32AS), ('V32SIM', V32SIM), ('V32OPT', V32OPT))
+               if not (os.access(p, os.X_OK) or shutil.which(p))]
     if missing:
         for n, p in missing: print('%s: %s is not an executable (build it, or point %s at it)' % (n, p, n))
         sys.exit(2)
@@ -120,8 +137,9 @@ def main():
                 print('SKIP  %-14s %-52s timeout' % (name, label)); rows = None; continue
             if 'err' in r:
                 print('ERROR %-14s %-52s %s' % (name, label, r['err'])); problems += 1; rows = None; continue
+            src_is_asm = f.endswith('.asm')
             same = 'ram' in base and r['ram'] == base['ram']
-            ok = r['fails'] == 0 and r['checks'] == base['checks'] and (same or not STRICT)
+            ok = r['fails'] == 0 and r['checks'] == base['checks'] and (same or (not STRICT and not src_is_asm))
             problems += not ok
             print('%-5s %-14s %-52s checks=%d cycles=%d words=%d%s' % (
                 'ok' if ok else 'FAIL', name, label, r['checks'], r['cyc'], r['words'],

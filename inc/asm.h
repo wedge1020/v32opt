@@ -116,6 +116,8 @@ typedef struct AsmNode {
     Operand src_op;
     bool has_dst;
     bool has_src;
+    int  lv_fn;                  // liveness.c only: 1 + index of the call-target label of the
+                                 // function the node sits in (0: none known)
     bool debug_note;             // a "; [DEBUG <pass>] ..." comment that -d
                                  // inserted (not part of the input program)
 

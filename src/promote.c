@@ -4,9 +4,10 @@
 // promote -- stack-slot-to-register promotion passes
 // ============================================================================
 //
-// Three optimization passes (-fpromote-leaf and -fpromote-regs are part of
-// -O2 and up; -fpromote-loops is opt-in -- it is sound, but its preheader
-// load and exit store cost cycles that nothing yet wins back, see ISSUES):
+// Three optimization passes (-fpromote-leaf, -fpromote-regs, -fpromote-loops;
+// all part of -O2 and up, and only worth it together with the -O1 copy
+// cleanup, peephole-dead-regs / peephole-copies, which cancels the register
+// copies promotion leaves behind):
 //
 //   pass_promote_stack_slots    (-fpromote-leaf)  -- whole-function
 //     promotion for CALL-free (leaf) functions only. A promoted register's
@@ -378,8 +379,13 @@ static void scan_region(AsmNode *from, AsmNode *to, const int *weights, RegionIn
     int i = 0;
     for (AsmNode *n = from; n && n != to; n = n->next, i++) {
         int w = weights ? weights[i] : 1;
-        if (n->has_dst) note_reg(ri, &n->dst_op);
-        if (n->has_src) note_reg(ri, &n->src_op);
+        // (a PUSH/POP of a register is bookkeeping -- the prologue and
+        // epilogue of a callee-save function, or a spill: liveness decides
+        // whether the register is free, so they don't count as "used")
+        if (n->type != OP_PUSH && n->type != OP_POP) {
+            if (n->has_dst) note_reg(ri, &n->dst_op);
+            if (n->has_src) note_reg(ri, &n->src_op);
+        }
         if (n->has_dst && n->dst_op.mode == MODE_INDIRECT && str_case_eq(n->dst_op.reg, "BP") &&
             slot_promotable(n->dst_op.offset)) {
             ri->refs[n->dst_op.offset + SLOT_BIAS] += w;
@@ -508,20 +514,145 @@ static bool region_reentered(AsmNode *scope_first, AsmNode *scope_last, AsmNode 
     return again;
 }
 
+static void link_before(AsmNode *pos, AsmNode *nn) {
+    nn->prev = pos->prev;
+    nn->next = pos;
+    if (pos->prev) pos->prev->next = nn;
+    pos->prev = nn;
+}
+
+static void link_after(AsmNode *pos, AsmNode *nn) {
+    nn->prev = pos;
+    nn->next = pos->next;
+    if (pos->next) pos->next->prev = nn;
+    pos->next = nn;
+}
+
+// -------------------------------------------------------------------
+// Calling convention. The stock Vircon32 C compiler is CALLEE-SAVE: a
+// function pushes every register it uses (R1 and up) right after "ISUB SP,
+// N" and pops them before "MOV SP, BP", because its callers keep live
+// temporaries in R1, R2, R3, ... across a CALL ("h(f(1), f(2)) + f(3) *
+// (f(4) + ...)" holds results in up to R8 across calls). v32lua is
+// caller-save: it spills around calls and its callees clobber freely.
+//
+// A promoted local lives in a register the function did not use before, so
+// without a save/restore the promotion clobbers the caller's value (the
+// passes did exactly that to stock-compiled code; confirmed on a deeply
+// nested call expression). So in every mode but -L lua a register is only
+// used if the function already saves it, or if a push/pop pair for it can
+// be added to the prologue and to every epilogue.
+// -------------------------------------------------------------------
+#define MAX_EPILOGUES 8
+// A fresh push/pop costs 2 instructions per call: ask for this many more
+// (weighted) references before spending one. Tuned on the stock-compiler
+// corpus (any value from 1 to 6 landed within 0.15 points).
+#define FRESH_SAVE_EXTRA      3
+#define FRESH_SAVE_EXTRA_LOOP 1
+
+typedef struct {
+    AsmNode *entry_end;             // last node of the prologue: loads go right after it
+    bool     saved[16];             // registers the function saves/restores
+    bool     lua;                   // caller-save ABI: nothing needs saving
+    bool     can_save;              // a push/pop can be added (every exit is a recognised epilogue)
+    int      n_epi;
+    AsmNode *epi_first[MAX_EPILOGUES];   // our pops go right before this node, per epilogue
+} FrameInfo;
+
+static AsmNode *prev_real(AsmNode *n) {
+    n = n ? n->prev : NULL;
+    while (n && n->type == OP_OTHER) n = n->prev;
+    return n;
+}
+
+static int pushpop_reg(const AsmNode *n) {            // register number of PUSH/POP Rn, else -1
+    const Operand *op = n->has_dst ? &n->dst_op : (n->has_src ? &n->src_op : NULL);
+    if (!op || op->mode != MODE_REG) return -1;
+    int r = get_reg_index(op->reg);
+    return (r >= 1 && r <= 13) ? r : -1;
+}
+
+static void frame_info(FrameInfo *fi, AsmNode *anchor, AsmNode *first, AsmNode *limit) {
+    memset(fi, 0, sizeof(*fi));
+    fi->entry_end = anchor;
+    fi->lua = (config.lang_mode == LANG_LUA);
+    for (AsmNode *n = anchor->next; n && n != limit; n = n->next) {
+        if (n->type == OP_OTHER) continue;
+        int r;
+        if (n->type == OP_PUSH && (r = pushpop_reg(n)) > 0) { fi->saved[r] = true; fi->entry_end = n; continue; }
+        break;
+    }
+    if (fi->lua) return;
+
+    fi->can_save = true;
+    for (AsmNode *n = first; n && n != limit && fi->can_save; n = n->next) {
+        if (is_jump(n)) {                                // leaving the function would skip our pops
+            char target[128];
+            branch_target(n, target, sizeof(target));
+            if (!label_in_range(target, first, limit)) fi->can_save = false;
+        }
+        if (n->type != OP_RET) continue;
+        AsmNode *p = prev_real(n);
+        if (!p || p->type != OP_POP || !str_case_eq(p->dst_op.reg, "BP")) { fi->can_save = false; break; }
+        AsmNode *m = prev_real(p);
+        if (!m || m->type != OP_MOV || !m->has_dst || !m->has_src ||
+            !str_case_eq(m->dst_op.reg, "SP") || !str_case_eq(m->src_op.reg, "BP")) { fi->can_save = false; break; }
+        AsmNode *ins = m;
+        for (AsmNode *q = prev_real(m); q && q->type == OP_POP && pushpop_reg(q) > 0; q = prev_real(q)) ins = q;
+        if (fi->n_epi == MAX_EPILOGUES) { fi->can_save = false; break; }
+        fi->epi_first[fi->n_epi++] = ins;
+    }
+}
+
+// Make sure the function saves and restores Rr; false if it can't.
+static bool frame_save_reg(FrameInfo *fi, int r, OptType t) {
+    if (fi->lua || fi->saved[r]) return true;
+    if (!fi->can_save) return false;
+    char nm[8], raw[24];
+    snprintf(nm, sizeof(nm), "R%d", r);
+    snprintf(raw, sizeof(raw), "    PUSH %s", nm);
+    AsmNode *push = create_node(raw, OP_PUSH, "PUSH", nm, NULL);
+    link_after(fi->entry_end, push);
+    fi->entry_end = push;
+    char dbg[96];
+    snprintf(dbg, sizeof(dbg), "PROMOTE: %s is promoted below, so the function now saves it (callee-save ABI)", nm);
+    insert_debug_comment(push, t, dbg);
+    snprintf(raw, sizeof(raw), "    POP %s", nm);
+    for (int i = 0; i < fi->n_epi; i++) {
+        AsmNode *pop = create_node(raw, OP_POP, "POP", nm, NULL);
+        link_before(fi->epi_first[i], pop);
+        fi->epi_first[i] = pop;
+    }
+    fi->saved[r] = true;
+    return true;
+}
+
 // -------------------------------------------------------------------
 // Helper: choose a register for a promotion whose load will be spliced in
-// BEFORE `at`: not mentioned in the region (ri->reg_used) and provably
-// dead from `at` on (see the file header). Marks it used and returns its
-// number, or -1.
+// BEFORE `at`: not mentioned in the region (ri->reg_used), provably dead
+// from `at` on (see the file header), and usable under the calling
+// convention above: already saved by the function (free), or -- when
+// `allow_fresh` -- one that can get a push/pop (R4-R10: R2/R3 stay out, as
+// v32lua returns values there). Marks it used and returns its number, or
+// -1; *fresh says a push/pop still has to be added (frame_save_reg).
 // -------------------------------------------------------------------
-static int pick_register(AsmNode *at, RegionInfo *ri) {
-    for (int r = PROMOTE_FIRST_REG; r <= PROMOTE_LAST_REG; r++) {
-        if (ri->reg_used[r]) continue;
-        char name[8];
-        snprintf(name, sizeof(name), "R%d", r);
-        if (!reg_dead_from(at, name)) continue;
-        ri->reg_used[r] = true;
-        return r;
+static int pick_register(AsmNode *at, RegionInfo *ri, const FrameInfo *fi, bool allow_fresh, bool *fresh) {
+    *fresh = false;
+    for (int pass = 0; pass < 2; pass++) {
+        for (int r = PROMOTE_FIRST_REG; r <= PROMOTE_LAST_REG; r++) {
+            if (ri->reg_used[r]) continue;
+            bool is_saved = fi->lua || fi->saved[r];
+            if (pass == 0 && !is_saved) continue;
+            if (pass == 1) {
+                if (is_saved || !allow_fresh || !fi->can_save || r < 4) continue;
+            }
+            char name[8];
+            snprintf(name, sizeof(name), "R%d", r);
+            if (!reg_dead_from(at, name)) continue;
+            ri->reg_used[r] = true;
+            *fresh = (pass == 1);
+            return r;
+        }
     }
     return -1;
 }
@@ -601,20 +732,6 @@ static AsmNode *make_mov(const char *dst, const char *src) {
     return create_node(raw, OP_MOV, "MOV", dst, src);
 }
 
-static void link_before(AsmNode *pos, AsmNode *nn) {
-    nn->prev = pos->prev;
-    nn->next = pos;
-    if (pos->prev) pos->prev->next = nn;
-    pos->prev = nn;
-}
-
-static void link_after(AsmNode *pos, AsmNode *nn) {
-    nn->prev = pos;
-    nn->next = pos->next;
-    if (pos->next) pos->next->prev = nn;
-    pos->next = nn;
-}
-
 static void slot_text(int off, char *buf, size_t sz) {
     snprintf(buf, sz, "[BP%+d]", off);
 }
@@ -646,6 +763,8 @@ int pass_promote_stack_slots(AsmNode *head) {
 
         // Phase B: Execute Function-Wide Promotion (Leaf Functions Only)
         if (anchor) {
+            FrameInfo fi;
+            frame_info(&fi, anchor, first, limit);
             int count;
             int *w = loop_weights(first, limit, &count);
             RegionInfo ri;
@@ -660,25 +779,28 @@ int pass_promote_stack_slots(AsmNode *head) {
                 // rewritten reference plus its load) as one atomic unit.
                 if (!trigger_allowed()) continue;
 
-                int r = pick_register(anchor->next, &ri);
-                if (r < 0) break;
+                bool fresh;
+                int r = pick_register(fi.entry_end->next, &ri, &fi,
+                                      ri.refs[idx] >= MIN_REFS_FUNC + FRESH_SAVE_EXTRA, &fresh);
+                if (r < 0) continue;
                 char reg_name[16], slot[24];
                 snprintf(reg_name, sizeof(reg_name), "R%d", r);
                 slot_text(off, slot, sizeof(slot));
+                if (fresh) frame_save_reg(&fi, r, OPT_PROMOTE_LEAF);
 
                 optimizations += rewrite_slot(first, limit, off, reg_name, OPT_PROMOTE_LEAF);
 
                 char dbg[128];
-                if (reg_dead_from(anchor->next, reg_name)) {
+                if (reg_dead_from(fi.entry_end->next, reg_name)) {
                     // every path writes the register before reading it: the
                     // slot's incoming value is never used, so there is nothing to load
                     snprintf(dbg, sizeof(dbg),
                              "PROMOTE-LEAF: %s lives in %s (always written before read: no load)",
                              slot, reg_name);
-                    insert_debug_comment(anchor, OPT_PROMOTE_LEAF, dbg);
+                    insert_debug_comment(fi.entry_end, OPT_PROMOTE_LEAF, dbg);
                 } else {
                     AsmNode *load = make_mov(reg_name, slot);
-                    link_after(anchor, load);
+                    link_after(fi.entry_end, load);
                     snprintf(dbg, sizeof(dbg),
                              "PROMOTE-LEAF: load of %s into %s after the prologue (whole-function, leaf-only)",
                              slot, reg_name);
@@ -747,6 +869,8 @@ int pass_promote_regs(AsmNode *head) {
             anchor = prologue_anchor(func_first, func_limit);
         }
         if (!anchor) { curr = func_limit; continue; }
+        FrameInfo fi;
+        frame_info(&fi, anchor, func_first, func_limit);
 
         // ----------------------------------------------------------------
         // Walk the function in CALL-free segments: [seg_start, seg_limit)
@@ -831,7 +955,7 @@ int pass_promote_regs(AsmNode *head) {
                 // segment, right before seg_start in a later one (after the
                 // CALL; for the first segment that must not be before the
                 // frame exists).
-                AsmNode *load_at = is_first_segment ? anchor->next : seg_start;
+                AsmNode *load_at = is_first_segment ? fi.entry_end->next : seg_start;
 
                 // TRIGGER CAP: gate the WHOLE promotion of this one offset
                 // (its load, every rewritten reference, and its flush) as a
@@ -839,11 +963,17 @@ int pass_promote_regs(AsmNode *head) {
                 // would produce code that corresponds to no real pass state.
                 if (!trigger_allowed()) continue;
 
-                int r = pick_register(load_at, &ri);
-                if (r < 0) break;
+                bool fresh;
+                int r = pick_register(load_at, &ri, &fi,
+                                      ri.refs[idx] >= MIN_REFS_FUNC + FRESH_SAVE_EXTRA, &fresh);
+                if (r < 0) continue;
                 char reg_name[16], slot[24];
                 snprintf(reg_name, sizeof(reg_name), "R%d", r);
                 slot_text(off, slot, sizeof(slot));
+                if (fresh) {
+                    frame_save_reg(&fi, r, OPT_PROMOTE_REGS);
+                    if (is_first_segment) load_at = fi.entry_end->next;   // the push went in ahead of it
+                }
 
                 optimizations += rewrite_slot(seg_start, seg_limit, off, reg_name, OPT_PROMOTE_REGS);
 
@@ -873,7 +1003,7 @@ int pass_promote_regs(AsmNode *head) {
                     insert_debug_comment(load_at->prev, OPT_PROMOTE_REGS, dbg);
                 } else {
                     AsmNode *load = make_mov(reg_name, slot);
-                    if (is_first_segment) link_after(anchor, load);
+                    if (is_first_segment) link_after(fi.entry_end, load);
                     else                  link_before(seg_start, load);
                     snprintf(dbg, sizeof(dbg),
                              "PROMOTE-REGS: %s-segment load of %s into %s (CALL-free segment, independent of any other segment)",
@@ -945,10 +1075,13 @@ int pass_promote_loop_registers(AsmNode *head) {
     AsmNode *curr = head ? head->next : NULL;
     liveness_begin(head);
 
-    // per-function escape-check cache
+    // per-function caches: escape check, and the frame (saved registers)
     AsmNode *cached_entry = NULL;
     bool     cached_valid = false;
     bool     cached_escapes = false;
+    AsmNode *fi_entry = NULL;
+    bool     fi_valid = false, fi_ok = false;
+    FrameInfo fi;
 
     while (curr) {
         // 1. Identify Loop Headers (e.g., __for_1_start:, __while_1_start:)
@@ -991,6 +1124,24 @@ int pass_promote_loop_registers(AsmNode *head) {
             cached_escapes = function_frame_escapes(func_first, func_last);
         }
         if (cached_escapes) { curr = curr->next; continue; }
+
+        // The frame: which registers the function saves (see FrameInfo). In
+        // every mode but -L lua a function without a recognizable prologue
+        // can't have a register added to it, so its loops stay in memory.
+        if (!fi_valid || fi_entry != entry) {
+            fi_entry = entry;
+            fi_valid = true;
+            AsmNode *an = entry ? prologue_anchor(func_first, func_last->next) : NULL;
+            if (an) {
+                frame_info(&fi, an, func_first, func_last->next);
+                fi_ok = true;
+            } else {
+                memset(&fi, 0, sizeof(fi));
+                fi.lua = (config.lang_mode == LANG_LUA);
+                fi_ok = fi.lua;
+            }
+        }
+        if (!fi_ok) { curr = curr->next; continue; }
 
         // 2. Find the Loop Back-Edge (a JMP/JT/JF back to start_lbl)
         AsmNode *end_jmp = NULL;
@@ -1094,11 +1245,13 @@ int pass_promote_loop_registers(AsmNode *head) {
             // load, exit store, every rewritten reference) as one unit.
             if (!trigger_allowed()) continue;
 
-            int r = pick_register(curr, &ri);
-            if (r < 0) break;
+            bool fresh;
+            int r = pick_register(curr, &ri, &fi, ri.refs[idx] >= MIN_REFS_LOOP + FRESH_SAVE_EXTRA_LOOP, &fresh);
+            if (r < 0) continue;
             char reg_name[16], slot[24];
             snprintf(reg_name, sizeof(reg_name), "R%d", r);
             slot_text(off, slot, sizeof(slot));
+            if (fresh) frame_save_reg(&fi, r, OPT_PROMOTE_LOOPS);
 
             // Rewrite all references inside the loop body to the register
             optimizations += rewrite_slot(curr->next, body_end, off, reg_name, OPT_PROMOTE_LOOPS);

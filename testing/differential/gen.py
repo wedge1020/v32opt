@@ -15,6 +15,7 @@ import os, random, sys
 
 seed = int(sys.argv[1])
 R = random.Random(seed)
+CALLY = bool(os.environ.get('GEN_CALLY'))      # many calls, deeply nested in expressions
 NF = int(os.environ["GEN_NF"]) if "GEN_NF" in os.environ else R.randint(2, 5)
 
 def const():
@@ -46,6 +47,9 @@ class Fn:
 
     def expr(self, d=0):
         r = R.random()
+        if CALLY and self.idx > 0 and d < 5 and self.depth == 0 and R.random() < 0.45:
+            callee = R.randrange(self.idx)
+            return 'f%d(%s)' % (callee, ', '.join(self.expr(d + 1) for _ in range(NPARAMS[callee])))
         if d > 2 or r < 0.30:
             c = R.random()
             if c < 0.5: return self.var()

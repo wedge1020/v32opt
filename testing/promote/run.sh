@@ -24,13 +24,19 @@ fail() { echo "FAIL: $1"; status=1; }
 # fn_text <asm> <function>: the function's lines
 fn_text() { awk -v f="__function_$2:" -v e="__function_$2_return:" \
             '$0 == f {on=1} on {print} $0 == e {exit}' "$1"; }
+# fn_all <asm> <function>: ... up to the next function (epilogue included)
+fn_all() { awk -v f="__function_$2:" -v e="__function_$2_return:" \
+           '$0 == f {on=1; print; next} on && /^__function_/ && $0 != e {exit} on {print}' "$1"; }
 # promoted <asm> <function> <pass-tag>: number of "PROMOTE-..." notes
 promoted() { fn_text "$1" "$2" | grep -c "PROMOTE-$3"; }
 # line_of <text> <regex>: first line number matching
 line_of() { printf '%s\n' "$1" | grep -n -m1 -E "$2" | cut -d: -f1; }
 
+# promote.asm is checked in -L lua mode (caller-save: nothing has to be saved
+# around a promoted register, so the placement logic is what shows); the
+# callee-save rules of the C compilers are checked on callee-save.asm below.
 for pass in loops regs leaf; do
-    "${OPT}" "${HERE}/promote.asm" -fpromote-${pass} -d -o "${TMP}/${pass}.asm" || fail "v32opt failed (promote-${pass})"
+    "${OPT}" "${HERE}/promote.asm" -L lua -fpromote-${pass} -d -o "${TMP}/${pass}.asm" || fail "v32opt failed (promote-${pass})"
 done
 P="${TMP}/loops.asm"
 
@@ -80,6 +86,30 @@ for fn in outer_call passthrough param_ro param_rw sp_escape naked alias_before_
     [ "$(promoted "${P}" ${fn} LEAF)" = 0 ] || fail "leaf: ${fn} must not be promoted"
 done
 fn_text "${P}" loop_basic | grep -E '^    MOV \[BP' && fail "leaf: loop_basic stores a slot back before the epilogue"
+
+# ---- callee-save (the stock C compiler's convention, -L c) -------------------
+# Its callers keep live temporaries in R1, R2, ... across a CALL and rely on
+# every callee to save the registers it uses. A promoted local needs a
+# register: one the function already saves, or one it gets a PUSH and a POP
+# for (after the existing pushes / before the existing pops) -- and where
+# that can't be arranged, the local stays in memory.
+"${OPT}" "${HERE}/callee-save.asm" -fpromote-regs -fpromote-loops -d -o "${TMP}/cs.asm" || fail "v32opt failed (callee-save.asm)"
+C="${TMP}/cs.asm"
+T="$(fn_all "${C}" fresh)"
+pu="$(line_of "${T}" '^    PUSH R4')"; pu1="$(line_of "${T}" '^  push R1')"; po="$(line_of "${T}" '^    POP R4')"; po1="$(line_of "${T}" '^  pop R1')"
+[ -n "${pu}" ] && [ -n "${po}" ] || fail "callee-save: fresh: no push/pop pair was added for the promoted register"
+[ -n "${pu1}" ] && [ "${pu}" -gt "${pu1}" ] || fail "callee-save: fresh: the new push must follow the existing one"
+[ -n "${po1}" ] && [ "${po}" -lt "${po1}" ] || fail "callee-save: fresh: the new pop must precede the existing one (LIFO)"
+printf '%s\n' "${T}" | grep -qE 'PROMOTE-.*\[BP-1\] (lives in|.*into) R4' || fail "callee-save: fresh: [BP-1] should live in R4"
+T="$(fn_all "${C}" reuse)"
+printf '%s\n' "${T}" | grep -qE '^    (PUSH|POP) R' && fail "callee-save: reuse: a register the function saves needs no new push/pop"
+printf '%s\n' "${T}" | grep -qE 'PROMOTE-.*\[BP-1\] (lives in|.*into) R2' || fail "callee-save: reuse: the saved register R2 should have been used"
+for fn in no_epilogue tail_jump; do
+    [ "$(fn_all "${C}" ${fn} | grep -c 'PROMOTE')" = 0 ] || fail "callee-save: ${fn}: a function whose exits aren't all recognized epilogues can't take a new push/pop"
+done
+T="$(fn_all "${C}" two_loops)"
+[ "$(printf '%s\n' "${T}" | grep -c '^    PUSH R')" = 2 ] || fail "callee-save: two_loops: exactly the two registers used must be pushed"
+[ "$(printf '%s\n' "${T}" | grep -c '^    POP R')" = 2 ] || fail "callee-save: two_loops: and popped"
 
 [ ${status} = 0 ] && echo "PASS: promote"
 exit ${status}

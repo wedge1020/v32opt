@@ -26,5 +26,7 @@ int  peephole_loads           (AsmNode *);
 int  peephole_immediate_prop  (AsmNode *);
 int  peephole_jmp_chain       (AsmNode *);
 int  peephole_zero_test       (AsmNode *);
+int  peephole_dead_regs       (AsmNode *);
+int  peephole_copies          (AsmNode *);
 
 #endif
