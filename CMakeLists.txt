@@ -353,6 +353,10 @@ if(BUILD_TESTING)
         add_test(NAME promote
                  COMMAND "${V32OPT_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/testing/promote/run.sh"
                          "$<TARGET_FILE:v32opt>")
+        # No pass may write a register its input did not (clobbered-register lint).
+        add_test(NAME callee-save-lint
+                 COMMAND "${V32OPT_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/testing/lint/run.sh"
+                         "$<TARGET_FILE:v32opt>")
     endif()
 endif()
 
