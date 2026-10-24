@@ -217,6 +217,60 @@ def table(rows, header):
     return '\n'.join(out)
 
 
+# --------------------------------------------------------------------------
+# tuning: greedy search over v32opt flags
+# --------------------------------------------------------------------------
+TOGGLES = ['inline', 'loop-unroll', 'loop-unroll-partial', 'loop-index', 'loop-invert',
+           'promote-regs', 'promote-leaf', 'promote-loops', 'cse', 'dce', 'constant-folding',
+           'omit-frame-pointers', 'peephole-copies', 'peephole-dead-regs']
+KNOBS = [('loop-unroll-max-trips', [8, 32, 64]), ('loop-unroll-max-size', [48, 192, 384]),
+         ('loop-unroll-partial-factor', [2, 3, 8]), ('loop-unroll-partial-max-body', [12, 48]),
+         ('loop-unroll-partial-min-body', [4, 8]), ('loop-invert-max-test', [4, 16])]
+
+
+def candidates(flags):
+    have = set(flags.split())
+    out = []
+    for t in TOGGLES:
+        f = '-fno-' + t
+        if f not in have: out.append(f)
+    for name, vals in KNOBS:
+        for v in vals:
+            f = '-f%s=%d' % (name, v)
+            if f not in have: out.append(f)
+    return out
+
+
+def score(r, metric):
+    return {'cycles': (r['cycles'], r['words']), 'size': (r['words'], r['cycles']),
+            'product': (r['cycles'] * r['words'], r['cycles'])}[metric]
+
+
+def tune(impl, tool, start, work, maxf, a, expect, o0, ex):
+    """Greedy hill climb. Returns (flags, result, trace)."""
+    name = os.path.splitext(os.path.basename(impl))[0]
+    cur = start
+    r0 = build_and_run(impl, tool, 'tune-start', cur, work, maxf)
+    if 'err' in r0 or (expect is not None and r0['result'] != expect): return None, r0, []
+    best = r0
+    trace = []
+    limit = None
+    if a.tune_growth is not None and o0 and 'words' in o0:
+        limit = o0['words'] * (1 + a.tune_growth / 100.0)
+    for step in range(a.tune_steps):
+        cands = candidates(cur)
+        res = list(ex.map(lambda f: (f, build_and_run(impl, tool, 'tune-%d-%s' % (step, f.strip('-')), cur + ' ' + f, work, maxf)), cands))
+        ok = [(f, r) for f, r in res if 'err' not in r and (expect is None or r['result'] == expect)
+              and (limit is None or r['words'] <= limit)]
+        ok = [(f, r) for f, r in ok if score(r, a.tune_metric) < score(best, a.tune_metric)]
+        if not ok: break
+        f, r = min(ok, key=lambda fr: score(fr[1], a.tune_metric))
+        cur += ' ' + f
+        best = r
+        trace.append((f, r['cycles'], r['words']))
+    return cur, best, trace
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('suite')
@@ -229,6 +283,11 @@ def main():
     ap.add_argument('--maxf', type=int, default=int(os.environ.get('MAXF', '4000')), help='frames before a run counts as timed out')
     ap.add_argument('-j', type=int, default=os.cpu_count() or 4)
     ap.add_argument('--work', help='work directory (default: a temporary one, removed afterwards)')
+    ap.add_argument('--tune', action='store_true', help='per build, search for the v32opt flags that give the fewest cycles (adds a "tuned" row)')
+    ap.add_argument('--tune-from', default='-O3', help='start of the search (default -O3)')
+    ap.add_argument('--tune-metric', choices=['cycles', 'size', 'product'], default='cycles', help='what the search minimizes (product = cycles x words)')
+    ap.add_argument('--tune-growth', type=float, default=None, metavar='PCT', help='reject settings whose code is more than PCT%% bigger than the -O0 build')
+    ap.add_argument('--tune-steps', type=int, default=8, help='most changes accepted per build (default 8)')
     ap.add_argument('--csv'); ap.add_argument('--md'); ap.add_argument('--json')
     a = ap.parse_args()
 
@@ -286,6 +345,25 @@ def main():
     for r in R.values():
         if 'err' not in r and expect is not None and r['result'] != expect:
             r['wrong'] = True
+
+    tuned_info = []
+    if a.tune and not a.no_opt:
+        with ThreadPoolExecutor(max_workers=a.j) as ex:
+            for g in list(dict.fromkeys(k[:2] for k in R)):
+                impl_name, tool = g
+                impl = next(f for f, t in builds if os.path.splitext(os.path.basename(f))[0] == impl_name and t == tool)
+                start_key = g + (a.tune_from,)
+                if start_key not in R:
+                    sf = a.tune_from if a.tune_from.startswith('-') else '-' + a.tune_from
+                    start_key = g + (sf,)
+                if start_key not in R or 'err' in R[start_key] or R[start_key].get('wrong'): continue
+                flags0 = dict(scen)[start_key[2]]
+                if flags0 is None: continue
+                print('tuning %s / %s from %s ...' % (impl_name, tool, flags0), flush=True)
+                flags, best, trace = tune(impl, tool, flags0, work, a.maxf, a, expect, R.get(g + ('-O0',)), ex)
+                if flags is None: continue
+                R[g + ('tuned',)] = best
+                tuned_info.append((g, flags, start_key, trace))
 
     keys = list(R.keys())
     base_key = None
@@ -351,6 +429,17 @@ def main():
         if b: row += ['%.2fx' % (b['cycles'] / r['cycles']), '%+.1f%%' % pct(r['words'], b['words'])]
         rows.append((r['cycles'], row))
     out.append(table([r for _, r in sorted(rows)], ['build', 'words', 'cycles'] + (['speed vs base', 'size vs base'] if b else [])))
+    if tuned_info:
+        out.append('')
+        out.append('== tuned settings (greedy search from %s, minimizing %s)' % (a.tune_from, a.tune_metric))
+        for g, flags, start_key, trace in tuned_info:
+            r0, r1 = R[start_key], R[g + ('tuned',)]
+            out.append('%s / %s: %s' % (g[0], g[1], flags))
+            out.append('    %s: %d cycles, %d words  ->  tuned: %d cycles (%+.1f%%), %d words (%+.1f%%)' % (
+                start_key[2], r0['cycles'], r0['words'], r1['cycles'], pct(r1['cycles'], r0['cycles']),
+                r1['words'], pct(r1['words'], r0['words'])))
+            for f, c, w in trace:
+                out.append('      + %-40s %d cycles, %d words' % (f, c, w))
     text = '\n'.join(out)
     print(text)
 

@@ -67,6 +67,29 @@ Add a file to the suite directory; it is picked up by its extension.
 `--csv`, `--md` and `--json` write the numbers out; the exit status is 1 if a
 build failed or gave a wrong answer.
 
+## Tuning a build: `--tune`
+
+`--tune` searches, for every build, for the `v32opt` command line that suits
+**that program**: starting from `-O3` (`--tune-from`), it tries switching each
+pass off (`-fno-inline`, `-fno-loop-unroll-partial`, ...) and moving each of
+the loop limits (`-floop-unroll-max-trips=...`, `-floop-unroll-partial-factor=...`,
+see the *Tuning the loop passes* table in the main README), keeps the single
+change that helps most, and repeats (at most `--tune-steps`, default 8) until
+nothing improves. Every candidate is a full build and run, and one with a wrong
+answer is discarded. The result is an extra `tuned` row in the tables, plus the
+chosen flags and the steps that led there.
+
+```bash
+python3 bench.py primes --tune                          # fewest cycles
+python3 bench.py primes --tune --tune-metric product    # cycles x size
+python3 bench.py primes --tune --tune-growth 25         # at most 25% bigger than -O0
+python3 bench.py primes --tune --tune-metric size       # smallest
+```
+
+Ties are broken by the other metric, so a flag that changes nothing in cycles but
+saves code is still taken. The flag line it prints is what to put in the
+program's build script.
+
 ## Scenarios
 
 Default: `-O0` (no optimizer) plus `-O1,-O2,-O3,-Os`. `--scenarios O2,O3`
