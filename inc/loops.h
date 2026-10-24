@@ -56,6 +56,17 @@ typedef struct { char from[128]; char to[160]; } LoopRename;
 AsmNode    *loop_clone_renamed  (const AsmNode *src, const LoopRename *r, int n);
 
 // Tunables of the loop passes (command line: -floop-<pass>-<name>=N).
+// ---- execution profile (--profile FILE, see profile.c) ----------------------
+extern bool        g_profile_on;
+extern long long   g_profile_total;          // instructions executed by the profiled run
+extern double      g_profile_hot_pct;        // a loop with at least this share of them is hot   (2.0)
+extern double      g_profile_cold_pct;       // ... and below this share it is cold            (0.1)
+extern const char *g_profile_file;           // set by the command line
+void  assign_source_lines (AsmNode *head);
+int   profile_load        (AsmNode *head, const char *file);   // 0 on success
+int   loop_heat           (AsmNode *from, AsmNode *to);        // -1 cold, 0 warm/unknown, +1 hot
+bool  profile_arg         (const char *arg);                   // "profile-hot=PCT" / "profile-cold=PCT"
+
 typedef struct {
     int unroll_max_trips;         // loop-unroll: most iterations unrolled completely   (16)
     int unroll_max_size;          // loop-unroll: most instructions in the result       (96)

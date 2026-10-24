@@ -130,7 +130,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
     // "core_count < config.opt_inline_max_body_ins" in inline.c, whose
     // core_nodes[] arrays are sized MAX_BODY_INS -- an unclamped value
     // (e.g. -finline-max=64) overflowed them straight off the stack.
-    if (loop_tuning_arg(arg)) return true;
+    if (loop_tuning_arg(arg) || profile_arg(arg)) return true;
 
     if (strncmp(arg, "inline-max=", 11) == 0) {
         int v = atoi(arg + 11);
@@ -200,7 +200,9 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "                           use 'c'; 'lua' adds NaN-boxed-type awareness\n");
     fprintf(stdout, "                           for v32lua output)\n");
     fprintf(stdout, "  -o <file>                Output assembly file (default: <input>Opt.asm)\n");
-    fprintf(stdout, "  --dot <cfg.dot>          Export Control Flow Graph to DOT format\n\n");
+    fprintf(stdout, "  --dot <cfg.dot>          Export Control Flow Graph to DOT format\n");
+    fprintf(stdout, "  --profile <file>         Line profile of the program (scripts/v32prof.py): hot loops\n");
+    fprintf(stdout, "                           get more unrolling, cold ones none (-fprofile-hot=PCT, -fprofile-cold=PCT)\n\n");
     fprintf(stdout, "Optimization Levels:\n");
     fprintf(stdout, "  -O0                      Disable all optimizations [default]\n");
     fprintf(stdout, "  -O1                      Local peephole passes\n");
@@ -274,6 +276,7 @@ void process_args(int argc, char **argv, OptConfig *cfg,
         {"version",      no_argument,       NULL, 'V'},
         {"help",         no_argument,       NULL, 'h'},
         {"trigger-max",  required_argument, NULL, 'T'},
+        {"profile",      required_argument, NULL, 'P'},
         {NULL, 0, NULL, 0}
     };
 
@@ -339,6 +342,9 @@ void process_args(int argc, char **argv, OptConfig *cfg,
 
             case 'D': safe_str_copy(dot_file, optarg, dot_size); break;
 
+            case 'P':
+                g_profile_file = optarg;
+                break;
             case 'T': {
                 char *endptr = NULL;
                 long val = strtol(optarg, &endptr, 10);

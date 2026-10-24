@@ -204,7 +204,8 @@ set(V32OPT_CORE_SRC
     src/helpers.c
     src/defines.c
     src/liveness.c
-    src/loops.c)
+    src/loops.c
+    src/profile.c)
 
 file(GLOB V32OPT_PEEPHOLE_SRC CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/peephole/*.c")
@@ -369,6 +370,10 @@ if(BUILD_TESTING)
         # loop-unroll-partial: guarded main loop + remainder, and what is left alone.
         add_test(NAME loop-unroll-partial
                  COMMAND "${V32OPT_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/testing/loop-unroll-partial/run.sh"
+                         "$<TARGET_FILE:v32opt>")
+        # --profile: hot loops get more unrolling, cold ones none.
+        add_test(NAME profile-loops
+                 COMMAND "${V32OPT_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/testing/profile-loops/run.sh"
                          "$<TARGET_FILE:v32opt>")
         # No pass may write a register its input did not (clobbered-register lint).
         add_test(NAME callee-save-lint

@@ -176,6 +176,8 @@ int peephole_loop_unroll_partial(AsmNode *head)
             if (n == jmp) break;
         }
         if (overlap) continue;
+        int heat = loop_heat(L.start, jmp);
+        if (heat < 0) continue;                                  // cold per the profile
 
         // --- the bound -----------------------------------------------------
         // Forms: (A) cmp Rc, imm            (no loads)
@@ -238,9 +240,12 @@ int peephole_loop_unroll_partial(AsmNode *head)
         }
         if (!ok || body_ins < 1) continue;
         int per_copy = body_ins;            // the step is among them
-        if (per_copy > g_loop_tune.partial_max_body || per_copy < g_loop_tune.partial_min_body) continue;
+        if (per_copy > g_loop_tune.partial_max_body * (heat > 0 ? 2 : 1) ||
+            per_copy < g_loop_tune.partial_min_body) continue;
+        // hot loops (per the profile) get the biggest factor when it is automatic
         int k = g_loop_tune.partial_factor ? g_loop_tune.partial_factor
-                                           : (per_copy <= g_loop_tune.partial_big_body ? 4 : 2);
+              : heat > 0 ? 8
+              : (per_copy <= g_loop_tune.partial_big_body ? 4 : 2);
         if (k < 2) continue;
 
         long delta = (long)(k - 1) * L.stepv;

@@ -182,6 +182,12 @@ int main(int argc, char **argv) {
 
     // --- Parse Input Assembly File ---
     AsmNode *program_ast = parse_vircon32_asm(inFile);
+    assign_source_lines(program_ast);
+    if (g_profile_file) {
+        if (profile_load(program_ast, g_profile_file) == 0 && config.verbose)
+            printf("Profile: %lld instructions executed (hot >= %.2f%%, cold < %.2f%% of them).\n",
+                   g_profile_total, g_profile_hot_pct, g_profile_cold_pct);
+    }
     // %define table. Directive nodes are never deleted (remove_node()
     // refuses), so one build stays valid for the whole run.
     defines_build(program_ast);

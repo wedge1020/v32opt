@@ -173,6 +173,8 @@ int peephole_loop_invert(AsmNode *head)
             continue;
         }
 
+        if (loop_heat(start->node, p) < 0) { p = nextp; continue; }      // cold per the profile
+
         AsmNode *first = NULL, *jf = NULL;
         int n = find_test(start->node, &first, &jf);
         if (!n || !jf) { p = nextp; continue; }

@@ -262,6 +262,22 @@ itérations et instructions maximales d'une boucle entièrement déroulée, copi
 tour, plus gros et plus petit corps déroulés partiellement et plus long test
 dupliqué par l'inversion.
 .TP
+.BI \-\-profile " FICHIER"
+Un profil par lignes du programme (produit par
+.B scripts/v32prof.py
+à partir d'une exécution
+.B v32sim \-\-profile\-out
+du même fichier). Les boucles qui représentent au moins
+.BI \-fprofile\-hot= PCT
+pour cent (2 par défaut) des instructions exécutées sont déroulées davantage ; celles en dessous de
+.BI \-fprofile\-cold= PCT
+(0,1 par défaut) restent intactes pour
+.BR loop\-invert ,
+.B loop\-unroll
+et
+.BR loop\-unroll\-partial .
+Un profil qui ne correspond pas au fichier est ignoré avec un message.
+.TP
 .BI \-finline\-max= N
 Plafonne la taille d'une fonction encore considérée comme intégrable, en
 instructions du corps. Une fonction dont le corps linéaire dépasse

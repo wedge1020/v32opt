@@ -129,6 +129,7 @@ tests: bin/$(TARGET)
 	bash testing/loop-unroll/run.sh bin/$(TARGET)
 	bash testing/loop-index/run.sh bin/$(TARGET)
 	bash testing/loop-unroll-partial/run.sh bin/$(TARGET)
+	bash testing/profile-loops/run.sh bin/$(TARGET)
 	bash testing/lint/run.sh bin/$(TARGET)
 
 archive: clean

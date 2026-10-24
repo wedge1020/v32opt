@@ -90,6 +90,14 @@ Ties are broken by the other metric, so a flag that changes nothing in cycles bu
 saves code is still taken. The flag line it prints is what to put in the
 program's build script.
 
+## Profile-guided rows: `--profile`
+
+`--profile` profiles each build once in `v32sim` (scripts/v32prof.py; needs a
+`v32sim` with `--profile-out`) and adds a `-O3+prof` (and `-O2+prof`, ...) row
+next to every `-O` scenario, built with `v32opt --profile`. On `primes` the
+profile-guided `-O3` is as fast as the best global setting found by `--tune`
+with less code, because only the loops that run a lot are unrolled harder.
+
 ## Scenarios
 
 Default: `-O0` (no optimizer) plus `-O1,-O2,-O3,-Os`. `--scenarios O2,O3`

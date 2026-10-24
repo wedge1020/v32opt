@@ -262,6 +262,22 @@ iteraciones e instrucciones máximas de un bucle desenrollado por completo, copi
 por vuelta, cuerpos mayor y menor desenrollados parcialmente y la prueba más larga
 que duplica la inversión.
 .TP
+.BI \-\-profile " ARCHIVO"
+Un perfil por líneas del programa (lo genera
+.B scripts/v32prof.py
+a partir de una ejecución con
+.B v32sim \-\-profile\-out
+del mismo archivo). Los bucles que ocupan al menos
+.BI \-fprofile\-hot= PCT
+por ciento (2 por defecto) de las instrucciones ejecutadas se desenrollan más; los que están por debajo de
+.BI \-fprofile\-cold= PCT
+(0,1 por defecto) no los toca
+.BR loop\-invert ,
+.B loop\-unroll
+ni
+.BR loop\-unroll\-partial .
+Un perfil que no corresponde al archivo se ignora con un aviso.
+.TP
 .BI \-finline\-max= N
 Limita el tamaño de una función que todavía se considera insertable en
 línea, en instrucciones del cuerpo. Una función cuyo cuerpo lineal tenga

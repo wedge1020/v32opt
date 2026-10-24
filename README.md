@@ -1163,6 +1163,37 @@ automates the search):
 Values are clamped to sane ranges. Lower limits mean less code growth;
 higher ones more speed on long loops.
 
+
+### Profile-guided loop passes (`--profile`)
+
+Unrolling trades code size for speed, and whether the trade pays depends on
+how hot the loop really is. With a measured profile `v32opt` stops guessing:
+
+```bash
+scripts/v32prof.py game.asm -o game.prof --frames 600      # run it in v32sim, count every line
+v32opt game.asm -O3 --profile game.prof -o gameOpt.asm       # give the profile the SAME file
+```
+
+`v32prof.py` assembles the program with debug output, runs it headless in
+`v32sim` (`--profile-out`, `--fixed-clock`, `--seed=1`, `--fixed-cycles`) and
+maps the per-address counts back to the lines of the file. For each loop, the
+share of all executed instructions spent between its start label and its back
+edge decides:
+
+* **hot** (at least `-fprofile-hot=PCT`, default 2%): `loop-unroll` may remove twice
+  as many iterations and grow twice as much, and `loop-unroll-partial` takes
+  factor 8 (when automatic) and bodies twice as big;
+* **cold** (below `-fprofile-cold=PCT`, default 0.1%): `loop-invert`, `loop-unroll`
+  and `loop-unroll-partial` leave it alone, so code that rarely runs stays small;
+* otherwise the usual limits apply.
+
+A loop that a pass created, or that the profile does not cover, counts as
+neither hot nor cold. A profile that does not fit the input (most of its lines
+are not instructions) is reported and ignored. On the primes benchmark the
+profile-guided `-O3` reaches the cycle count of the global factor-8 setting
+with about 10% less code (`testing/bench/bench.py --profile` runs it).
+Needs a `v32sim` with `--profile-out`.
+
 ---
 
 ## Memory-to-Register Promotion (`-O2`)

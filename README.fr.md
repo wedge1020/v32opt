@@ -1192,6 +1192,32 @@ gros corps), `loop-unroll-partial-max-body` (24), `loop-unroll-partial-big-body`
 (12), `loop-unroll-partial-min-body` (1) et `loop-invert-max-test` (8, test le
 plus long que `loop-invert` duplique). Les valeurs sont bornées.
 
+
+### Passes de boucles guidées par profil (`--profile`)
+
+Le déroulage échange de la taille de code contre de la vitesse, et le gain dépend
+de la « chaleur » réelle de la boucle. Avec un profil mesuré, `v32opt` cesse de
+deviner :
+
+```bash
+scripts/v32prof.py jeu.asm -o jeu.prof --frames 600       # l'exécute dans v32sim, compte chaque ligne
+v32opt jeu.asm -O3 --profile jeu.prof -o jeuOpt.asm         # le MÊME fichier
+```
+
+`v32prof.py` assemble le programme avec les infos de débogage, l'exécute sans
+écran dans `v32sim` (`--profile-out`, `--fixed-clock`, `--seed=1`, `--fixed-cycles`)
+et reporte les compteurs par adresse sur les lignes du fichier. Pour chaque
+boucle, la part de toutes les instructions exécutées entre son étiquette de début
+et son saut de retour décide : **chaude** (au moins `-fprofile-hot=PCT`, 2 % par
+défaut) : `loop-unroll` peut supprimer deux fois plus d'itérations et grossir deux
+fois plus, et `loop-unroll-partial` prend le facteur 8 (s'il est automatique) et
+des corps deux fois plus grands ; **froide** (sous `-fprofile-cold=PCT`, 0,1 %) :
+`loop-invert`, `loop-unroll` et `loop-unroll-partial` la laissent telle quelle ;
+sinon, les limites habituelles s'appliquent. Une boucle créée par une passe, ou
+que le profil ne couvre pas, n'est ni chaude ni froide. Un profil qui ne
+correspond pas au fichier est signalé puis ignoré. Nécessite un `v32sim` avec
+`--profile-out`.
+
 ---
 
 ## Promotion de la Mémoire en Registres (`-O2`)

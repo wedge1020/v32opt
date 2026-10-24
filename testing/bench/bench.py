@@ -283,6 +283,7 @@ def main():
     ap.add_argument('--maxf', type=int, default=int(os.environ.get('MAXF', '4000')), help='frames before a run counts as timed out')
     ap.add_argument('-j', type=int, default=os.cpu_count() or 4)
     ap.add_argument('--work', help='work directory (default: a temporary one, removed afterwards)')
+    ap.add_argument('--profile', action='store_true', help='also run each -O scenario with a v32sim profile of the build (name+prof): hot loops unrolled harder, cold ones left alone')
     ap.add_argument('--tune', action='store_true', help='per build, search for the v32opt flags that give the fewest cycles (adds a "tuned" row)')
     ap.add_argument('--tune-from', default='-O3', help='start of the search (default -O3)')
     ap.add_argument('--tune-metric', choices=['cycles', 'size', 'product'], default='cycles', help='what the search minimizes (product = cycles x words)')
@@ -332,7 +333,28 @@ def main():
         try: BASE[(f, tool)] = base_asm(f, tool, work)
         except Err as e: BASE[(f, tool)] = e
 
-    jobs = [(f, tool, sname, flags) for f, tool in builds for sname, flags in scen]
+    PROF = {}
+    if a.profile and not a.no_opt:
+        sys.path.insert(0, os.path.join(OPT_ROOT, 'scripts'))
+        import v32prof
+        for f, tool in builds:
+            asm = BASE[(f, tool)]
+            if isinstance(asm, Err): continue
+            pf = os.path.join(work, os.path.basename(asm).replace('.base.asm', '.prof'))
+            try:
+                total, n = v32prof.make_profile(asm, pf, frames=min(a.maxf, 600))
+                PROF[(f, tool)] = pf
+            except RuntimeError as e:
+                print('profile of %s / %s failed: %s' % (os.path.basename(f), tool, str(e).splitlines()[0]))
+
+    def scen_for(f, tool):
+        out = list(scen)
+        pf = PROF.get((f, tool))
+        if pf:
+            out += [(n + '+prof', fl + ' --profile ' + pf) for n, fl in scen if fl and fl.startswith('-O')]
+        return out
+
+    jobs = [(f, tool, sname, flags) for f, tool in builds for sname, flags in scen_for(f, tool)]
     with ThreadPoolExecutor(max_workers=a.j) as ex:
         res = list(ex.map(lambda j: build_and_run(j[0], j[1], j[2], j[3], work, a.maxf), jobs))
     R = collections.OrderedDict()

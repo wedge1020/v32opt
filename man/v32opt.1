@@ -247,6 +247,22 @@ most iterations and instructions of a loop unrolled completely, the number of
 copies per round, the biggest and smallest bodies unrolled partially, and the
 longest test inversion duplicates.
 .TP
+.BI \-\-profile " FILE"
+A line profile of the program (made by
+.B scripts/v32prof.py
+from a
+.B v32sim \-\-profile\-out
+run of the same file). Loops that take at least
+.BI \-fprofile\-hot= PCT
+percent (default 2) of the executed instructions are unrolled harder; loops below
+.BI \-fprofile\-cold= PCT
+(default 0.1) are left to
+.B loop\-invert ,
+.B loop\-unroll
+and
+.B loop\-unroll\-partial
+alone. A profile that does not match the input is ignored with a message.
+.TP
 .BI \-finline\-max= N
 Cap the size of a function still considered inlinable, in body
 instructions. A function whose straight-line body is longer than

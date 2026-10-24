@@ -67,11 +67,11 @@ static bool is_scratch_reg(const char *r)
 typedef struct { int count; long init; } Trip;
 
 // Number of times 'cmp' holds while i steps from init by step (32-bit), or -1.
-static int trip_count(OpType cmp, long init, long step, long bound)
+static int trip_count(OpType cmp, long init, long step, long bound, int max_trips)
 {
     int i = (int)init, b = (int)bound;
     unsigned st = (unsigned)(int)step;
-    for (int n = 0; n <= g_loop_tune.unroll_max_trips; n++) {
+    for (int n = 0; n <= max_trips; n++) {
         bool go;
         switch (cmp) {
             case OP_ILT: go = i <  b; break;
@@ -266,7 +266,12 @@ static int unroll_once(AsmNode *head)
         }
         if (!have_init) { jmp = after_jmp; continue; }
 
-        int trips = trip_count(cmp->type, initv, stepv, bound);
+        // a profile makes hot loops worth twice the usual growth and cold ones none
+        int heat = loop_heat(start->node, jmp);
+        if (heat < 0) { jmp = after_jmp; continue; }
+        int max_trips = g_loop_tune.unroll_max_trips * (heat > 0 ? 2 : 1);
+        long max_size = (long)g_loop_tune.unroll_max_size * (heat > 0 ? 2 : 1);
+        int trips = trip_count(cmp->type, initv, stepv, bound, max_trips);
         if (trips < 1) { jmp = after_jmp; continue; }
 
         // --- the body: after the JF up to (excluding) the step ------------
@@ -287,7 +292,7 @@ static int unroll_once(AsmNode *head)
             body_ins++;
         }
         if (!ok || body_ins == 0 ||
-            (long)trips * (body_ins + 1) > g_loop_tune.unroll_max_size) {
+            (long)trips * (body_ins + 1) > max_size) {
             jmp = after_jmp;
             continue;
         }
