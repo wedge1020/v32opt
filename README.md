@@ -52,12 +52,15 @@ easy to ignore.
 4. [Usage & Optimization Levels](#usage--optimization-levels)
 5. [Phase 1: Local Peephole Optimizations (-O1)](#phase-1-local-peephole-optimizations--o1)
 6. [Phase 2: Global Data-Flow & Dead Code (-O2)](#phase-2-global-data-flow--dead-code--o2)
-7. [Phase 3: Interprocedural Inlining (-O3)](#phase-3-interprocedural-inlining--o3)
+7. [Phase 3: Inlining & Loop Optimizations (-O3)](#phase-3-inlining--loop-optimizations--o3)
 8. [Memory-to-Register Promotion (-O2)](#memory-to-register-promotion--o2)
 9. [CFG Visualization](#cfg-visualization)
 10. [Safety & Correctness Guardrails](#safety--correctness-guardrails)
 11. [Diagnostic and Debug Options](#diagnostic-and-debug-options)
 12. [Releasing (version stamping)](#releasing-version-stamping)
+
+See also **[USAGE.md](USAGE.md)**: a plain-language guide to choosing a level,
+checking the result, tuning, profiling and benchmarking.
 
 ---
 
@@ -434,6 +437,8 @@ v32opt <input.asm> [-o output.asm] [options]
 | `-L <c\|lua>`, `--langmode` | **Language Mode** | `lua` enables NaN-boxed-type awareness for `v32lua` output; `c` (default) for C, C++ and assembly (see [Source Languages](#source-languages-c-c-lua-and-assembly)). |
 | `--dot <file>` | **CFG Export** | Exports the Control Flow Graph to a Graphviz `.dot` file for visualization. |
 | `--trigger-max=<N>` | **Bisection Cap** | Global budget on total committed transformations (see below). |
+| `--profile <file>` | **Profile-Guided Loops** | A line profile made by `scripts/v32prof.py`: hot loops are unrolled harder, cold ones left alone (see [Profile-guided loop passes](#profile-guided-loop-passes---profile)). |
+| `-f<setting>=N` | **Loop Limits** | The size limits of the loop passes (see [Tuning the loop passes](#tuning-the-loop-passes)). |
 | `-V`, `--version` / `-h`, `--help` | **Info** | Print the version, or a usage summary, and exit. |
 
 `v32opt` is  silent on success  unless `-v` or  `-t` is given,  and exits
@@ -465,10 +470,12 @@ passes need whole-function knowledge -- which frame addresses escape,
 which registers are provably free -- so they belong here, not with the
 sliding-window peepholes).
 
-* **`-O3` (Aggressive  Interprocedural Transformations):** Makes sweeping
-architectural  modifications—such  as  function  inlining—that  trade
-binary  size  for  execution   velocity  and  completely  erase  function
-boundaries.
+* **`-O3` (Aggressive Transformations):** Makes sweeping modifications
+that trade binary size for execution velocity: function inlining, which
+completely erases function boundaries, and the loop passes (inversion,
+full and partial unrolling, index folding), which copy code. Their limits
+can be tuned per program and steered by a measured profile (see
+[USAGE.md](USAGE.md)).
 
 #### Why Frame Pointer Elimination lives in `-O2`
 
@@ -965,7 +972,7 @@ __function_add:          __function_add:
 
 ---
 
-## Phase 3: Interprocedural Inlining (`-O3`)
+## Phase 3: Inlining & Loop Optimizations (`-O3`)
 
 ### Function Inlining (`inline`)
 

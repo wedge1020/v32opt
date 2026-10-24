@@ -21,6 +21,8 @@ v32opt \- optimiza código ensamblador de Vircon32
 .RB [ \-\-dot
 .IR cfg.dot ]
 .RB [ \-\-trigger\-max= N ]
+.RB [ \-\-profile
+.IR file ]
 .br
 .B v32opt
 .B \-\-version
@@ -773,6 +775,12 @@ de Vircon32.
 Opcional, con
 .BR \-\-dot :
 exportación del grafo de flujo de control en formato Graphviz.
+.TP
+.I *.prof
+Opcional, con
+.BR \-\-profile :
+un perfil por líneas de la entrada, hecho con
+.BR scripts/v32prof.py .
 .PP
 Nota para la construcción del CART: el XML de tu cartucho hace referencia
 al
@@ -783,6 +791,8 @@ renombra el
 .I .vbin
 resultante o haz que el XML apunte a él.
 .SH "VÉASE TAMBIÉN"
+.I USAGE.md
+en el árbol de fuentes (elegir un nivel, comprobar el resultado, ajustar, perfilar y medir),
 .BR v32lua (1),
 .BR v32c++ (1),
 la documentación de las DevTools de Vircon32

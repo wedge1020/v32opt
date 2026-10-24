@@ -18,6 +18,8 @@ v32opt \- optimize Vircon32 assembly code
 .RB [ \-\-dot
 .IR cfg.dot ]
 .RB [ \-\-trigger\-max= N ]
+.RB [ \-\-profile
+.IR file ]
 .br
 .B v32opt
 .B \-\-version
@@ -737,6 +739,12 @@ assembler.
 Optional, with
 .BR \-\-dot :
 Graphviz control-flow-graph export.
+.TP
+.IR *.prof
+Optional, with
+.BR \-\-profile :
+a line profile of the input, made by
+.BR scripts/v32prof.py .
 .PP
 Note for the CART build: your cartridge XML references the
 .I .vbin
@@ -746,6 +754,9 @@ either rename the resulting
 .I .vbin
 or point the XML at it.
 .SH SEE ALSO
+.I USAGE.md
+in the source tree (choosing a level, checking the result, tuning, profiling and
+benchmarking, in plain language),
 .BR v32lua (1),
 .BR v32c++ (1),
 the Vircon32 DevTools documentation

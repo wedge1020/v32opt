@@ -57,12 +57,15 @@ niche dans un environnement de niche, puisse-t-il être tout aussi facile
 4. [Utilisation et Niveaux d'Optimisation](#utilisation-et-niveaux-doptimisation)
 5. [Phase 1 : Optimisations Locales à Lucarne (-O1)](#phase-1--optimisations-locales-à-lucarne--o1)
 6. [Phase 2 : Flot de Données Global et Code Mort (-O2)](#phase-2--flot-de-données-global-et-code-mort--o2)
-7. [Phase 3 : Intégration Interprocédurale (-O3)](#phase-3--intégration-interprocédurale--o3)
+7. [Phase 3 : Intégration et Optimisation des Boucles (-O3)](#phase-3--intégration-et-optimisation-des-boucles--o3)
 8. [Promotion de la Mémoire en Registres (-O2)](#promotion-de-la-mémoire-en-registres--o2)
 9. [Visualisation du CFG](#visualisation-du-cfg)
 10. [Garde-fous de Sûreté et de Correction](#garde-fous-de-sûreté-et-de-correction)
 11. [Options de Diagnostic et de Débogage](#options-de-diagnostic-et-de-débogage)
 12. [Publication (estampillage de la version)](#publication-estampillage-de-la-version)
+
+Voir aussi **[USAGE.md](USAGE.md)** (en anglais) : un guide en langage simple pour
+choisir un niveau, vérifier le résultat, régler, profiler et mesurer.
 
 ---
 
@@ -473,6 +476,8 @@ v32opt <entrée.asm> [-o sortie.asm] [options]
 | `-L <c\|lua>`, `--langmode` | **Mode de Langage** | `lua` active la prise en compte des types NaN-boxed pour la sortie de `v32lua` ; `c` (par défaut) pour le C, le C++ et l'assembleur (voir [Langages Sources](#langages-sources--c-c-lua-et-assembleur)). |
 | `--dot <fichier>` | **Export du CFG** | Exporte le Graphe de Flot de Contrôle dans un fichier `.dot` Graphviz pour le visualiser. |
 | `--trigger-max=<N>` | **Plafond de Bissection** | Budget global du total des transformations appliquées (voir ci-dessous). |
+| `--profile <fichier>` | **Boucles Guidées par Profil** | Un profil par lignes fait avec `scripts/v32prof.py` : les boucles chaudes sont déroulées davantage, les froides laissées intactes. |
+| `-f<réglage>=N` | **Limites des Boucles** | Les limites de taille des passes de boucles (voir « Réglage des passes de boucles »). |
 | `-V`, `--version` / `-h`, `--help` | **Information** | Affiche la version, ou un résumé de l'utilisation, puis quitte. |
 
 `v32opt` n'affiche rien en cas de succès, sauf si `-v` ou `-t` est
@@ -508,10 +513,12 @@ entière -- quelles adresses de cadre s'échappent, quels registres sont
 prouvés libres --, d'où leur place ici et non parmi les passes à
 fenêtre glissante).
 
-* **`-O3` (Transformations Interprocédurales Agressives) :** Effectue des
-modifications architecturales profondes — comme l'intégration des
-fonctions — qui échangent de la taille de binaire contre de la vitesse
-d'exécution et effacent complètement les frontières entre fonctions.
+* **`-O3` (Transformations Agressives) :** Effectue des modifications profondes
+qui échangent de la taille de binaire contre de la vitesse d'exécution :
+l'intégration des fonctions, qui efface complètement les frontières entre
+fonctions, et les passes de boucles (inversion, déroulage complet et partiel,
+repliement de l'indice), qui copient du code. Leurs limites se règlent par
+programme et peuvent être guidées par un profil mesuré (voir [USAGE.md](USAGE.md)).
 
 #### Pourquoi l'Élimination du Pointeur de Cadre se trouve dans `-O2`
 
@@ -1032,7 +1039,7 @@ __function_add:          __function_add:
 
 ---
 
-## Phase 3 : Intégration Interprocédurale (`-O3`)
+## Phase 3 : Intégration et Optimisation des Boucles (`-O3`)
 
 ### Intégration des Fonctions (`inline`)
 

@@ -1,457 +1,110 @@
-v32opt known issues -- post-bugfix state, Sep 23 2026
-(supersedes the Sep 15 audit list. Everything marked FIXED below was
-fixed, regression-tested against its minimal reproduction, and the
-full unit suite (19/19) passes; see "REMAINING" for what is still
-open. "RMW" = read-modify-write to memory, e.g. "IADD [R1+0], 5")
+v32opt -- current known issues and limitations
+(only what is still open; fixed problems are in the git history)
 
-FIXED -- CONFIRMED MISCOMPILES (from the Sep 15 audit):
+Legend: [limit] = a deliberate limit of the analysis, the optimizer stays
+correct but leaves optimization on the table; [gap] = missing optimization or
+tooling; [bug] = wrong or unpleasant behavior; [doc] = documentation.
 
--fpeephole-immediate-prop
-  FIXED: Pattern 2 no longer folds across reads of the register or
-  across JT/JF branches (the rewritten MOV executes on every path
-  that reaches it, including the branch-taken side).
 
--fpeephole-forwarding
-  FIXED: Rule 1 now models every memory write (RMW ALU ops, aliasing
-  stores through a different base register, MOVS/SETS/CMPS) and no
-  longer forwards across a CALL (a callee can write arbitrary
-  memory through pointers).
+PASSES
 
--fpeephole-dead-stores
-  FIXED: only a pure "MOV [loc], x" counts as an overwriter; an RMW
-  ("IADD [BP-4],1") or "PUSH [loc]" READS the slot and blocks the
-  match. MOVS/SETS/CMPS also recognized as memory traffic.
+[limit] Hand-written assembly gains little from -O2/-O3.
+  promote-*, omit-frame-pointers, and the loop passes recognize compiler
+  output: a "PUSH BP / MOV BP,SP / ISUB SP,N" frame, "__function_*" labels,
+  loops of the form "start: test / JF end / body / step / JMP start".
+  Frameless, register-passing code has no frame to promote and is mostly
+  left alone (primes.asm: -O3 gains 12% where compiled C gains 62%).
 
--fpeephole-loads, -fpeephole-compiler-myopia, -fpeephole-movs
-  FIXED: same RMW / aliasing / MOVS-SETS modeling applied to each
-  pass's memory-write and aliasing guards.
+[limit] The default v32cc syntax (".local" labels such as ".return:" that
+  repeat in every function) makes liveness.c answer "live" for anything that
+  crosses such a label, so promote-*, peephole-zero-test, peephole-dead-regs
+  and the loop passes mostly do nothing. Use "v32cc --standard".
 
--fpeephole-jmp-chain
-  FIXED: the intermediate JMP is only removed when nothing else can
-  reach its label (no other branch targets it AND nothing can fall
-  into it). Also consumes exactly one --trigger-max slot per
-  transform (was two).
+[limit] The loop passes (loop-invert, loop-unroll, loop-unroll-partial,
+  loop-index) match the loop shape the C compilers emit. v32lua's loops have
+  a different shape and are not touched: Lua gains from -O1/-O2 only.
+  A "while"/"for" with several exits, a test longer than 8 instructions (a
+  setting), labels that are referenced from outside the loop, or a CALL in the
+  body (loop-unroll, loop-unroll-partial, loop-index) are skipped.
 
--fpeephole-shifts
-  FIXED: the unsound rules are gone -- "SHL r,N; SHL r,-N" pairs
-  (bits shifted out are lost; not an identity) and "SHL r,r"
-  (shifts by r's own value) are both kept.
+[limit] loop-index folds one constant base into the counter, needs an
+  immediate bound, and gives up when the counter is used for anything else
+  (a value, two bases, a CALL, live after the loop).
 
--fpeephole-pairs
-  FIXED: NOT removed from the self-inverting list (NOT NOT x ==
-  CIB(x), not x, for non-boolean x); nonexistent "NEG" dropped;
-  XOR/self-inverse pairs match register destinations only (indirect
-  destinations were compared by base register alone, ignoring the
-  offset).
+[limit] loop-unroll-partial: a runtime bound within (K-1)*|step| of the 32-bit
+  limit would wrap in the guard. No real bound is; there is no check.
 
--fomit-frame-pointers
-  FIXED: any [BP+N]/[BP-N] reference now blocks elimination (it is
-  BP-relative addressing and needs the frame). Also fixed: bodies
-  that merely READ SP ("MOV R1, SP") block elimination (SP sits 2
-  words higher without the prologue); CALL is exempt from the SP
-  check (net-zero across a call under both supported compilers).
+[limit] peephole-jumps (unreachable-code elimination) does not reason about
+  computed jump targets: after "JMP R0" / "JMP 0x1000" the following code is
+  left alone.
 
--fcse
-  FIXED: source operands are now tracked between the two matching
-  expressions -- a modified source register, or a memory write to a
-  memory-based source, blocks the replacement.
+[limit] liveness.c (peephole-zero-test, peephole-dead-regs, promote-*, the loop
+  passes) answers for R0..R10 only. Functions that are not the target of a
+  CALL are merged with the preceding call-target function's region, and a
+  function nothing calls is assumed to be called from anywhere (all registers
+  live at its RET). Its callee summaries are not refreshed when a pass removes
+  instructions (stale answers are more conservative, never less).
 
--finline
-  FIXED: body collection stops at function/data boundary labels and
-  at HLT (a noreturn body used to swallow the following function and
-  any data directives); any direct BP reference (read OR write) and
-  [BP+0]/[BP+1] (saved-BP / return-address slots) disqualify a
-  candidate; -finline-max is clamped to 0..32 (unclamped values
-  overflowed the candidate body arrays straight off the stack).
-
--promote-leaf / -promote-regs / -promote-loops
-  FIXED: "MOV R1, BP" (capturing the frame address) now blocks
-  promotion (the old address-taken check excluded ALL MOVs); the
-  stack-slot flush before RET is now inserted before the epilogue
-  ("MOV SP, BP"), not between "POP BP" and RET where [BP-N] would
-  have addressed the CALLER's frame.
-
-FIXED -- DEAD CODE / TOOLING:
-
--fpeephole-immediates
-  The unreachable float branch was REMOVED (FP addition is not
-  associative: "(x+a)-b != x+(a-b)" and "(x+a)-a != x"; only
-  bit-exact identities may touch float arithmetic).
-
--fpeephole-reduce
-  Float identities are now reachable: FMUL/FDIV by 1.0 are removed
-  (exact for all x); "FMUL r, 0.0" is deliberately NOT rewritten
-  (Inf/NaN * 0.0 = NaN; -x * 0.0 = -0.0).
-
---dot + any node-removing pass
-  FIXED: the DOT export always rebuilds the CFG from the FINAL
-  instruction list (the old export walked the stale pre-cleanup CFG,
-  i.e. freed nodes).
-
-general
-  CALL/RET now count as moving SP in modifies_register() (hardware
-  return-address push/pop) for every pass that asks. main() frees
-  the whole instruction list, not just the head node. CFG: runs of
-  up to 16 consecutive labels are attached (was 8, extras silently
-  dropped -> missing edges -> unsound constant propagation); labels
-  at end-of-file get a trailing block; indented labels no longer
-  break jump-target matching (label text is trimmed).
-
-REMAINING (known, open):
-
-- peephole-jumps pattern 3 (unreachable-code elimination) does not
-  reason about computed jump targets: "JMP R0" / "JMP 0x1000" leaves
-  the following code alone (conservative; deliberate).
-
-- dce's function-boundary heuristic treats any "__function_*_return:"
-  label as internal, so a REAL function whose name ends in "_return"
-  (e.g. Lua "function get_return()") is absorbed into the preceding
-  function. Needs a stronger naming contract from the compilers.
-
-- constant-folding trades register operands for immediates
-  ("MOV Rd, Rs" -> "MOV Rd, const" is 2 words instead of 1), so the
-  assembled .vbin can GROW; its payoff is enabling further
-  immediate-based peepholes, not raw size. (Observed: +10% vbin on
-  the constant-folding fixture.) A post-fold "immediate -> register
-  re-materialization" pass would fix this.
-
-- trigger accounting granularity varies by pass: most passes count
-  one slot per deleted node, omit-frame-pointers one per 4-node
-  group, dce one per swept function, promote-* one per promoted
-  slot. --trigger-max bisection is consistent within a pass but not
-  across passes.
-
-- (promote-*: see the Oct 23 audit below -- no longer experimental.)
-
-UNIT TESTS: 19/19 pass (make -C testing). Fixtures updated where
-they encoded the old unsound expectations (shifts cancel pairs,
-SHL r,r, NOT-NOT, FMUL 0.0, [BP-N] frame elimination, CIB-before-
-JT/JF carve-out, immediate propagation in peephole-forwarding,
-absolute-address unreachable code) or were misbuilt (constant-
-floating: reserved word "skip" and undefined call target; scenarios
-in cse/peephole-jumps now label-separated so one scenario's dead
-zone cannot legitimately eat the next).
-
-DIRECTIVE SAFETY (assembler directives are never deleted, moved past,
-or duplicated):
-
-- remove_node() refuses to delete any directive node (%define,
-  %include, integer/float/string/pointer/datafile). It is the single
-  choke point for every deleting pass, so this covers all of them.
-  Origin: peephole-jumps pattern 3 deleted celeste.asm's PICO8_*
-  %defines as "unreachable code" after a JMP.
-- skip_other_nodes() no longer sees through DATA directives (it still
-  skips comments, blanks and %-preprocessor lines, which emit nothing),
-  so adjacency patterns cannot match across embedded data.
-- inline: a body containing a directive is never a candidate, and a
-  call site is declined if the body uses a %define that is defined
-  below that call site (defines.c: define_visible_at()).
-- dce: a label followed by data is a range boundary and its segment is
-  always reachable, so a data table is never swept with the function
-  textually before it; code after the data is still scanned.
-- dce relies on Lua-mode naming: "__<stem>_skip:" continuations and
-  "__global_*" helper labels (allowlist + branch-target backstop).
-
-%define VALUE RESOLUTION (20261002-dev):
-
-- An operand naming an integer %define carries its real value
-  (defines.c: define_int_value(); filled in by
-  defines_resolve_operands() after parsing and by parse_operand() for
-  nodes created later). is_numeric_immediate() and cfg.c's
-  is_symbolic_immediate() accept such operands, so peephole-algebra,
-  -immediates, -immediate-prop, -reduce, -shifts and constant-folding
-  fold through them. -fno-resolve-defines restores opaque symbols.
-- Never resolved: floats, expressions, symbols redefined with a
-  different value, and in Lua mode the NaN-boxing tags (BOXED_*,
-  NAN_VALUE, CLOSURE_ADDR_MASK, any value with the 0x7F800000 pattern)
-  -- cse/constant-folding recognise boxing idioms by NAME.
-- A folded instruction is emitted with the computed number; the symbol
-  name is lost at that site (readability only).
-- Measured: celeste -8 instructions, nostalgick -1. Small on Lua-mode
-  output, where >90% of %define uses are boxing tag checks.
-- FIXED alongside: peephole-immediate-prop pattern 2 resumed at a saved
-  'next' pointer that was the node it had just freed when the MOV and
-  the folded ALU instruction were adjacent (use-after-free; latent
-  until resolution made such adjacent pairs foldable).
-
-PEEPHOLE-ZERO-TEST (new pass, 20261002-dev; on from -O1):
-
-- "MOV Ra,Rb / IEQ|INE Ra,0 / JT|JF Ra,L" -> "JF|JT Rb,L", and the
-  in-place form without the MOV. Requires Ra dead after the jump on
-  both sides, proven by liveness.c (reg_dead_from/reg_dead_at_label):
-  follows JMP/JT/JF, summarises callees (reads-before-write / always
-  overwrites / may pass through), RET uses is_live_out_register().
-  Every unknown answers "live". R0..R10 only.
-- Measured: celeste 44421 -> 42953 instructions (-3.3%), nostalgick
-  54260 -> 52506 (-3.2%). All converted sites re-proven by an
-  independent checker.
-- Counts removed instructions (2 for the copy form, 1 in place); one
-  --trigger-max slot per site.
-- The rewritten jump loses its trailing source comment.
-- liveness.c is reusable; candidates: "MOV Ra,[mem] / MOV Rb,Ra" ->
-  "MOV Rb,[mem]" when Ra is dead, and letting is_register_read()
-  treat POP/IN destinations as pure writes for the other passes.
-- Fixture: testing/peephole-zero-test (13 matches expected).
-
-OPEN: testing/inline expected output gains one line
-("%define global_var 42" is now preserved).
-
-PRE-RELEASE AUDIT (Oct 9 2026; outputs byte-identical to before on the
-unit fixtures and on 35 Vircon32 C-compiler test programs at
--O1/-O2/-O3/-Os, except where noted):
-
-- FIXED: parse_vircon32_asm() copied the code part of a line with a
-  trailing comment into a 256-byte stack buffer using the code's own
-  length -- any line with more than 255 characters of code before a
-  ';' overflowed the stack (long string/data lines).
-- FIXED: a line whose code part didn't fit AsmNode.raw (1023 chars)
-  was silently truncated in the output (and DCE no longer saw every
-  function named on a long pointer line). (This was first made an
-  error naming the file and line; the next entry removes the limit
-  altogether, so such lines are now simply kept whole.)
-- FIXED: a line over 1023 characters (a long "string" literal, say a
-  help text of a program) made v32opt stop with "line too long ...
-  refusing to write truncated output". AsmNode.raw is now allocated to
-  fit its line, the parser reads lines of any length, and the writer
-  no longer copies them. The one reader that needs a whole line, DCE's
-  scan of "pointer" tables, now scans the full text (a copy cut at the
-  old 8192 characters would have dropped every function named after it).
-  The line-length error is gone. testing/long-lines/run.sh checks a
-  30000-character string and an 800-function pointer table; outputs on
-  all other fixtures are byte-identical to before (126 runs, -O1/-O2/-O3,
-  -d, -fno-inline), and clean under AddressSanitizer/UBSan.
-- FIXED: constant folds could overflow 32 bits and emit literals the
-  assembler rejects ("MOV R1,100000 / IMUL R1,100000" -> "MOV R1,
-  10000000000"); also signed-int overflow (UB) in peephole-immediates
-  and constant-folding's IADD tracking, and folding a register holding
-  0x80000000 into "MOV Rd, -2147483648" (the assembler's decimal range
-  is -2147483647..2147483647). fits_int_literal() (tools.c) gates them.
-- FIXED: unknown options and missing option arguments exited 1 with no
-  message (opterr = 0 + "getopt already printed error"); --verbose was
-  documented but not accepted; -O20/-Ofast were taken as -O2/-O(f...);
-  -L accepted c/C/lua/LUA but not "Lua"; a second file name was
-  silently ignored; the input may now appear anywhere among the options
-  without relying on libc argv permutation.
-- FIXED: input/output path buffers were 256 bytes (silently truncated
-  long paths); open errors now name the file; a failed write/close of
-  the output file (disk full) is now an error instead of success.
-- FIXED: src/Makefile had no header dependencies (editing VERSION in
-  v32opt.h didn't rebuild main.o/args.o); CLIBS (-lm) wasn't linked;
-  the top-level install/sysinstall/tests targets failed when ./v32opt
-  didn't exist yet, and their "skip" branches ran "@echo" inside a
-  shell command.
-- DOCS: peephole-immediate-prop never substituted a constant register
-  into another instruction (README described that); it folds within a
-  register.
-
-FOLLOW-UP (Oct 10 2026):
-
-- FIXED (-d only): the "DEAD CODE ELIMINATED" debug comments that
-  peephole-jumps pattern 3 inserts were unlinked again by its
-  "curr->next = resume" fix-up, so they never reached the output and
-  leaked. Root cause: the dead-range scan collected -d annotations
-  (debug comments) as dead code, re-wrapping them in new markers on
-  every revisit -- the infinite loop the fix-up papered over. -d
-  comments are now flagged (AsmNode.debug_note) and stepped over by the
-  scan, the fix-up and the refund-a-trigger-slot dance are gone, and the
-  group is gated by exactly one trigger_allowed(). insert_debug_comment()
-  also no longer leaks a comment when given no node to link after.
-  Output without -d is byte-identical; -d output differs only by the
-  restored markers (code lines identical, -t counts identical).
-- FIXED: peephole-jmp-chain rewritten. Any JMP/JT/JF whose target label
-  leads (past further labels, comments, blanks) straight to a "JMP
-  <label>" is retargeted to the end of the chain in one step; cycles,
-  duplicate labels, computed final hops and directives stop resolution.
-  Intermediate JMPs are removed, cascading along the chain, only when no
-  label in the run above them is referenced ANYWHERE in the program text
-  (the old check counted only JMP/JT/JF/CALL operands, so a label whose
-  address was taken with "MOV R0, label" or "pointer label" could lose
-  its JMP) and nothing falls into them (a JMP at program start -- the
-  boot entry point -- now counts as reachable; it didn't). One trigger
-  slot per retargeted jump, including the removals it enables.
-  Fixture: testing/peephole-jmp-chain scenario 5 now expects the full
-  collapse; scenarios 8-11 added (non-adjacent and conditional jumps,
-  address taken, fall-through, self-loop / computed jump).
-
-FOLLOW-UP (Oct 20 2026):
-
-- FIXED: a data line whose visible text ended in ':' was read as a label:
-  one cut short by the 255-character code buffer (a long "string" whose
-  255th character is a colon) or by a ';' inside its literal ("Score:;x").
-  A label is now a single token (no blanks or quotes). Output is
-  byte-identical on every fixture; the case only changed how such a line
-  was treated as a block boundary.
-- DOCS: the Spanish and French READMEs and manual pages, and one line of
-  the English README, still listed "input line too long" as an error;
-  the long-lines check now also runs from `make tests` and ctest.
-
-REMAINING (found in the audit, not changed):
-
-- Disassembled CARTs: ROM data is referenced by absolute address, which
+[limit] Disassembled CARTs: ROM data is referenced by absolute address, which
   v32opt does not relocate, so any size-changing pass breaks them.
 
-PROMOTE AUDIT (Oct 23-24 2026; promote-regs, promote-leaf and promote-loops
-are part of -O2, so of -O3 and -Os too; the two cleanup passes below are in
--O1):
+[limit] dce's function-boundary heuristic treats any "__function_*_return:"
+  label as internal, so a REAL function whose name ends in "_return" (e.g. Lua
+  "function get_return()") is absorbed into the preceding function. Needs a
+  stronger naming contract from the compilers.
 
-Method: random C programs (loops, nesting, break/continue, early return,
-switch, calls, address-taken locals, struct locals reached directly and
-through a pointer) compiled with v32cc, optimized, assembled with v32as and
-run in v32sim; the final RAM image of every variant is compared with the
--O0 build, and cycle counts come from the simulator's cycle counter. The
-original passes miscompiled 2 of 100 such programs (at every -O level
-with the passes enabled); the fixed ones none of ~190 programs x 7
-configurations (-O0..-O3, each pass alone, -L lua), nor under
-AddressSanitizer/UBSan. Everything below was reproduced on its own first;
-the generator was then taught the one pattern that exposed a bug in a
-first draft of the new store/load elision (a loop re-entered by an
-enclosing loop), and the final build passes that too.
+[gap] Pointer strength reduction with a stepped pointer register (for loops
+  that use the counter both as an index and as a value) is not implemented; it
+  needs a free register chosen with the callee-save rules of the promote passes.
 
-FIXED -- CONFIRMED MISCOMPILES:
+[gap] After full unrolling a loop, the "PUSH Rn / POP Rn" that promotion added
+  for the counter can be left behind unused, and constants set in every copy
+  (e.g. "MOV R0, 0") are repeated rather than hoisted.
 
--fpromote-loops, address taken OUTSIDE the loop
-  Only the loop body was searched for BP-address-taking, so
-      int v = 0; int *p = &v;  for (...) { v += 1; *p += 10; }
-  (or any struct local with an earlier "LEA R, [BP-N]") promoted v while
-  the pointer still aliased it: the exit store overwrote every update made
-  through p. The escape check (bp_value_escapes, plus the new
-  sp_value_escapes for "MOV R, SP" / "LEA R, [SP+N]") now covers the whole
-  function in all three passes.
+[gap] constant-folding trades register operands for immediates ("MOV Rd, Rs"
+  -> "MOV Rd, const" is 2 words instead of 1), so the assembled program can
+  grow; its payoff is enabling the immediate-based peepholes. A post-fold
+  "re-materialize into a register" pass would recover the size.
 
--fpromote-loops, entry from outside
-  A jump from outside the loop to a label in its body (a goto into a
-  loop) or to its exit label skipped the preheader load, so the register
-  (or the exit store) ran uninitialized. Now rejected: nothing outside may
-  branch to any label of the loop or to its exit label.
+[gap] Profile-guided decisions cover the loop passes only. Function inlining
+  and the promote passes do not look at the profile.
 
--fpromote-regs / -leaf / -loops, clobbered return registers
-  A free register was any register not NAMED in the region, which says
-  nothing about what flows through it. v32lua returns the 2nd/3rd value of
-  a multi-value return in R2/R3, and a function that merely passes them
-  through from a callee never names them -- promote-regs picked R2 for the
-  segment after the call. The register is now chosen only if
-  liveness.c (reg_dead_from) proves it dead from the load on; R0/R2/R3
-  count as live at RET (is_live_out_register); R11-R13 (implicit
-  MOVS/SETS/CMPS operands) are never used.
+[bug] peephole-zero-test: the rewritten jump loses its trailing source comment.
 
--fpromote-regs, no prologue
-  Later segments of a function without "MOV BP, SP" (naked/hand-written)
-  were promoted; only the first segment checked. Now the whole function
-  needs the prologue, and the first segment must contain it.
+[bug] The stock Vircon32 compiler is not consistently callee-save (a function
+  only ever called at statement level may write R1 without saving it).
+  v32opt never adds such a write itself (testing/lint checks that against
+  the input), but cannot repair the compiler's own.
 
-FIXED -- OTHER:
 
-- bp_value_escapes treated ANY indirect [BP+/-N] operand of a non-MOV
-  instruction as taking the frame's address, so "IADD R0, [BP-1]" disabled
-  promotion for the whole function. Only a direct BP operand and LEA of a
-  BP-relative operand escape now.
-- promote-loops skipped every loop nested inside one it could not promote
-  (an outer loop with a CALL hid its inner loops). It now looks inside.
-- promote-loops took slots in offset order; with fewer free registers than
-  candidates the cold ones won. References are now weighted by loop nesting
-  (8x per level) and taken heaviest first.
-- The store before the epilogue (all three passes) is gone: the frame is
-  dead at RET and, with the escape checks above, nothing can observe it
-  (saves one instruction per promoted local per return). Stores remain
-  before the CALL that ends a promote-regs segment and at a loop's exit --
-  and only when something reads the slot outside the region (a loop that
-  an enclosing loop re-enters keeps its store: the preheader load re-reads
-  memory). Loads are left out when liveness.c shows the register is always
-  written before it is read.
-- promote-loops' "secondary exits" code could never run (the safety scan
-  rejects any branch leaving the loop other than to its exit label) and
-  inserted its store before the first label AFTER the jump rather than at
-  its target; removed.
-- is_inside_loop() (promote.h) removed with it.
+TOOLING AND TESTS
 
-BEHAVIOR / MEASUREMENTS:
+[limit] --trigger-max counts one slot per deleted node in most passes, one per
+  4-node group in omit-frame-pointers, one per swept function in dce, one per
+  promoted slot in promote-*, one per rewritten loop in the loop passes.
+  Bisection is consistent within a pass, not across passes.
 
-- Parameters ([BP+N]) are not promoted (considered and dropped): the copy
-  costs a load per call and, with today's cleanup passes, saves nothing.
-- Loads and stores are left out where they cannot matter: no preheader /
-  segment load when liveness.c shows the register is always written before
-  it is read; no exit store / pre-CALL store when nothing outside the
-  region reads the slot -- except that a loop an enclosing loop re-enters
-  keeps its store, because its preheader load re-reads memory.
-- Final measurements, ~190 v32cc-compiled programs and ~175 through the
-  stock compiler (cycles / code size against -O0):
-                                      v32cc            stock compile
-      -O2 before promote + cleanup    -1.6% / -3.1%    -1.6% / -5.6%
-      -O1 (with the cleanup passes)   -3.4% / -3.8%    -3.0% / -6.1%
-      -O2                             -6.9% / -6.0%    -4.9% / -14.5%
-      -O3                             -7.9% / -6.0%    -7.0% / -14.4%
-  Promotion alone (without the cleanup) is cycle-neutral by construction
-  (mov R0,[BP-2] -> mov R0,R4); it pays because peephole-copies and
-  peephole-dead-regs then cancel the copies. That is why promote-loops is
-  now in -O2 (it was opt-in before the cleanup existed).
-- Level: -O2. Promotion needs whole-function analysis and the passes that
-  feed on promoted registers (CSE, constant folding) are -O2.
+[limit] scripts/v32prof.py profiles what the program does on its own. A game
+  that needs input to reach its hot paths is profiled in its attract mode
+  unless the workload is built into the program, or run for more frames.
+  It needs a v32sim with --profile-out (the dev branch).
 
-CLEANUP PASSES (new, -O1): peephole-dead-regs removes pure register writes
-nobody reads (liveness.c); peephole-copies coalesces "mov Rt,Rs / ... /
-mov Rs,Rt" windows and propagates copies. Found while testing them:
+[limit] bench.py --tune is a greedy search (one change at a time, at most 8),
+  not exhaustive; every candidate is a full build and run, so large programs
+  (crisp: 700K lines of assembly) take minutes per candidate.
 
-- liveness.c did not know a function can return values in registers other
-  than R0: __v32cc_udivmod returns the remainder in R1, which dead-regs
-  deleted. liveness.c now computes OUTPUTS: a register a function writes
-  without saving that some direct caller reads after the call is live at
-  its RET. R0 is always live at RET; R2/R3 only in -L lua (they used to
-  be live-out in every language, which blocked the cleanup in -L c).
+[limit] Whole-RAM comparison of real programs works only when they are
+  deterministic: use v32sim --fixed-clock/--seed/--fixed-cycles. A program
+  that seeds its RNG from the cycle counter (crisp-game-lib) differs between
+  builds of different speed unless --fixed-cycles is used.
 
-CALLEE-SAVE BUG (found by differential tests through the stock compiler,
-fixed): the stock Vircon32 compiler is callee-save -- functions push the
-registers they use, and callers keep live temporaries in R1..R8 across
-calls. promote-* picked "free" registers by liveness inside the function
-and so clobbered the caller's values. Now (outside -L lua) a promoted
-register must be one the function already saves, or a PUSH/POP pair is
-added at the entry and at every exit (only when all exits are recognizable
-epilogues, and the references justify two instructions per call);
-otherwise the slot stays in memory. -L lua is caller-save and needs
-nothing. v32cc output is treated like stock: a needless pair at worst.
+[limit] testing/differential and testing/bench need the sibling projects built
+  (v32as, v32sim; v32cc, the stock "compile", v32c++, v32lua for their
+  languages) and are not part of "make tests". "make tests" itself needs the
+  Vircon32 DevTools for its unit fixtures (testing/primes also needs v32lua).
 
-- v32cc's default (enhanced) syntax writes .local labels that repeat in
-  every function (".return:"); liveness.c treats a repeated label as
-  ambiguous and answers "live", so with that output no promote pass fires
-  (nor peephole-zero-test). Use v32cc --standard.
+[bug] A few small memory leaks (nodes made by passes) are reported by
+  LeakSanitizer at exit; no memory errors under AddressSanitizer/UBSan.
 
-REMAINING (promote):
-
-- Not done yet: loop inversion, pointer strength reduction, unrolling
-  (doc/loop-optimizations.md has the measured case for each).
-- liveness.c: functions that are not call targets merge into the previous
-  call-target function's region (conservative); the callee-summary cache is
-  not invalidated when a pass removes instructions (stale = more
-  conservative, never wrong in practice).
-- testing/promote/run.sh checks the safety logic on the assembly;
-  testing/differential/ is the end-to-end harness (v32cc or the stock
-  compiler + v32as + v32sim, RAM and cycle comparison, random C / Lua /
-  register-pressure program generators, hand-written asm) behind the numbers
-  above. It needs the sibling projects and is not part of `make tests`.
-- Pre-existing, unrelated: LeakSanitizer reports a few small leaks (nodes
-  made by other passes) at exit, with or without promote-*; no memory
-  errors under AddressSanitizer/UBSan.
-
-LOOP INVERSION AND UNROLLING (Oct 24 2026; -O3 only, not -Os):
-
-- loop-invert: the back edge becomes a copy of the loop test plus a
-  conditional jump to the body. Bug found by the differential corpus and
-  fixed: a test that exits on JT (after peephole-jumps rewrites "JF; JMP")
-  needs a JF back edge.
-- loop-unroll: counted loops with a constant trip count (<= 16, <= 96
-  instructions) are replaced by copies of the body; the counter is replaced
-  by its value inside each copy. Bugs found while testing, fixed: the test
-  register Rc (R0) must be 1 on break paths and 0 after the normal exit when
-  live; liveness is asked before any rewrite (the plan/apply split) because
-  rewriting invalidates its cache.
-- Measured against -O0 (cycles / size): v32cc -O2 -6.8/-6.0%, -O3 -10.6/-3.0%;
-  stock compile -O2 -4.9/-14.5%, -O3 -8.8/-13.4%; v32lua -O3 -18.4/-5.2%
-  (Lua loops have a different shape and are not unrolled).
-- Real programs (stock compiler): crisp-game-lib and tinyjoypad, 1M words of
-  RAM after 300 frames with --fixed-clock, are identical to the -O0 build at
-  -O1/-O2/-O3 (crisp's tick counter is one frame ahead because the faster
-  code starts earlier; 299 frames match exactly); callee-save lint clean.
-- Not done: partial unrolling with a remainder loop for unknown trip counts
-  (needs a loop-invariant bound and a free register) and pointer strength
-  reduction (only ~20 base+index sites in crisp; ~800 in tinyjoypad, which is
-  mostly outside hot loops). Both need a free register chosen with the
-  promote passes' callee-save rules.
+[doc] USAGE.md is English only (the README and the manual pages exist in
+  English, Spanish and French).
