@@ -229,6 +229,24 @@ use
 to leave one out. See
 .BR "OPTIMIZATION LEVELS" .
 .TP
+.BI \-floop\-unroll\-max\-trips= N
+.TQ
+.BI \-floop\-unroll\-max\-size= N
+.TQ
+.BI \-floop\-unroll\-partial\-factor= N
+.TQ
+.BI \-floop\-unroll\-partial\-max\-body= N
+.TQ
+.BI \-floop\-unroll\-partial\-big\-body= N
+.TQ
+.BI \-floop\-unroll\-partial\-min\-body= N
+.TQ
+.BI \-floop\-invert\-max\-test= N
+Limits of the loop passes (defaults 16, 96, 0 for automatic, 24, 12, 1 and 8): the
+most iterations and instructions of a loop unrolled completely, the number of
+copies per round, the biggest and smallest bodies unrolled partially, and the
+longest test inversion duplicates.
+.TP
 .BI \-finline\-max= N
 Cap the size of a function still considered inlinable, in body
 instructions. A function whose straight-line body is longer than

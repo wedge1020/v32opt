@@ -1179,6 +1179,19 @@ nouveaux noms dans chaque copie. Elle s'exécute après `loop-unroll` et
 `loop-index`, avant `loop-invert` ; elle fait partie de `-O3`, et
 `-floop-unroll-partial` l'active seule.
 
+
+### Réglage des passes de boucles
+
+Les limites des passes de boucles sont des options de ligne de commande
+(`-f<nom>=N`) : chaque programme peut ainsi être amené à son propre optimum
+(`testing/bench/bench.py --tune` automatise la recherche) :
+`loop-unroll-max-trips` (16, itérations que `loop-unroll` supprime
+entièrement), `loop-unroll-max-size` (96, instructions de la boucle déroulée),
+`loop-unroll-partial-factor` (0, copies par tour, 2..8 ; 0 = 4, ou 2 pour les
+gros corps), `loop-unroll-partial-max-body` (24), `loop-unroll-partial-big-body`
+(12), `loop-unroll-partial-min-body` (1) et `loop-invert-max-test` (8, test le
+plus long que `loop-invert` duplique). Les valeurs sont bornées.
+
 ---
 
 ## Promotion de la Mémoire en Registres (`-O2`)

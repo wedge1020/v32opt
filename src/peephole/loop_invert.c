@@ -50,7 +50,6 @@
 // "JMP start", which this pass removes.
 // ===================================================================
 
-#define LOOP_INVERT_MAX_TEST 8
 
 typedef struct {
     char     name[128];
@@ -129,7 +128,7 @@ static int find_test(const AsmNode *label, AsmNode **first, AsmNode **jf)
             return count;
         }
         if (is_branch_or_call(p) || is_control_flow_boundary(p)) return 0;
-        if (++count > LOOP_INVERT_MAX_TEST) return 0;
+        if (++count > g_loop_tune.invert_max_test) return 0;
         p = p->next;
     }
     return 0;

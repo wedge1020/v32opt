@@ -1159,6 +1159,19 @@ recibe nombres nuevos. Se ejecuta tras `loop-unroll` y `loop-index`, antes de
 `loop-invert`; forma parte de `-O3`, y `-floop-unroll-partial` la activa por
 separado.
 
+
+### Ajuste de las pasadas de bucles
+
+Los límites de las pasadas de bucles son opciones de línea de órdenes
+(`-f<nombre>=N`), de modo que cada programa pueda llevarse a su punto óptimo
+(`testing/bench/bench.py --tune` automatiza la búsqueda): `loop-unroll-max-trips`
+(16, iteraciones que `loop-unroll` elimina por completo), `loop-unroll-max-size`
+(96, instrucciones del bucle desenrollado), `loop-unroll-partial-factor` (0,
+copias por vuelta, 2..8; 0 = 4, o 2 para cuerpos grandes),
+`loop-unroll-partial-max-body` (24), `loop-unroll-partial-big-body` (12),
+`loop-unroll-partial-min-body` (1) y `loop-invert-max-test` (8, prueba más larga
+que `loop-invert` duplica). Los valores se limitan a rangos razonables.
+
 ---
 
 ## Promoción de Memoria a Registros (`-O2`)

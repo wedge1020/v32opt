@@ -130,6 +130,8 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
     // "core_count < config.opt_inline_max_body_ins" in inline.c, whose
     // core_nodes[] arrays are sized MAX_BODY_INS -- an unclamped value
     // (e.g. -finline-max=64) overflowed them straight off the stack.
+    if (loop_tuning_arg(arg)) return true;
+
     if (strncmp(arg, "inline-max=", 11) == 0) {
         int v = atoi(arg + 11);
         if (v < 0) v = 0;
@@ -219,6 +221,14 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "  promote-loops, omit-frame-pointers, peephole-compiler-myopia,\n");
     fprintf(stdout, "  peephole-zero-test, peephole-dead-regs, peephole-copies,\n");
     fprintf(stdout, "  loop-invert, loop-unroll, loop-index,\n  loop-unroll-partial\n\n");
+    fprintf(stdout, "Loop tuning (-f<name>=N):\n");
+    fprintf(stdout, "  loop-unroll-max-trips=N          Most iterations unrolled completely (16)\n");
+    fprintf(stdout, "  loop-unroll-max-size=N           Most instructions in a fully unrolled loop (96)\n");
+    fprintf(stdout, "  loop-unroll-partial-factor=N     Copies per round, 2..8 (0 = 4, or 2 for big bodies)\n");
+    fprintf(stdout, "  loop-unroll-partial-max-body=N   Biggest loop body partially unrolled (24)\n");
+    fprintf(stdout, "  loop-unroll-partial-big-body=N   Bodies above this get factor 2 when automatic (12)\n");
+    fprintf(stdout, "  loop-unroll-partial-min-body=N   Smallest loop body partially unrolled (1)\n");
+    fprintf(stdout, "  loop-invert-max-test=N           Longest loop test duplicated (8)\n\n");
     fprintf(stdout, "Diagnostic Flags:\n");
     fprintf(stdout, "  -finline-max=N           Cap inlinable function body size, in body\n");
     fprintf(stdout, "                           instructions (clamped to 0..%d; default 8)\n", MAX_BODY_INS);

@@ -244,6 +244,24 @@ usa
 para dejar fuera una. Véase
 .BR "NIVELES DE OPTIMIZACIÓN" .
 .TP
+.BI \-floop\-unroll\-max\-trips= N
+.TQ
+.BI \-floop\-unroll\-max\-size= N
+.TQ
+.BI \-floop\-unroll\-partial\-factor= N
+.TQ
+.BI \-floop\-unroll\-partial\-max\-body= N
+.TQ
+.BI \-floop\-unroll\-partial\-big\-body= N
+.TQ
+.BI \-floop\-unroll\-partial\-min\-body= N
+.TQ
+.BI \-floop\-invert\-max\-test= N
+Límites de las pasadas de bucles (por defecto 16, 96, 0 automático, 24, 12, 1 y 8):
+iteraciones e instrucciones máximas de un bucle desenrollado por completo, copias
+por vuelta, cuerpos mayor y menor desenrollados parcialmente y la prueba más larga
+que duplica la inversión.
+.TP
 .BI \-finline\-max= N
 Limita el tamaño de una función que todavía se considera insertable en
 línea, en instrucciones del cuerpo. Una función cuyo cuerpo lineal tenga

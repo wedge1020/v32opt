@@ -56,8 +56,6 @@
 // "MOV Ri, <imm>" by then) and before loop-invert.
 // ===================================================================
 
-#define LOOP_UNROLL_MAX_TRIPS  16
-#define LOOP_UNROLL_MAX_TOTAL  96
 
 // Is Ra written by a node that is none of the loop's own? (helper for the body scan)
 static bool is_scratch_reg(const char *r)
@@ -73,7 +71,7 @@ static int trip_count(OpType cmp, long init, long step, long bound)
 {
     int i = (int)init, b = (int)bound;
     unsigned st = (unsigned)(int)step;
-    for (int n = 0; n <= LOOP_UNROLL_MAX_TRIPS; n++) {
+    for (int n = 0; n <= g_loop_tune.unroll_max_trips; n++) {
         bool go;
         switch (cmp) {
             case OP_ILT: go = i <  b; break;
@@ -289,7 +287,7 @@ static int unroll_once(AsmNode *head)
             body_ins++;
         }
         if (!ok || body_ins == 0 ||
-            (long)trips * (body_ins + 1) > LOOP_UNROLL_MAX_TOTAL) {
+            (long)trips * (body_ins + 1) > g_loop_tune.unroll_max_size) {
             jmp = after_jmp;
             continue;
         }

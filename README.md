@@ -1143,6 +1143,26 @@ within `(K-1)*|step|` of the 32-bit limit would wrap; no real bound is.) It runs
 after `loop-unroll` and `loop-index`, before `loop-invert`; part of `-O3`,
 enabled alone with `-floop-unroll-partial`.
 
+
+### Tuning the loop passes
+
+The limits of the loop passes are command-line settings (`-f<name>=N`), so a
+program can be taken to its own sweet spot (`testing/bench/bench.py --tune`
+automates the search):
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `loop-unroll-max-trips=N` | 16 | most iterations that `loop-unroll` removes completely |
+| `loop-unroll-max-size=N` | 96 | most instructions in a fully unrolled loop |
+| `loop-unroll-partial-factor=N` | 0 | copies per round (2..8); 0 = 4, or 2 for big bodies |
+| `loop-unroll-partial-max-body=N` | 24 | biggest body that is partially unrolled |
+| `loop-unroll-partial-big-body=N` | 12 | above this the automatic factor drops to 2 |
+| `loop-unroll-partial-min-body=N` | 1 | smallest body that is partially unrolled |
+| `loop-invert-max-test=N` | 8 | longest loop test that `loop-invert` duplicates |
+
+Values are clamped to sane ranges. Lower limits mean less code growth;
+higher ones more speed on long loops.
+
 ---
 
 ## Memory-to-Register Promotion (`-O2`)

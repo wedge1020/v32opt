@@ -1,9 +1,37 @@
 #include "v32opt.h"
+#include <stddef.h>
 
 // Shared helpers of the loop passes (see inc/loops.h).
 
 LoopLabel *g_loop_labels;
 int      g_loop_labels_n;
+
+LoopTuning g_loop_tune = { 16, 96, 0, 24, 12, 1, 8 };
+
+// "loop-unroll-max-trips=16" and friends (the argument without its -f).
+// Values are clamped to sane ranges.
+bool loop_tuning_arg(const char *arg)
+{
+    static const struct { const char *name; size_t off; int lo, hi; } t[] = {
+        { "loop-unroll-max-trips=",         offsetof(LoopTuning, unroll_max_trips),  1, 64   },
+        { "loop-unroll-max-size=",          offsetof(LoopTuning, unroll_max_size),   1, 1024 },
+        { "loop-unroll-partial-factor=",    offsetof(LoopTuning, partial_factor),    0, 8    },
+        { "loop-unroll-partial-max-body=",  offsetof(LoopTuning, partial_max_body),  1, 128  },
+        { "loop-unroll-partial-big-body=",  offsetof(LoopTuning, partial_big_body),  0, 128  },
+        { "loop-unroll-partial-min-body=",  offsetof(LoopTuning, partial_min_body),  1, 128  },
+        { "loop-invert-max-test=",          offsetof(LoopTuning, invert_max_test),   1, 32   },
+    };
+    for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
+        size_t n = strlen(t[i].name);
+        if (strncmp(arg, t[i].name, n) != 0) continue;
+        int v = atoi(arg + n);
+        if (v < t[i].lo) v = t[i].lo;
+        if (v > t[i].hi) v = t[i].hi;
+        *(int *)((char *)&g_loop_tune + t[i].off) = v;
+        return true;
+    }
+    return false;
+}
 
 static int cmp_loop_label(const void *a, const void *b)
 {

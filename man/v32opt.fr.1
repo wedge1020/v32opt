@@ -244,6 +244,24 @@ utilisez
 pour en écarter une. Voir
 .BR "NIVEAUX D'OPTIMISATION" .
 .TP
+.BI \-floop\-unroll\-max\-trips= N
+.TQ
+.BI \-floop\-unroll\-max\-size= N
+.TQ
+.BI \-floop\-unroll\-partial\-factor= N
+.TQ
+.BI \-floop\-unroll\-partial\-max\-body= N
+.TQ
+.BI \-floop\-unroll\-partial\-big\-body= N
+.TQ
+.BI \-floop\-unroll\-partial\-min\-body= N
+.TQ
+.BI \-floop\-invert\-max\-test= N
+Limites des passes de boucles (par défaut 16, 96, 0 automatique, 24, 12, 1 et 8) :
+itérations et instructions maximales d'une boucle entièrement déroulée, copies par
+tour, plus gros et plus petit corps déroulés partiellement et plus long test
+dupliqué par l'inversion.
+.TP
 .BI \-finline\-max= N
 Plafonne la taille d'une fonction encore considérée comme intégrable, en
 instructions du corps. Une fonction dont le corps linéaire dépasse

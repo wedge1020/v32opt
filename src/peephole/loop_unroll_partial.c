@@ -55,8 +55,6 @@
 // before loop-invert, which then also inverts the new main loop.
 // ===================================================================
 
-#define LOOP_PARTIAL_MAX_BODY  24
-#define LOOP_PARTIAL_BIG_BODY  12
 
 typedef struct {
     CountedLoop L;
@@ -240,8 +238,10 @@ int peephole_loop_unroll_partial(AsmNode *head)
         }
         if (!ok || body_ins < 1) continue;
         int per_copy = body_ins;            // the step is among them
-        if (per_copy > LOOP_PARTIAL_MAX_BODY) continue;
-        int k = per_copy <= LOOP_PARTIAL_BIG_BODY ? 4 : 2;
+        if (per_copy > g_loop_tune.partial_max_body || per_copy < g_loop_tune.partial_min_body) continue;
+        int k = g_loop_tune.partial_factor ? g_loop_tune.partial_factor
+                                           : (per_copy <= g_loop_tune.partial_big_body ? 4 : 2);
+        if (k < 2) continue;
 
         long delta = (long)(k - 1) * L.stepv;
         long gimm = bval - delta;

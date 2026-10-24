@@ -55,4 +55,18 @@ typedef struct { char from[128]; char to[160]; } LoopRename;
 // A copy of 'src' with jump targets (and a label's own name) renamed per the table.
 AsmNode    *loop_clone_renamed  (const AsmNode *src, const LoopRename *r, int n);
 
+// Tunables of the loop passes (command line: -floop-<pass>-<name>=N).
+typedef struct {
+    int unroll_max_trips;         // loop-unroll: most iterations unrolled completely   (16)
+    int unroll_max_size;          // loop-unroll: most instructions in the result       (96)
+    int partial_factor;           // loop-unroll-partial: copies per round, 0 = 4 or 2 by size
+    int partial_max_body;         // loop-unroll-partial: biggest body worth copying    (24)
+    int partial_big_body;         // loop-unroll-partial: above this the factor is 2    (12)
+    int partial_min_body;         // loop-unroll-partial: smallest body worth copying   (1)
+    int invert_max_test;          // loop-invert: longest test duplicated               (8)
+} LoopTuning;
+
+extern LoopTuning g_loop_tune;
+bool loop_tuning_arg(const char *arg);      // handles "floop-...=N" (without the -f); false if not ours
+
 #endif
