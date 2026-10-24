@@ -464,7 +464,7 @@ v32opt <entrée.asm> [-o sortie.asm] [options]
 | `-O0` | **Aucune Optimisation** | Désactive toutes les passes d'optimisation (par défaut). |
 | `-O1` | **Lucarne Locale** | Active les 16 optimisations locales (14 à lucarne sur fenêtre, plus l'**écriture morte de registre** et le **nettoyage des copies**, guidés par la vivacité des registres). |
 | `-O2` | **Analyse Globale** | Active toutes les passes de `-O1` + **CSE**, **Élimination du Code Mort (DCE)**, **Repliement Global des Constantes**, **Élimination du Pointeur de Cadre** et **Promotion de la Mémoire en Registres** (`promote-regs`, `promote-leaf`, `promote-loops`). |
-| `-O3` | **Agressif** | Active toutes les passes de `-O2` + **Intégration des Fonctions (inlining)** + **Inversion de Boucles** + **Déroulage de Boucles**. |
+| `-O3` | **Agressif** | Active toutes les passes de `-O2` + **Intégration des Fonctions (inlining)** + **Inversion de Boucles** + **Déroulage de Boucles** (complet et partiel) + **Repliement de l'Indice**. |
 | `-Os` | **Gain de Place** | `-O3` sans inversion de boucles (qui duplique le test de chaque boucle) ; emplacement réservé pour un niveau dédié à la taille. |
 | `-o <fichier>` | **Fichier de Sortie** | Où écrire l'assembleur optimisé (par défaut : `<entrée>Opt.asm`). |
 | `-v`, `--verbose` | **Mode Verbeux** | Affiche des statistiques détaillées des passes et le nombre d'optimisations à chaque itération. |
@@ -1136,6 +1136,48 @@ itérations et 96 instructions au plus ; les boucles imbriquées se déroulent
 de l'intérieur vers l'extérieur. Elle s'exécute une fois, après le repliement
 des constantes et avant `loop-invert` ; elle fait partie de `-O3` (pas de
 `-Os`, car le code grossit) et `-floop-unroll` l'active seule.
+
+
+### Repliement de l'Indice de Boucle (`loop-index`)
+
+Le code à base de tableaux adresse les éléments par `base + i`. Quand le
+compteur d'une boucle comptée ne sert qu'à former des adresses d'une même
+base, cette base est repliée dans le compteur lui-même, sans registre
+supplémentaire (voir l'exemple de la version anglaise) : un `IADD Ri, BASE` est
+ajouté une fois avant la boucle, la borne immédiate est décalée de BASE à la
+compilation et chaque paire `MOV Rt, BASE / IADD Rt, Ri` devient
+`MOV Rt, Ri`. Une instruction de moins par usage et par itération.
+Conditions : toute autre mention du compteur est la seconde moitié d'une paire
+adjacente de cette même base (un nombre ou un `%define` qui s'y résout) ; la
+borne est immédiate ; le corps n'a pas de `CALL` ; le compteur est mort à
+l'étiquette de fin, à chaque saut vers l'extérieur et à chaque `RET` ; et
+l'étiquette de début n'est atteinte que par continuation. Elle s'exécute une
+fois, après `loop-unroll` et avant `loop-invert` ; elle fait partie de `-O3`,
+et `-floop-index` l'active seule.
+
+### Déroulage Partiel des Boucles (`loop-unroll-partial`)
+
+Une boucle comptée dont le nombre d'itérations n'est **pas** connu à la
+compilation paie son test et son saut à chaque itération. Cette passe exécute K
+itérations (4, ou 2 pour un corps plus grand) par tour d'une nouvelle boucle
+principale, derrière une seule garde qui vérifie que les K passeront le test, et
+garde la boucle d'origine pour finir les 0..K-1 itérations restantes (voir
+l'exemple de la version anglaise). Sur 4 itérations, 3 tests et 3 sauts
+disparaissent. La garde n'utilise que le registre du test d'origine : une
+borne immédiate est décalée à la compilation ; une borne en registre ou en
+emplacement de cadre utilise `MOV Rc, borne / ISUB Rc, (K-1)*pas /
+I<miroir> Rc, Ri`. Conditions : la comparaison est cohérente avec le sens du
+pas (`ILT`/`ILE` avec un pas positif, `IGT`/`IGE` avec un pas négatif ; `INE`
+est laissé) ; la borne ne change pas dans le corps (immédiate ; registre que le
+corps n'écrit pas ; emplacement `[BP+N]` qu'aucune instruction du corps
+n'écrit, dans une fonction dont l'adresse de cadre ne s'échappe jamais) ; le
+corps n'a pas de `CALL`, n'écrit pas le compteur hors de son pas et compte au
+plus 24 instructions ; les registres temporaires du test sont morts à l'entrée
+du corps, à l'étiquette de fin et à chaque saut vers l'extérieur ; les
+étiquettes du corps ne sont référencées que de l'intérieur et reçoivent de
+nouveaux noms dans chaque copie. Elle s'exécute après `loop-unroll` et
+`loop-index`, avant `loop-invert` ; elle fait partie de `-O3`, et
+`-floop-unroll-partial` l'active seule.
 
 ---
 

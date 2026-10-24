@@ -149,7 +149,7 @@ et les passes de promotion de la mémoire en registres
 .TP
 .B \-O3
 .B \-O2
-plus l'intégration des fonctions feuilles triviales , l'inversion de boucles et le déroulage complet des boucles à nombre d'itérations constant. Le niveau le plus
+plus l'intégration des fonctions feuilles triviales , l'inversion de boucles, le déroulage complet et partiel des boucles comptées et le repliement des bases de tableaux dans les compteurs. Le niveau le plus
 agressif : des changements structurels profonds, avec le plus de risques
 de casser un programme.
 .TP
@@ -230,7 +230,8 @@ peephole\-dead\-stores, peephole\-loads, peephole\-immediate\-prop,
 peephole\-jmp\-chain, peephole\-zero\-test,
 peephole\-dead\-regs, peephole\-copies, cse, dce,
 constant\-folding, omit\-frame\-pointers, inline, promote\-regs,
-promote\-leaf, promote\-loops, loop\-invert, loop\-unroll
+promote\-leaf, promote\-loops, loop\-invert, loop\-unroll, loop\-index,
+loop\-unroll\-partial
 .fi
 .RE
 .IP

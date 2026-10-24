@@ -454,7 +454,7 @@ v32opt <entrada.asm> [-o salida.asm] [opciones]
 | `-O0` | **Sin Optimización** | Desactiva todas las pasadas de optimización (por defecto). |
 | `-O1` | **Mirilla Local** | Activa las 16 optimizaciones locales (14 de mirilla sobre ventana, más la **escritura muerta de registro** y la **limpieza de copias**, guiadas por vida de registros). |
 | `-O2` | **Análisis Global** | Activa todas las pasadas de `-O1` + **CSE**, **Eliminación de Código Muerto (DCE)**, **Plegado Global de Constantes**, **Eliminación del Puntero de Marco** y **Promoción de Memoria a Registros** (`promote-regs`, `promote-leaf`, `promote-loops`). |
-| `-O3` | **Agresivo** | Activa todas las pasadas de `-O2` + **Inserción de Funciones en Línea** + **Inversión de Bucles** + **Desenrollado de Bucles**. |
+| `-O3` | **Agresivo** | Activa todas las pasadas de `-O2` + **Inserción de Funciones en Línea** + **Inversión de Bucles** + **Desenrollado de Bucles** (completo y parcial) + **Plegado del Índice**. |
 | `-Os` | **Ahorro de Espacio** | `-O3` sin inversión de bucles (que duplica la prueba de cada bucle); marcador de posición para un nivel dedicado al tamaño. |
 | `-o <archivo>` | **Archivo de Salida** | Dónde escribir el ensamblador optimizado (por defecto: `<entrada>Opt.asm`). |
 | `-v`, `--verbose` | **Modo Detallado** | Muestra estadísticas detalladas de las pasadas y el número de optimizaciones de cada iteración. |
@@ -1118,6 +1118,46 @@ iteraciones y 96 instrucciones; los bucles anidados se desenrollan de dentro
 hacia fuera. Se ejecuta una vez, tras el plegado de constantes y antes de
 `loop-invert`; forma parte de `-O3` (no de `-Os`, porque el código crece) y
 `-floop-unroll` la activa por separado.
+
+
+### Plegado del Índice en Bucles (`loop-index`)
+
+El código con arreglos direcciona elementos como `base + i`. Cuando el
+contador de un bucle contado solo se usa para formar direcciones de una misma
+base, esa base se pliega en el propio contador, sin registro extra (véase el
+ejemplo en la versión en inglés): se añade `IADD Ri, BASE` una vez antes del
+bucle, la cota inmediata se desplaza por BASE en tiempo de compilación y cada
+par `MOV Rt, BASE / IADD Rt, Ri` pasa a `MOV Rt, Ri`. Una instrucción menos
+por uso e iteración. Condiciones: toda otra mención del contador es la segunda
+mitad de un par adyacente de esa misma base (un número o un `%define` que lo
+resuelva); la cota es inmediata; el cuerpo no tiene `CALL`; el contador está
+muerto en la etiqueta final, en cada salto hacia fuera y en cada `RET`; y a la
+etiqueta de inicio solo se llega por continuación. Se ejecuta una vez, tras
+`loop-unroll` y antes de `loop-invert`; forma parte de `-O3`, y
+`-floop-index` la activa por separado.
+
+### Desenrollado Parcial de Bucles (`loop-unroll-partial`)
+
+Un bucle contado cuyo número de iteraciones **no** se conoce en compilación
+paga la prueba y el salto en cada iteración. Esta pasada ejecuta K iteraciones
+(4, o 2 si el cuerpo es grande) por vuelta de un nuevo bucle principal, tras una
+sola guarda que comprueba que las K pasarán la prueba, y conserva el bucle
+original para terminar las 0..K-1 iteraciones restantes (véase el ejemplo en la
+versión en inglés). De cada 4 iteraciones se eliminan 3 pruebas y 3 saltos. La
+guarda usa solo el registro de la prueba original: una cota inmediata se
+desplaza en compilación; una cota en registro o posición de marco usa
+`MOV Rc, cota / ISUB Rc, (K-1)*paso / I<espejo> Rc, Ri`. Condiciones: la
+comparación concuerda con el sentido del paso (`ILT`/`ILE` con paso positivo,
+`IGT`/`IGE` con negativo; `INE` se deja); la cota no cambia dentro del cuerpo
+(inmediata; registro que el cuerpo no escribe; posición `[BP+N]` que ninguna
+instrucción del cuerpo escribe, en una función cuya dirección de marco nunca
+escapa); el cuerpo no tiene `CALL`, no escribe el contador salvo en su paso y
+tiene como máximo 24 instrucciones; los registros temporales de la prueba están
+muertos a la entrada del cuerpo, en la etiqueta final y en cada salto hacia
+fuera; las etiquetas del cuerpo se referencian solo desde dentro y cada copia
+recibe nombres nuevos. Se ejecuta tras `loop-unroll` y `loop-index`, antes de
+`loop-invert`; forma parte de `-O3`, y `-floop-unroll-partial` la activa por
+separado.
 
 ---
 

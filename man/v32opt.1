@@ -138,7 +138,7 @@ and the memory-to-register promotion passes
 .TP
 .B \-O3
 .B \-O2
-plus trivial leaf-function inlining, loop inversion and full unrolling of constant-trip loops. The most aggressive tier:
+plus trivial leaf-function inlining, loop inversion, full and partial unrolling of counted loops and folding of array bases into loop counters. The most aggressive tier:
 sweeping structural changes, with the highest chance of breaking a
 program.
 .TP
@@ -215,7 +215,8 @@ peephole\-dead\-stores, peephole\-loads, peephole\-immediate\-prop,
 peephole\-jmp\-chain, peephole\-zero\-test,
 peephole\-dead\-regs, peephole\-copies, cse, dce,
 constant\-folding, omit\-frame\-pointers, inline, promote\-regs,
-promote\-leaf, promote\-loops, loop\-invert, loop\-unroll
+promote\-leaf, promote\-loops, loop\-invert, loop\-unroll, loop\-index,
+loop\-unroll\-partial
 .fi
 .RE
 .IP

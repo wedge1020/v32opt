@@ -425,7 +425,7 @@ v32opt <input.asm> [-o output.asm] [options]
 | `-O0` | **No Optimization** | Disables all optimization passes (default). |
 | `-O1` | **Local Peephole** | Enables all 16 local peephole optimizations (14 window passes, plus the liveness-driven **dead register write** and **copy cleanup**). |
 | `-O2` | **Global Analysis** | Enables all `-O1` passes + **CSE**, **Dead Code Elimination (DCE)**, **Global Constant Folding**, **Frame Pointer Elimination** & **Memory-to-Register Promotion** (`promote-regs`, `promote-leaf`, `promote-loops`). |
-| `-O3` | **Aggressive** | Enables all `-O2` passes + **Function Inlining** + **Loop Inversion** + **Loop Unrolling**. |
+| `-O3` | **Aggressive** | Enables all `-O2` passes + **Function Inlining** + **Loop Inversion** + **Loop Unrolling** (full and partial) + **Loop Index Folding**. |
 | `-Os` | **Space Saving** | `-O3` without loop inversion and unrolling (which duplicate code); a placeholder for a dedicated size-focused tier. |
 | `-o <file>` | **Output File** | Where to write the optimized assembly (default: `<input>Opt.asm`). |
 | `-v`, `--verbose` | **Verbose Mode** | Displays detailed pass statistics and optimization counts per iteration. |
@@ -1068,6 +1068,80 @@ and `return`, are kept; labels of each copy are renamed to stay unique);
 16 trips and 96 instructions in all; nested loops unroll inside-out. It
 runs once, after constant folding and before `loop-invert`, is part of `-O3`
 (code grows; `-Os` leaves it out) and `-floop-unroll` enables it on its own.
+
+
+### Loop Index Folding (`loop-index`)
+
+Array code addresses elements as `base + i`. When a counted loop's counter
+is used only to form addresses of one base, the base is folded into the
+counter itself, with no extra register:
+
+```vircon32
+; BEFORE                          ; AFTER
+    MOV R4, 0                         MOV R4, 0
+__for_1_start:                        IADD R4, global_arr       ; once
+    MOV R0, R4                    __for_1_start:
+    ILT R0, 64                        MOV R0, R4
+    JF  R0, __for_1_end               ILT R0, 164               ; 64 + global_arr
+    MOV R1, global_arr                JF  R0, __for_1_end
+    IADD R1, R4                       MOV R1, R4                ; the address is the counter
+    MOV R2, [R1]                      MOV R2, [R1]
+    ...                               ...
+```
+
+One instruction fewer per use per iteration, for one instruction once (and
+the cleanup passes often reduce `MOV R1, R4 / MOV R2, [R1]` to
+`MOV R2, [R4]`). Conditions: every other mention of the counter is the
+second half of an adjacent `MOV Rt, BASE / IADD Rt, Ri` pair of that same base
+(a plain number or a `%define` that resolves to one); the bound is an
+immediate (it moves by the base at compile time); the body has no `CALL`;
+the counter is dead at the end label, at every jump out and at every `RET`;
+and the start label is reached only by falling into it. It runs once, after
+`loop-unroll` and before `loop-invert`; part of `-O3`, enabled alone with
+`-floop-index`.
+
+### Partial Loop Unrolling (`loop-unroll-partial`)
+
+A counted loop whose trip count is **not** known at compile time still pays
+for its test and back edge on every iteration. This pass runs K iterations
+(4, or 2 for larger bodies) per round of a new main loop, behind one guard
+that checks that all K will pass the test, and keeps the original loop to
+finish the remaining 0..K-1 iterations:
+
+```vircon32
+; AFTER (K = 4)
+__v32opt_unroll_1:
+    MOV R0, [BP+2]                    ; the bound n
+    ISUB R0, 3                        ; n - (K-1)*step
+    IGT  R0, R4                       ; i < n - 3  <=>  the next 4 iterations pass
+    JF   R0, __for_1_start            ; otherwise: the remainder loop
+    ...body...  IADD R4, 1            ; four copies
+    ...
+    JMP __v32opt_unroll_1
+__for_1_start:                        ; the original loop, now the remainder
+    MOV R0, R4
+    MOV R1, [BP+2]
+    ILT R0, R1
+    JF  R0, __for_1_end
+    ...
+```
+
+Of every 4 iterations that removes 3 tests and 3 back edges (`loop-invert` then
+inverts the new main loop as well). The guard is built with only the test's
+own register: an immediate bound is shifted at compile time
+(`ILT Rc, X-(K-1)*step`), a register or frame-slot bound uses
+`MOV Rc, bound / ISUB Rc, (K-1)*step / I<mirror> Rc, Ri`. Conditions: the
+comparison agrees with the step's direction (`ILT`/`ILE` with a positive step,
+`IGT`/`IGE` with a negative one; `INE` is left alone); the bound cannot change
+inside the body (an immediate; a register the body never writes; a `[BP+N]`
+slot that no body instruction writes, in a function whose frame address never
+escapes); the body has no `CALL`, does not write the counter except in its
+step, and has at most 24 instructions; the test's scratch registers are dead at
+the body entry, at the end label and at every jump out; body labels are
+referenced only from inside and get fresh names in each copy. (A runtime bound
+within `(K-1)*|step|` of the 32-bit limit would wrap; no real bound is.) It runs
+after `loop-unroll` and `loop-index`, before `loop-invert`; part of `-O3`,
+enabled alone with `-floop-unroll-partial`.
 
 ---
 
