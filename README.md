@@ -425,8 +425,8 @@ v32opt <input.asm> [-o output.asm] [options]
 | `-O0` | **No Optimization** | Disables all optimization passes (default). |
 | `-O1` | **Local Peephole** | Enables all 16 local peephole optimizations (14 window passes, plus the liveness-driven **dead register write** and **copy cleanup**). |
 | `-O2` | **Global Analysis** | Enables all `-O1` passes + **CSE**, **Dead Code Elimination (DCE)**, **Global Constant Folding**, **Frame Pointer Elimination** & **Memory-to-Register Promotion** (`promote-regs`, `promote-leaf`, `promote-loops`). |
-| `-O3` | **Aggressive** | Enables all `-O2` passes + **Function Inlining** + **Loop Inversion**. |
-| `-Os` | **Space Saving** | `-O3` without loop inversion (which duplicates each loop's test); a placeholder for a dedicated size-focused tier. |
+| `-O3` | **Aggressive** | Enables all `-O2` passes + **Function Inlining** + **Loop Inversion** + **Loop Unrolling**. |
+| `-Os` | **Space Saving** | `-O3` without loop inversion and unrolling (which duplicate code); a placeholder for a dedicated size-focused tier. |
 | `-o <file>` | **Output File** | Where to write the optimized assembly (default: `<input>Opt.asm`). |
 | `-v`, `--verbose` | **Verbose Mode** | Displays detailed pass statistics and optimization counts per iteration. |
 | `-t` | **Testing Mode** | Prints a machine-readable `pass:count` summary (plus a `total:N` line). |
@@ -1029,6 +1029,45 @@ once (the v32cc default `.local` labels repeat per function: use
 promote passes (which find a loop by its back edge) and before the final
 cleanup. It is part of `-O3`, not `-O2` or `-Os`, because it trades code size
 for speed; `-floop-invert` enables it on its own.
+
+
+### Full Loop Unrolling (`loop-unroll`)
+
+A counted loop whose trip count is a compile-time constant is replaced by
+that many copies of its body, with no test and no back edge:
+
+```vircon32
+; BEFORE                          ; AFTER (4 trips)
+    MOV R4, 0
+__for_1_start:                        ...body, R4 = 0...
+    MOV R0, R4                        IADD R4, 1
+    ILT R0, 4                         ...body, R4 = 1...
+    JF  R0, __for_1_end               IADD R4, 1
+    ...body...                        ...                (2 more copies)
+    IADD R4, 1                    __for_1_end:
+    JMP __for_1_start
+__for_1_end:
+```
+
+Per iteration that removes the test (3 instructions) and the back edge (1).
+Every copy keeps its `IADD Ri, step`, so the counter holds the same value
+everywhere as before, and in each copy a read of the counter where an
+immediate is accepted is replaced by its value (`global_arr + i` becomes an
+address the cleanup passes can fold). The loop shape matched is the one the
+compilers and `promote-*` leave: `MOV Ri, <imm>` as the last write of `Ri`
+before the start label, a test `MOV Rc, Ri / I<cmp> Rc, <imm> / JF Rc, end`,
+a body, `IADD/ISUB Ri, <imm>` and `JMP start`.
+
+Soundness: the trip count is computed on the constant init and step (32-bit
+wrap-around); no instruction of the body writes the counter and the body has
+no `CALL`; the start label is referenced only by the back edge, and every
+label of the body only from inside it (jumps out of the body, for `break`
+and `return`, are kept; labels of each copy are renamed to stay unique);
+`Rc`, the test register, is re-created (`MOV Rc, 1` at the top of each copy,
+`MOV Rc, 0` at the normal exit) when liveness says someone reads it. At most
+16 trips and 96 instructions in all; nested loops unroll inside-out. It
+runs once, after constant folding and before `loop-invert`, is part of `-O3`
+(code grows; `-Os` leaves it out) and `-floop-unroll` enables it on its own.
 
 ---
 

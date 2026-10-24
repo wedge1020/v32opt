@@ -1,4 +1,8 @@
-# Where the cycles are: notes for the next optimization passes
+# Where the cycles are: notes on the loop passes
+
+Status: dead-register/copy cleanup (-O1), loop inversion and full
+unrolling of constant-trip loops (-O3) are implemented. Pointer strength
+reduction and partial unrolling below are still proposals.
 
 Measured on the simulator (`v32sim`), where every instruction is one cycle,
 so cycles = instructions executed. Two loops, each hand-optimized one step at

@@ -430,3 +430,28 @@ REMAINING (promote):
 - Pre-existing, unrelated: LeakSanitizer reports a few small leaks (nodes
   made by other passes) at exit, with or without promote-*; no memory
   errors under AddressSanitizer/UBSan.
+
+LOOP INVERSION AND UNROLLING (Oct 24 2026; -O3 only, not -Os):
+
+- loop-invert: the back edge becomes a copy of the loop test plus a
+  conditional jump to the body. Bug found by the differential corpus and
+  fixed: a test that exits on JT (after peephole-jumps rewrites "JF; JMP")
+  needs a JF back edge.
+- loop-unroll: counted loops with a constant trip count (<= 16, <= 96
+  instructions) are replaced by copies of the body; the counter is replaced
+  by its value inside each copy. Bugs found while testing, fixed: the test
+  register Rc (R0) must be 1 on break paths and 0 after the normal exit when
+  live; liveness is asked before any rewrite (the plan/apply split) because
+  rewriting invalidates its cache.
+- Measured against -O0 (cycles / size): v32cc -O2 -6.8/-6.0%, -O3 -10.6/-3.0%;
+  stock compile -O2 -4.9/-14.5%, -O3 -8.8/-13.4%; v32lua -O3 -18.4/-5.2%
+  (Lua loops have a different shape and are not unrolled).
+- Real programs (stock compiler): crisp-game-lib and tinyjoypad, 1M words of
+  RAM after 300 frames with --fixed-clock, are identical to the -O0 build at
+  -O1/-O2/-O3 (crisp's tick counter is one frame ahead because the faster
+  code starts earlier; 299 frames match exactly); callee-save lint clean.
+- Not done: partial unrolling with a remainder loop for unknown trip counts
+  (needs a loop-invariant bound and a free register) and pointer strength
+  reduction (only ~20 base+index sites in crisp; ~800 in tinyjoypad, which is
+  mostly outside hot loops). Both need a free register chosen with the
+  promote passes' callee-save rules.

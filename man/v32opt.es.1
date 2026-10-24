@@ -148,14 +148,14 @@ y las pasadas de promoción de memoria a registros
 .TP
 .B \-O3
 .B \-O2
-más la inserción en línea de funciones hoja triviales y la inversión de bucles. El nivel más
+más la inserción en línea de funciones hoja triviales , la inversión de bucles y el desenrollado completo de bucles de iteraciones constantes. El nivel más
 agresivo: cambios estructurales profundos, con la mayor probabilidad de
 romper un programa.
 .TP
 .B \-Os
 Idéntico a
 .B \-O3
-pero sin inversión de bucles (un marcador de posición para un nivel dedicado al tamaño).
+pero sin inversión ni desenrollado de bucles (un marcador de posición para un nivel dedicado al tamaño).
 .RE
 .TP
 .BR \-v ", " \-\-verbose
@@ -230,7 +230,7 @@ peephole\-dead\-stores, peephole\-loads, peephole\-immediate\-prop,
 peephole\-jmp\-chain, peephole\-zero\-test,
 peephole\-dead\-regs, peephole\-copies, cse, dce,
 constant\-folding, omit\-frame\-pointers, inline, promote\-regs,
-promote\-leaf, promote\-loops, loop\-invert
+promote\-leaf, promote\-loops, loop\-invert, loop\-unroll
 .fi
 .RE
 .IP

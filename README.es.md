@@ -454,7 +454,7 @@ v32opt <entrada.asm> [-o salida.asm] [opciones]
 | `-O0` | **Sin Optimización** | Desactiva todas las pasadas de optimización (por defecto). |
 | `-O1` | **Mirilla Local** | Activa las 16 optimizaciones locales (14 de mirilla sobre ventana, más la **escritura muerta de registro** y la **limpieza de copias**, guiadas por vida de registros). |
 | `-O2` | **Análisis Global** | Activa todas las pasadas de `-O1` + **CSE**, **Eliminación de Código Muerto (DCE)**, **Plegado Global de Constantes**, **Eliminación del Puntero de Marco** y **Promoción de Memoria a Registros** (`promote-regs`, `promote-leaf`, `promote-loops`). |
-| `-O3` | **Agresivo** | Activa todas las pasadas de `-O2` + **Inserción de Funciones en Línea** + **Inversión de Bucles**. |
+| `-O3` | **Agresivo** | Activa todas las pasadas de `-O2` + **Inserción de Funciones en Línea** + **Inversión de Bucles** + **Desenrollado de Bucles**. |
 | `-Os` | **Ahorro de Espacio** | `-O3` sin inversión de bucles (que duplica la prueba de cada bucle); marcador de posición para un nivel dedicado al tamaño. |
 | `-o <archivo>` | **Archivo de Salida** | Dónde escribir el ensamblador optimizado (por defecto: `<entrada>Opt.asm`). |
 | `-v`, `--verbose` | **Modo Detallado** | Muestra estadísticas detalladas de las pasadas y el número de optimizaciones de cada iteración. |
@@ -1083,6 +1083,41 @@ vez, tras las pasadas promote (que reconocen un bucle por su salto de
 retorno) y antes de la limpieza final. Forma parte de `-O3`, no de `-O2` ni
 `-Os`, porque cambia tamaño de código por velocidad; `-floop-invert` la
 activa por separado.
+
+
+### Desenrollado Completo de Bucles (`loop-unroll`)
+
+Un bucle contado cuyo número de iteraciones es una constante de compilación
+se sustituye por esa cantidad de copias de su cuerpo, sin prueba ni salto de
+retorno (véase el ejemplo en la versión en inglés):
+
+```vircon32
+; ANTES                           ; DESPUÉS (4 iteraciones)
+    MOV R4, 0
+__for_1_start:                        ...cuerpo, R4 = 0...
+    MOV R0, R4                        IADD R4, 1
+    ILT R0, 4                         ...cuerpo, R4 = 1...
+    JF  R0, __for_1_end               IADD R4, 1
+    ...cuerpo...                      ...                (2 copias más)
+    IADD R4, 1                    __for_1_end:
+    JMP __for_1_start
+__for_1_end:
+```
+
+Por iteración se eliminan la prueba (3 instrucciones) y el salto (1). Cada
+copia conserva su `IADD Ri, paso`, así que el contador vale lo mismo que
+antes en todas partes, y en cada copia las lecturas del contador donde se
+acepta un inmediato se sustituyen por su valor. Condiciones: el número de
+iteraciones se calcula con el valor inicial y el paso constantes; el cuerpo
+no escribe el contador ni contiene `CALL`; la etiqueta de inicio solo se
+referencia desde el salto de retorno y las etiquetas del cuerpo solo desde
+dentro (las copias reciben etiquetas nuevas); el registro de la prueba se
+recrea (`MOV Rc, 1` al inicio de cada copia, `MOV Rc, 0` en la salida normal)
+cuando la vida de registros muestra que alguien lo lee. Máximo 16
+iteraciones y 96 instrucciones; los bucles anidados se desenrollan de dentro
+hacia fuera. Se ejecuta una vez, tras el plegado de constantes y antes de
+`loop-invert`; forma parte de `-O3` (no de `-Os`, porque el código crece) y
+`-floop-unroll` la activa por separado.
 
 ---
 

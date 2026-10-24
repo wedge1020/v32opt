@@ -464,7 +464,7 @@ v32opt <entrée.asm> [-o sortie.asm] [options]
 | `-O0` | **Aucune Optimisation** | Désactive toutes les passes d'optimisation (par défaut). |
 | `-O1` | **Lucarne Locale** | Active les 16 optimisations locales (14 à lucarne sur fenêtre, plus l'**écriture morte de registre** et le **nettoyage des copies**, guidés par la vivacité des registres). |
 | `-O2` | **Analyse Globale** | Active toutes les passes de `-O1` + **CSE**, **Élimination du Code Mort (DCE)**, **Repliement Global des Constantes**, **Élimination du Pointeur de Cadre** et **Promotion de la Mémoire en Registres** (`promote-regs`, `promote-leaf`, `promote-loops`). |
-| `-O3` | **Agressif** | Active toutes les passes de `-O2` + **Intégration des Fonctions (inlining)** + **Inversion de Boucles**. |
+| `-O3` | **Agressif** | Active toutes les passes de `-O2` + **Intégration des Fonctions (inlining)** + **Inversion de Boucles** + **Déroulage de Boucles**. |
 | `-Os` | **Gain de Place** | `-O3` sans inversion de boucles (qui duplique le test de chaque boucle) ; emplacement réservé pour un niveau dédié à la taille. |
 | `-o <fichier>` | **Fichier de Sortie** | Où écrire l'assembleur optimisé (par défaut : `<entrée>Opt.asm`). |
 | `-v`, `--verbose` | **Mode Verbeux** | Affiche des statistiques détaillées des passes et le nombre d'optimisations à chaque itération. |
@@ -1101,6 +1101,41 @@ s'exécute une fois, après les passes promote (qui reconnaissent une boucle à
 son saut de retour) et avant le nettoyage final. Elle fait partie de `-O3`,
 pas de `-O2` ni de `-Os`, car elle échange de la taille de code contre de la
 vitesse ; `-floop-invert` l'active seule.
+
+
+### Déroulage Complet des Boucles (`loop-unroll`)
+
+Une boucle comptée dont le nombre d'itérations est une constante de
+compilation est remplacée par autant de copies de son corps, sans test ni
+saut de retour (voir l'exemple de la version anglaise) :
+
+```vircon32
+; AVANT                           ; APRÈS (4 itérations)
+    MOV R4, 0
+__for_1_start:                        ...corps, R4 = 0...
+    MOV R0, R4                        IADD R4, 1
+    ILT R0, 4                         ...corps, R4 = 1...
+    JF  R0, __for_1_end               IADD R4, 1
+    ...corps...                       ...                (2 copies de plus)
+    IADD R4, 1                    __for_1_end:
+    JMP __for_1_start
+__for_1_end:
+```
+
+À chaque itération, on supprime le test (3 instructions) et le saut (1).
+Chaque copie garde son `IADD Ri, pas` : le compteur vaut partout la même
+valeur qu'avant, et dans chaque copie les lectures du compteur là où un
+immédiat est accepté sont remplacées par sa valeur. Conditions : le nombre
+d'itérations est calculé à partir de la valeur initiale et du pas constants ;
+le corps n'écrit pas le compteur et ne contient pas de `CALL` ; l'étiquette de
+début n'est référencée que par le saut de retour et les étiquettes du corps
+que depuis l'intérieur (les copies reçoivent des étiquettes neuves) ; le
+registre du test est recréé (`MOV Rc, 1` en tête de chaque copie, `MOV Rc, 0`
+à la sortie normale) quand la vivacité montre que quelqu'un le lit. 16
+itérations et 96 instructions au plus ; les boucles imbriquées se déroulent
+de l'intérieur vers l'extérieur. Elle s'exécute une fois, après le repliement
+des constantes et avant `loop-invert` ; elle fait partie de `-O3` (pas de
+`-Os`, car le code grossit) et `-floop-unroll` l'active seule.
 
 ---
 
