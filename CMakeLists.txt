@@ -203,7 +203,8 @@ set(V32OPT_CORE_SRC
     src/promote.c
     src/helpers.c
     src/defines.c
-    src/liveness.c)
+    src/liveness.c
+    src/loops.c)
 
 file(GLOB V32OPT_PEEPHOLE_SRC CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/peephole/*.c")
@@ -360,6 +361,10 @@ if(BUILD_TESTING)
         # loop-unroll: which counted loops are unrolled and which are left alone.
         add_test(NAME loop-unroll
                  COMMAND "${V32OPT_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/testing/loop-unroll/run.sh"
+                         "$<TARGET_FILE:v32opt>")
+        # loop-index: which loops get their base folded into the counter.
+        add_test(NAME loop-index
+                 COMMAND "${V32OPT_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/testing/loop-index/run.sh"
                          "$<TARGET_FILE:v32opt>")
         # No pass may write a register its input did not (clobbered-register lint).
         add_test(NAME callee-save-lint

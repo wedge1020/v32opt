@@ -68,7 +68,8 @@ typedef enum
     OPT_PROMOTE_LOOPS,
     OPT_PROMOTE_REGS,
     OPT_LOOP_INVERT,
-    OPT_LOOP_UNROLL
+    OPT_LOOP_UNROLL,
+    OPT_LOOP_INDEX
 } OptType;
 
 // ---------------------------------------------------------------------------
@@ -79,6 +80,7 @@ typedef enum
 #include "dataflow.h"   // CFG, constant folding, CSE, DCE
 #include "inline.h"     // trivial leaf-function inlining
 #include "stack.h"      // frame-pointer elimination
+#include "loops.h"      // helpers shared by the loop passes
 #include "promote.h"    // experimental stack-slot promotion
 
 // ---------------------------------------------------------------------------
@@ -132,6 +134,7 @@ typedef struct {
     bool     opt_promote_regs;
     bool     opt_loop_invert;
     bool     opt_loop_unroll;
+    bool     opt_loop_index;
     bool     opt_resolve_defines;   // let passes see numeric %define values
     LangMode lang_mode;
 } OptConfig;

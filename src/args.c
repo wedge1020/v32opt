@@ -31,6 +31,7 @@ static void set_opt_level(OptConfig *cfg, int level) {
     cfg -> opt_promote_loops             = false;
     cfg -> opt_loop_invert               = false;
     cfg -> opt_loop_unroll               = false;
+    cfg -> opt_loop_index                = false;
 
     if (level                           == 0) return; // -O0: all off
 
@@ -73,10 +74,12 @@ static void set_opt_level(OptConfig *cfg, int level) {
     cfg -> opt_inline                    = true;
     cfg -> opt_loop_invert               = true;
     cfg -> opt_loop_unroll               = true;
+    cfg -> opt_loop_index                = true;
 
     if (level                           == 3) return;
     cfg -> opt_loop_invert               = false;
     cfg -> opt_loop_unroll               = false;
+    cfg -> opt_loop_index                = false;
     //cfg->opt_inline = false;
     //cfg->opt_peephole_immediate_prop = false;
 }
@@ -112,6 +115,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
         else if (strcmp(name, "promote-loops") == 0) cfg->opt_promote_loops = false;
         else if (strcmp(name, "loop-invert") == 0) cfg->opt_loop_invert = false;
         else if (strcmp(name, "loop-unroll") == 0) cfg->opt_loop_unroll = false;
+        else if (strcmp(name, "loop-index") == 0) cfg->opt_loop_index = false;
         else if (strcmp(name, "resolve-defines") == 0) cfg->opt_resolve_defines = false;
         else return false;
         return true;
@@ -161,6 +165,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
     else if (strcmp(arg, "promote-loops") == 0) cfg->opt_promote_loops = true;
     else if (strcmp(arg, "loop-invert") == 0) cfg->opt_loop_invert = true;
     else if (strcmp(arg, "loop-unroll") == 0) cfg->opt_loop_unroll = true;
+    else if (strcmp(arg, "loop-index") == 0) cfg->opt_loop_index = true;
     else return false;
 
     return true;
@@ -195,8 +200,8 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "  -O2                      -O1 + cse, dce, constant-folding,\n");
     fprintf(stdout, "                           omit-frame-pointers, promote-regs,\n");
     fprintf(stdout, "                           promote-leaf, promote-loops\n");
-    fprintf(stdout, "  -O3                      -O2 + inline, loop-invert, loop-unroll (aggressive; could break)\n");
-    fprintf(stdout, "  -Os                      -O3 without loop-invert / loop-unroll\n\n");
+    fprintf(stdout, "  -O3                      -O2 + inline, loop-invert, loop-unroll, loop-index (aggressive; could break)\n");
+    fprintf(stdout, "  -Os                      -O3 without the loop passes\n\n");
     fprintf(stdout, "Individual Optimization Toggles:\n");
     fprintf(stdout, "  -f<name>                 Enable specific pass (e.g., -fpeephole-algebra)\n");
     fprintf(stdout, "  -fno-<name>              Disable specific pass (e.g., -fno-inline)\n\n");
@@ -208,7 +213,7 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "  inline, cse, dce, constant-folding, promote-regs, promote-leaf,\n");
     fprintf(stdout, "  promote-loops, omit-frame-pointers, peephole-compiler-myopia,\n");
     fprintf(stdout, "  peephole-zero-test, peephole-dead-regs, peephole-copies,\n");
-    fprintf(stdout, "  loop-invert, loop-unroll\n\n");
+    fprintf(stdout, "  loop-invert, loop-unroll, loop-index\n\n");
     fprintf(stdout, "Diagnostic Flags:\n");
     fprintf(stdout, "  -finline-max=N           Cap inlinable function body size, in body\n");
     fprintf(stdout, "                           instructions (clamped to 0..%d; default 8)\n", MAX_BODY_INS);

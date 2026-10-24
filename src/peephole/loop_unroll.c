@@ -59,106 +59,6 @@
 #define LOOP_UNROLL_MAX_TRIPS  16
 #define LOOP_UNROLL_MAX_TOTAL  96
 
-typedef struct {
-    char name[128];
-    AsmNode *node;
-    bool duplicate;
-    int  refs;           // occurrences as a token in non-label lines
-} UlLabel;
-
-static UlLabel *g_ul;
-static int      g_ul_n;
-
-static int cmp_ul(const void *a, const void *b)
-{
-    return strcmp(((const UlLabel *)a)->name, ((const UlLabel *)b)->name);
-}
-
-static UlLabel *ul_find(const char *name)
-{
-    UlLabel key;
-    safe_str_copy(key.name, name, sizeof(key.name));
-    return bsearch(&key, g_ul, (size_t)g_ul_n, sizeof(UlLabel), cmp_ul);
-}
-
-static bool ident_char(int c) { return isalnum(c) || c == '_' || c == '.' || c == '$'; }
-
-// Calls fn(label) for every identifier token of the line that names a label.
-static void ul_tokens(const AsmNode *n, void (*fn)(UlLabel *, void *), void *arg)
-{
-    const char *s = n->raw;
-    while (*s && *s != ';') {
-        if (ident_char((unsigned char)*s)) {
-            const char *b = s;
-            while (ident_char((unsigned char)*s)) s++;
-            size_t len = (size_t)(s - b);
-            if (len < 128) {
-                char tok[128];
-                memcpy(tok, b, len);
-                tok[len] = '\0';
-                UlLabel *l = ul_find(tok);
-                if (l) fn(l, arg);
-            }
-        } else {
-            s++;
-        }
-    }
-}
-
-static void count_ref(UlLabel *l, void *arg) { (void)arg; l->refs++; }
-
-static void ul_build(AsmNode *head)
-{
-    int n = 0;
-    for (AsmNode *p = head->next; p; p = p->next) if (p->type == OP_LABEL) n++;
-    g_ul   = calloc((size_t)n + 1, sizeof(UlLabel));
-    g_ul_n = 0;
-    for (AsmNode *p = head->next; p; p = p->next) {
-        if (p->type != OP_LABEL) continue;
-        get_label_name(p, g_ul[g_ul_n].name, sizeof(g_ul[0].name));
-        g_ul[g_ul_n].node = p;
-        g_ul_n++;
-    }
-    qsort(g_ul, (size_t)g_ul_n, sizeof(UlLabel), cmp_ul);
-    for (int i = 1; i < g_ul_n; i++) {
-        if (strcmp(g_ul[i].name, g_ul[i - 1].name) == 0) {
-            g_ul[i].duplicate = g_ul[i - 1].duplicate = true;
-        }
-    }
-    for (AsmNode *p = head->next; p; p = p->next) {
-        if (p->type == OP_LABEL || p->type == OP_OTHER) continue;
-        ul_tokens(p, count_ref, NULL);
-    }
-}
-
-static bool is_comment_node(const AsmNode *n)
-{
-    return n->type == OP_OTHER && !is_directive_node(n);
-}
-
-static AsmNode *next_code(AsmNode *n)      // skips comments only
-{
-    for (n = n->next; n && is_comment_node(n); n = n->next) ;
-    return n;
-}
-
-static const char *jump_target(const AsmNode *n, char *buf, size_t sz)
-{
-    const Operand *op = NULL;
-    if (n->type == OP_JMP) op = n->has_dst ? &n->dst_op : &n->src_op;
-    else if (n->type == OP_JT || n->type == OP_JF) op = n->has_src ? &n->src_op : NULL;
-    if (!op || op->mode == MODE_REG || op->mode == MODE_INDIRECT) return NULL;
-    safe_str_copy(buf, op->raw, sz);
-    return trim(buf);
-}
-
-static bool imm_value(const Operand *op, long *v)
-{
-    if (!op || op->mode != MODE_IMMEDIATE || !is_numeric_immediate(op) || op->is_float) return false;
-    *v = (long)op->immediate;
-    return true;
-}
-
 // Is Ra written by a node that is none of the loop's own? (helper for the body scan)
 static bool is_scratch_reg(const char *r)
 {
@@ -202,14 +102,6 @@ static const char *renamed(const Rename *r, int n, const char *name)
     return NULL;
 }
 
-static void link_before(AsmNode *pos, AsmNode *nn)
-{
-    nn->prev = pos->prev;
-    nn->next = pos;
-    if (pos->prev) pos->prev->next = nn;
-    pos->prev = nn;
-}
-
 static AsmNode *clone_renamed(const AsmNode *src, const Rename *r, int n)
 {
     if (src->type == OP_LABEL) {
@@ -221,7 +113,7 @@ static AsmNode *clone_renamed(const AsmNode *src, const Rename *r, int n)
         return create_node(raw, OP_LABEL, NULL, NULL, NULL);
     }
     char buf[128];
-    const char *tgt = jump_target(src, buf, sizeof(buf));
+    const char *tgt = loop_jump_target(src, buf, sizeof(buf));
     const char *to  = tgt ? renamed(r, n, tgt) : NULL;
     if (!to) return clone_node((AsmNode *)src);
     char raw[260];
@@ -291,17 +183,17 @@ static void apply_plan(Plan *pl)
         for (int i = 0; i < pl->nren; i++) {
             snprintf(pl->ren[i].to, sizeof(pl->ren[0].to), "%s_u%d", pl->ren[i].from, g_serial);
         }
-        if (pl->rc_into_body) link_before(anchor, create_node(rc1, OP_MOV, "MOV", pl->rc, "1"));
+        if (pl->rc_into_body) loop_link_before(anchor, create_node(rc1, OP_MOV, "MOV", pl->rc, "1"));
         AsmNode *mark = anchor->prev;
         for (AsmNode *n = pl->first; ; n = n->next) {
-            if (!is_comment_node(n)) link_before(anchor, clone_renamed(n, pl->ren, pl->nren));
+            if (!loop_is_comment(n)) loop_link_before(anchor, clone_renamed(n, pl->ren, pl->nren));
             if (n == pl->last) break;
         }
         substitute_counter(mark->next, anchor->prev, pl->ri, pl->initv + (long)k * pl->stepv);
     }
     substitute_counter(pl->first, pl->last, pl->ri, pl->initv);   // copy 0, in place
-    if (pl->rc_into_body) link_before(pl->first, create_node(rc1, OP_MOV, "MOV", pl->rc, "1"));
-    if (pl->rc_at_exit) link_before(anchor, create_node(rc0, OP_MOV, "MOV", pl->rc, "0"));
+    if (pl->rc_into_body) loop_link_before(pl->first, create_node(rc1, OP_MOV, "MOV", pl->rc, "1"));
+    if (pl->rc_at_exit) loop_link_before(anchor, create_node(rc0, OP_MOV, "MOV", pl->rc, "0"));
     remove_node(pl->jmp);
     remove_node(pl->jf);
     remove_node(pl->cmp);
@@ -313,7 +205,7 @@ static void apply_plan(Plan *pl)
 static int unroll_once(AsmNode *head)
 {
     if (!head) return 0;
-    ul_build(head);
+    loop_labels_build(head);
     liveness_begin(head);
     int optimizations = 0, nplans = 0, cap = 0;
     Plan *plans = NULL;
@@ -322,8 +214,8 @@ static int unroll_once(AsmNode *head)
     for (AsmNode *jmp = head->next; jmp; ) {
         AsmNode *after_jmp = jmp->next;
         char sbuf[128];
-        const char *start_name = (jmp->type == OP_JMP) ? jump_target(jmp, sbuf, sizeof(sbuf)) : NULL;
-        UlLabel *start = start_name ? ul_find(start_name) : NULL;
+        const char *start_name = (jmp->type == OP_JMP) ? loop_jump_target(jmp, sbuf, sizeof(sbuf)) : NULL;
+        LoopLabel *start = start_name ? loop_label_find(start_name) : NULL;
         if (!start || start->duplicate || start->refs != 1 ||
             strncmp(start_name, "__function_", 11) == 0) {
             jmp = after_jmp;
@@ -339,10 +231,10 @@ static int unroll_once(AsmNode *head)
         if (overlap) { jmp = after_jmp; continue; }
 
         // --- the test: MOV Rc,Ri / I<cmp> Rc,imm / JF Rc,end ---------------
-        AsmNode *mv = next_code(start->node);
+        AsmNode *mv = loop_next_code(start->node);
         if (mv && mv->type == OP_LABEL) { jmp = after_jmp; continue; }   // an alias label: leave it alone
-        AsmNode *cmp = mv ? next_code(mv) : NULL;
-        AsmNode *jf  = cmp ? next_code(cmp) : NULL;
+        AsmNode *cmp = mv ? loop_next_code(mv) : NULL;
+        AsmNode *jf  = cmp ? loop_next_code(cmp) : NULL;
         long bound;
         if (!mv || !cmp || !jf || mv->type != OP_MOV ||
             !mv->has_dst || mv->dst_op.mode != MODE_REG ||
@@ -351,7 +243,7 @@ static int unroll_once(AsmNode *head)
               cmp->type == OP_IGE || cmp->type == OP_INE) ||
             !cmp->has_dst || cmp->dst_op.mode != MODE_REG ||
             !str_case_eq(cmp->dst_op.reg, mv->dst_op.reg) ||
-            !imm_value(&cmp->src_op, &bound) ||
+            !loop_imm_value(&cmp->src_op, &bound) ||
             jf->type != OP_JF || !jf->has_dst || jf->dst_op.mode != MODE_REG ||
             !str_case_eq(jf->dst_op.reg, mv->dst_op.reg)) {
             jmp = after_jmp;
@@ -362,8 +254,8 @@ static int unroll_once(AsmNode *head)
         if (!is_scratch_reg(ri) || str_case_eq(rc, ri)) { jmp = after_jmp; continue; }
 
         char ebuf[128];
-        const char *end_name = jump_target(jf, ebuf, sizeof(ebuf));
-        UlLabel *end = end_name ? ul_find(end_name) : NULL;
+        const char *end_name = loop_jump_target(jf, ebuf, sizeof(ebuf));
+        LoopLabel *end = end_name ? loop_label_find(end_name) : NULL;
         if (!end || end->duplicate) { jmp = after_jmp; continue; }
 
         // The JMP is followed directly by the end label.
@@ -373,17 +265,17 @@ static int unroll_once(AsmNode *head)
                 char b[128];
                 get_label_name(p, b, sizeof(b));
                 if (strcmp(b, end_name) == 0) { falls = true; break; }
-            } else if (!is_comment_node(p)) break;
+            } else if (!loop_is_comment(p)) break;
         }
         if (!falls) { jmp = after_jmp; continue; }
 
         // --- the step, just before the JMP --------------------------------
         AsmNode *step = jmp->prev;
-        while (step && (is_comment_node(step) || step->type == OP_LABEL)) step = step->prev;
+        while (step && (loop_is_comment(step) || step->type == OP_LABEL)) step = step->prev;
         long sv;
         if (!step || (step->type != OP_IADD && step->type != OP_ISUB) ||
             !step->has_dst || step->dst_op.mode != MODE_REG ||
-            !str_case_eq(step->dst_op.reg, ri) || !imm_value(&step->src_op, &sv)) {
+            !str_case_eq(step->dst_op.reg, ri) || !loop_imm_value(&step->src_op, &sv)) {
             jmp = after_jmp;
             continue;
         }
@@ -395,13 +287,13 @@ static int unroll_once(AsmNode *head)
         long initv = 0;
         bool have_init = false;
         for (int back = 0; ini && back < 12; ini = ini->prev) {
-            if (is_comment_node(ini)) continue;
+            if (loop_is_comment(ini)) continue;
             if (ini->type == OP_LABEL || ini->type == OP_OTHER || is_branch_or_call(ini) ||
                 is_control_flow_boundary(ini)) break;
             back++;
             if (modifies_register(ini, ri)) {
                 have_init = ini->type == OP_MOV && ini->has_dst && ini->dst_op.mode == MODE_REG &&
-                            ini->has_src && imm_value(&ini->src_op, &initv);
+                            ini->has_src && loop_imm_value(&ini->src_op, &initv);
                 break;
             }
         }
@@ -418,12 +310,12 @@ static int unroll_once(AsmNode *head)
         for (AsmNode *n = first; ok && n != step; n = n->next) {
             if (!n) { ok = false; break; }
             if (n->type == OP_LABEL) { nlabels++; continue; }
-            if (n->type == OP_OTHER) { if (!is_comment_node(n)) ok = false; continue; }
+            if (n->type == OP_OTHER) { if (!loop_is_comment(n)) ok = false; continue; }
             if (n->type == OP_CALL) ok = false;
             if (modifies_register(n, ri)) ok = false;
             if (n->type == OP_JMP || n->type == OP_JT || n->type == OP_JF) {
                 char b[128];
-                if (!jump_target(n, b, sizeof(b))) ok = false;     // computed jump
+                if (!loop_jump_target(n, b, sizeof(b))) ok = false;     // computed jump
             }
             body_ins++;
         }
@@ -441,28 +333,28 @@ static int unroll_once(AsmNode *head)
             if (n->type != OP_LABEL) continue;
             if (n == end->node) { ok = false; break; }
             get_label_name(n, ren[nren].from, sizeof(ren[0].from));
-            UlLabel *l = ul_find(ren[nren].from);
+            LoopLabel *l = loop_label_find(ren[nren].from);
             if (!l || l->duplicate) { ok = false; break; }
             nren++;
         }
         if (ok && nren > 0) {
             // references inside [first, jmp) must account for every reference
-            int *inside = calloc((size_t)g_ul_n + 1, sizeof(int));
+            int *inside = calloc((size_t)g_loop_labels_n + 1, sizeof(int));
             for (AsmNode *n = first; n != jmp; n = n->next) {
                 if (n->type == OP_LABEL || n->type == OP_OTHER) continue;
                 // jump targets inside the body are fine; any other use of the
                 // label (an address taken, a data reference) is not
                 char b[128];
-                const char *t = jump_target(n, b, sizeof(b));
+                const char *t = loop_jump_target(n, b, sizeof(b));
                 for (int i = 0; i < nren; i++) {
-                    UlLabel *l = ul_find(ren[i].from);
-                    int idx = (int)(l - g_ul);
+                    LoopLabel *l = loop_label_find(ren[i].from);
+                    int idx = (int)(l - g_loop_labels);
                     // count tokens of this label in this line
                     const char *s = n->raw; int occ = 0;
                     size_t len = strlen(ren[i].from);
                     while ((s = strstr(s, ren[i].from)) != NULL) {
-                        bool lb = (s == n->raw) || !ident_char((unsigned char)s[-1]);
-                        bool rb = !ident_char((unsigned char)s[len]);
+                        bool lb = (s == n->raw) || !loop_ident_char((unsigned char)s[-1]);
+                        bool rb = !loop_ident_char((unsigned char)s[len]);
                         if (lb && rb) occ++;
                         s += len;
                     }
@@ -471,8 +363,8 @@ static int unroll_once(AsmNode *head)
                 }
             }
             for (int i = 0; ok && i < nren; i++) {
-                UlLabel *l = ul_find(ren[i].from);
-                if (inside[(int)(l - g_ul)] != l->refs) ok = false;   // referenced from outside
+                LoopLabel *l = loop_label_find(ren[i].from);
+                if (inside[(int)(l - g_loop_labels)] != l->refs) ok = false;   // referenced from outside
             }
             free(inside);
         }
@@ -507,9 +399,7 @@ static int unroll_once(AsmNode *head)
     free(plans);
 
     liveness_end();
-    free(g_ul);
-    g_ul = NULL;
-    g_ul_n = 0;
+    loop_labels_free();
     return optimizations;
 }
 

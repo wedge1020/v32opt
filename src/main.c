@@ -82,7 +82,8 @@ OptConfig config = {
     .opt_promote_loops            = false,
     .opt_promote_regs             = false,
     .opt_loop_invert              = false,
-    .opt_loop_unroll              = false
+    .opt_loop_unroll              = false,
+    .opt_loop_index               = false
 };
 
 // Helper macro for aligned optimization output
@@ -151,7 +152,8 @@ int main(int argc, char **argv) {
             [OPT_PROMOTE_LEAF]             = config.opt_promote_leaf,
             [OPT_PROMOTE_LOOPS]            = config.opt_promote_loops,
             [OPT_LOOP_INVERT]              = config.opt_loop_invert,
-            [OPT_LOOP_UNROLL]              = config.opt_loop_unroll
+            [OPT_LOOP_UNROLL]              = config.opt_loop_unroll,
+            [OPT_LOOP_INDEX]               = config.opt_loop_index
         };
 
         for (OptType t = 0; t < MAX_OPTIMIZATION_ALGORITHMS; t++) {
@@ -339,6 +341,18 @@ int main(int argc, char **argv) {
         tally[OPT_LOOP_UNROLL] += unrolled;
         if (config.verbose && unrolled > 0) {
             printf("  - Loops unrolled: %d\n", unrolled);
+        }
+    }
+
+    // ===================================================================
+    // Index folding: "base + i" addresses become the counter itself
+    // ===================================================================
+    if (config.opt_loop_index) {
+        int folded = peephole_loop_index(program_ast);
+        total_opts += folded;
+        tally[OPT_LOOP_INDEX] += folded;
+        if (config.verbose && folded > 0) {
+            printf("  - Loop indexes folded: %d\n", folded);
         }
     }
 
