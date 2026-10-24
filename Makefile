@@ -126,6 +126,7 @@ tests: bin/$(TARGET)
 	bash testing/long-lines/run.sh bin/$(TARGET)
 	bash testing/promote/run.sh bin/$(TARGET)
 	bash testing/loop-invert/run.sh bin/$(TARGET)
+	bash testing/loop-unroll/run.sh bin/$(TARGET)
 	bash testing/lint/run.sh bin/$(TARGET)
 
 archive: clean

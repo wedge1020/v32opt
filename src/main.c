@@ -81,7 +81,8 @@ OptConfig config = {
     .opt_promote_leaf             = false,
     .opt_promote_loops            = false,
     .opt_promote_regs             = false,
-    .opt_loop_invert              = false
+    .opt_loop_invert              = false,
+    .opt_loop_unroll              = false
 };
 
 // Helper macro for aligned optimization output
@@ -149,7 +150,8 @@ int main(int argc, char **argv) {
             [OPT_PROMOTE_REGS]             = config.opt_promote_regs,
             [OPT_PROMOTE_LEAF]             = config.opt_promote_leaf,
             [OPT_PROMOTE_LOOPS]            = config.opt_promote_loops,
-            [OPT_LOOP_INVERT]              = config.opt_loop_invert
+            [OPT_LOOP_INVERT]              = config.opt_loop_invert,
+            [OPT_LOOP_UNROLL]              = config.opt_loop_unroll
         };
 
         for (OptType t = 0; t < MAX_OPTIMIZATION_ALGORITHMS; t++) {
@@ -324,6 +326,19 @@ int main(int argc, char **argv) {
 
         if (config.verbose && global_folds > 0) {
             printf("  - Global constant folds: %d\n", global_folds);
+        }
+    }
+
+    // ===================================================================
+    // Full unrolling of counted loops with a constant trip count (after constant folding, which
+    // turns the loop's init into a plain MOV Ri, <imm>)
+    // ===================================================================
+    if (config.opt_loop_unroll) {
+        int unrolled = peephole_loop_unroll(program_ast);
+        total_opts += unrolled;
+        tally[OPT_LOOP_UNROLL] += unrolled;
+        if (config.verbose && unrolled > 0) {
+            printf("  - Loops unrolled: %d\n", unrolled);
         }
     }
 

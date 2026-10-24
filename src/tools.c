@@ -27,7 +27,8 @@ const char *opt_type_names[]       = {
     [OPT_PROMOTE_LEAF]             = "promote-leaf",
     [OPT_PROMOTE_LOOPS]            = "promote-loops",
     [OPT_PROMOTE_REGS]             = "promote-regs",
-    [OPT_LOOP_INVERT]              = "loop-invert"
+    [OPT_LOOP_INVERT]              = "loop-invert",
+    [OPT_LOOP_UNROLL]              = "loop-unroll"
 };
 
 bool is_lua_mode(void) {

@@ -118,6 +118,7 @@ typedef struct AsmNode {
     bool has_src;
     int  lv_fn;                  // liveness.c only: 1 + index of the call-target label of the
                                  // function the node sits in (0: none known)
+    int  mark;                   // scratch flag a pass may use within one run (not preserved)
     bool debug_note;             // a "; [DEBUG <pass>] ..." comment that -d
                                  // inserted (not part of the input program)
 

@@ -357,6 +357,10 @@ if(BUILD_TESTING)
         add_test(NAME loop-invert
                  COMMAND "${V32OPT_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/testing/loop-invert/run.sh"
                          "$<TARGET_FILE:v32opt>")
+        # loop-unroll: which counted loops are unrolled and which are left alone.
+        add_test(NAME loop-unroll
+                 COMMAND "${V32OPT_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/testing/loop-unroll/run.sh"
+                         "$<TARGET_FILE:v32opt>")
         # No pass may write a register its input did not (clobbered-register lint).
         add_test(NAME callee-save-lint
                  COMMAND "${V32OPT_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/testing/lint/run.sh"

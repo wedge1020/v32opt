@@ -29,5 +29,6 @@ int  peephole_zero_test       (AsmNode *);
 int  peephole_dead_regs       (AsmNode *);
 int  peephole_copies          (AsmNode *);
 int  peephole_loop_invert     (AsmNode *);   // -floop-invert (-O3), src/peephole/loop_invert.c
+int  peephole_loop_unroll     (AsmNode *);   // -floop-unroll (-O3), src/peephole/loop_unroll.c
 
 #endif
