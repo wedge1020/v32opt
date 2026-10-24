@@ -20,7 +20,7 @@ fn() { awk -v f="__function_$2:" '$0 == f {on=1; next} on && /^__function_/ {exi
 # expected number of inversions per function
 expect() {
     local f="$1" n="$2" got
-    got="$(fn "${TMP}/o.asm" "$f" | grep -c -E '^ *JT R[0-9]+, [._A-Za-z0-9]*(v32opt_loop|body)')"
+    got="$(fn "${TMP}/o.asm" "$f" | grep -c -E '^ *J[TF] R[0-9]+, [._A-Za-z0-9]*(v32opt_loop|body)')"
     [ "${got}" = "${n}" ] || fail "${f}: expected ${n} new back-edge JT, found ${got}"
 }
 expect inv_for 1
@@ -28,6 +28,8 @@ expect inv_while_continue_break 1
 expect inv_nested 2
 expect inv_first_condition_only 1
 expect inv_existing_label 1
+expect inv_exit_on_true 1
+fn "${TMP}/o.asm" inv_exit_on_true | grep -q -E '^ *JF R0, [._A-Za-z0-9]*v32opt_loop' || fail "a test that exits on JT needs a JF back edge"
 for f in keep_call_in_test keep_exit_mismatch keep_forward keep_long_test keep_dup_a keep_dup_b; do
     a="$(fn "${HERE}/loop-invert.asm" "${f}" | grep -v '^;')"
     b="$(fn "${TMP}/o.asm" "${f}" | grep -v '^;')"

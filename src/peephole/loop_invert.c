@@ -10,7 +10,8 @@
 //            JF  Rc, end                           JF  Rc, end
 //            <body>                       body:    <body>
 //            JMP start             ->              <test>
-//   end:                                           JT  Rc, body
+//   end:                                           JT  Rc, body   (JF if the
+//                                                  test exits on JT)
 //                                         end:
 //
 // The back edge "JMP start" becomes a copy of the test followed by a
@@ -23,7 +24,8 @@
 // target: "JMP start" executes the test, then JF Rc,end either goes to
 // "end" (Rc == 0) or continues with the first body instruction. The
 // replacement executes the same test and takes JT Rc,body (Rc != 0) or
-// falls through into whatever follows the old jump. That is only the
+// falls through into whatever follows the old jump. (A test that exits on
+// JT Rc,end gets the mirror image: JF Rc,body.) That is only the
 // same thing if
 //   * the test is straight-line code that ends in the conditional jump
 //     (no label inside, so nothing else enters it midway; no CALL, no
@@ -227,9 +229,15 @@ int peephole_loop_invert(AsmNode *head)
             p->prev->next = c;
             p->prev = c;
         }
+        // The test leaves the loop when its jump is taken (JF: Rc == 0, JT:
+        // Rc != 0); the back edge must jump to the body on the opposite
+        // condition and fall through on the exit condition.
+        bool exit_on_zero = (jf->type == OP_JF);
         char raw[200];
-        snprintf(raw, sizeof(raw), "    JT %s, %s", jf->dst_op.reg, body_label);
-        AsmNode *jt = create_node(raw, OP_JT, "JT", jf->dst_op.reg, body_label);
+        snprintf(raw, sizeof(raw), "    %s %s, %s", exit_on_zero ? "JT" : "JF",
+                 jf->dst_op.reg, body_label);
+        AsmNode *jt = create_node(raw, exit_on_zero ? OP_JT : OP_JF,
+                                  exit_on_zero ? "JT" : "JF", jf->dst_op.reg, body_label);
         jt->prev = p->prev;
         jt->next = p;
         p->prev->next = jt;

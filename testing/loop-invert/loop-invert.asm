@@ -176,3 +176,16 @@ __for_10_body:
     JMP __for_10_start
 __for_10_end:
     RET
+
+; ✅ the test exits on JT (what "if (i >= n) break;" at the top of a loop
+; becomes after peephole-jumps): the back edge must be JF, not JT
+__function_inv_exit_on_true:
+    MOV R1, 0
+__for_11_start:
+    MOV R0, R1
+    IGE R0, 10
+    JT R0, __for_11_end
+    IADD R1, 1
+    JMP __for_11_start
+__for_11_end:
+    RET
