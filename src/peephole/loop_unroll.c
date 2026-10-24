@@ -92,39 +92,6 @@ static int trip_count(OpType cmp, long init, long step, long bound)
 // ---------------------------------------------------------------------
 // Copying the body with fresh labels
 // ---------------------------------------------------------------------
-typedef struct { char from[128]; char to[160]; } Rename;
-
-static int g_serial;
-
-static const char *renamed(const Rename *r, int n, const char *name)
-{
-    for (int i = 0; i < n; i++) if (strcmp(r[i].from, name) == 0) return r[i].to;
-    return NULL;
-}
-
-static AsmNode *clone_renamed(const AsmNode *src, const Rename *r, int n)
-{
-    if (src->type == OP_LABEL) {
-        char nm[128];
-        get_label_name(src, nm, sizeof(nm));
-        const char *to = renamed(r, n, nm);
-        char raw[200];
-        snprintf(raw, sizeof(raw), "%s:", to ? to : nm);
-        return create_node(raw, OP_LABEL, NULL, NULL, NULL);
-    }
-    char buf[128];
-    const char *tgt = loop_jump_target(src, buf, sizeof(buf));
-    const char *to  = tgt ? renamed(r, n, tgt) : NULL;
-    if (!to) return clone_node((AsmNode *)src);
-    char raw[260];
-    if (src->type == OP_JMP) {
-        snprintf(raw, sizeof(raw), "    JMP %s", to);
-        return create_node(raw, OP_JMP, "JMP", to, NULL);
-    }
-    snprintf(raw, sizeof(raw), "    %s %s, %s", src->type == OP_JT ? "JT" : "JF", src->dst_op.reg, to);
-    return create_node(raw, src->type, src->type == OP_JT ? "JT" : "JF", src->dst_op.reg, to);
-}
-
 // In every copy Ri holds a known constant, so a register read of it where an
 // immediate is accepted becomes that constant: MOV Rd,Ri / IADD Rd,Ri / ILT
 // Rd,Ri ... Integer operations only (a float op may read the bits as a
@@ -140,6 +107,8 @@ static bool takes_immediate_src(const AsmNode *n)
             return false;
     }
 }
+
+static int g_serial;
 
 static void substitute_counter(AsmNode *from, AsmNode *to, const char *ri, long val)
 {
@@ -168,7 +137,7 @@ typedef struct {
     int      trips;
     bool     rc_into_body;     // Rc is live at the first body instruction
     bool     rc_at_exit;       // Rc is live at the end label
-    Rename  *ren;
+    LoopRename  *ren;
     int      nren;
 } Plan;
 
@@ -186,7 +155,7 @@ static void apply_plan(Plan *pl)
         if (pl->rc_into_body) loop_link_before(anchor, create_node(rc1, OP_MOV, "MOV", pl->rc, "1"));
         AsmNode *mark = anchor->prev;
         for (AsmNode *n = pl->first; ; n = n->next) {
-            if (!loop_is_comment(n)) loop_link_before(anchor, clone_renamed(n, pl->ren, pl->nren));
+            if (!loop_is_comment(n)) loop_link_before(anchor, loop_clone_renamed(n, pl->ren, pl->nren));
             if (n == pl->last) break;
         }
         substitute_counter(mark->next, anchor->prev, pl->ri, pl->initv + (long)k * pl->stepv);
@@ -327,7 +296,7 @@ static int unroll_once(AsmNode *head)
 
         // Body labels (including the ones between the body and the step):
         // unique, referenced only from inside the body.
-        Rename *ren = calloc((size_t)nlabels + 2, sizeof(Rename));
+        LoopRename *ren = calloc((size_t)nlabels + 2, sizeof(LoopRename));
         int nren = 0;
         for (AsmNode *n = first; ok && n != jmp; n = n->next) {
             if (n->type != OP_LABEL) continue;

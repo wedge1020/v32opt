@@ -14,4 +14,6 @@ int   pass_promote_stack_slots     (AsmNode *);   // -fpromote-leaf
 int   pass_promote_regs            (AsmNode *);   // -fpromote-regs
 int   pass_promote_loop_registers  (AsmNode *);   // -fpromote-loops
 
+bool promote_frame_unaliased(AsmNode *n);   // frame slots of n's function reachable only via [BP+/-N]
+
 #endif

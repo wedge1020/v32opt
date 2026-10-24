@@ -366,6 +366,10 @@ if(BUILD_TESTING)
         add_test(NAME loop-index
                  COMMAND "${V32OPT_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/testing/loop-index/run.sh"
                          "$<TARGET_FILE:v32opt>")
+        # loop-unroll-partial: guarded main loop + remainder, and what is left alone.
+        add_test(NAME loop-unroll-partial
+                 COMMAND "${V32OPT_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/testing/loop-unroll-partial/run.sh"
+                         "$<TARGET_FILE:v32opt>")
         # No pass may write a register its input did not (clobbered-register lint).
         add_test(NAME callee-save-lint
                  COMMAND "${V32OPT_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/testing/lint/run.sh"

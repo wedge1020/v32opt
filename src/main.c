@@ -83,7 +83,8 @@ OptConfig config = {
     .opt_promote_regs             = false,
     .opt_loop_invert              = false,
     .opt_loop_unroll              = false,
-    .opt_loop_index               = false
+    .opt_loop_index               = false,
+    .opt_loop_unroll_partial      = false
 };
 
 // Helper macro for aligned optimization output
@@ -153,7 +154,8 @@ int main(int argc, char **argv) {
             [OPT_PROMOTE_LOOPS]            = config.opt_promote_loops,
             [OPT_LOOP_INVERT]              = config.opt_loop_invert,
             [OPT_LOOP_UNROLL]              = config.opt_loop_unroll,
-            [OPT_LOOP_INDEX]               = config.opt_loop_index
+            [OPT_LOOP_INDEX]               = config.opt_loop_index,
+            [OPT_LOOP_UNROLL_PARTIAL]      = config.opt_loop_unroll_partial
         };
 
         for (OptType t = 0; t < MAX_OPTIMIZATION_ALGORITHMS; t++) {
@@ -353,6 +355,18 @@ int main(int argc, char **argv) {
         tally[OPT_LOOP_INDEX] += folded;
         if (config.verbose && folded > 0) {
             printf("  - Loop indexes folded: %d\n", folded);
+        }
+    }
+
+    // ===================================================================
+    // Partial unrolling with a remainder loop (unknown trip counts)
+    // ===================================================================
+    if (config.opt_loop_unroll_partial) {
+        int partial = peephole_loop_unroll_partial(program_ast);
+        total_opts += partial;
+        tally[OPT_LOOP_UNROLL_PARTIAL] += partial;
+        if (config.verbose && partial > 0) {
+            printf("  - Loops partially unrolled: %d\n", partial);
         }
     }
 

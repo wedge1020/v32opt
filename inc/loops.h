@@ -51,4 +51,8 @@ typedef struct {
 
 bool        loop_parse_counted  (AsmNode *jmp, CountedLoop *L);   // needs loop_labels_build()
 
+typedef struct { char from[128]; char to[160]; } LoopRename;
+// A copy of 'src' with jump targets (and a label's own name) renamed per the table.
+AsmNode    *loop_clone_renamed  (const AsmNode *src, const LoopRename *r, int n);
+
 #endif

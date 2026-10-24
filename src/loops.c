@@ -201,3 +201,33 @@ bool loop_parse_counted(AsmNode *jmp, CountedLoop *L)
     L->bound = bound;
     return L->first != NULL;
 }
+
+static const char *renamed(const LoopRename *r, int n, const char *name)
+{
+    for (int i = 0; i < n; i++) if (strcmp(r[i].from, name) == 0) return r[i].to;
+    return NULL;
+}
+
+AsmNode *loop_clone_renamed(const AsmNode *src, const LoopRename *r, int n)
+{
+    if (src->type == OP_LABEL) {
+        char nm[128];
+        get_label_name(src, nm, sizeof(nm));
+        const char *to = renamed(r, n, nm);
+        char raw[200];
+        snprintf(raw, sizeof(raw), "%s:", to ? to : nm);
+        return create_node(raw, OP_LABEL, NULL, NULL, NULL);
+    }
+    char buf[128];
+    const char *tgt = loop_jump_target(src, buf, sizeof(buf));
+    const char *to  = tgt ? renamed(r, n, tgt) : NULL;
+    if (!to) return clone_node((AsmNode *)src);
+    char raw[260];
+    if (src->type == OP_JMP) {
+        snprintf(raw, sizeof(raw), "    JMP %s", to);
+        return create_node(raw, OP_JMP, "JMP", to, NULL);
+    }
+    snprintf(raw, sizeof(raw), "    %s %s, %s", src->type == OP_JT ? "JT" : "JF", src->dst_op.reg, to);
+    return create_node(raw, src->type, src->type == OP_JT ? "JT" : "JF", src->dst_op.reg, to);
+}
+

@@ -69,7 +69,8 @@ typedef enum
     OPT_PROMOTE_REGS,
     OPT_LOOP_INVERT,
     OPT_LOOP_UNROLL,
-    OPT_LOOP_INDEX
+    OPT_LOOP_INDEX,
+    OPT_LOOP_UNROLL_PARTIAL
 } OptType;
 
 // ---------------------------------------------------------------------------
@@ -135,6 +136,7 @@ typedef struct {
     bool     opt_loop_invert;
     bool     opt_loop_unroll;
     bool     opt_loop_index;
+    bool     opt_loop_unroll_partial;
     bool     opt_resolve_defines;   // let passes see numeric %define values
     LangMode lang_mode;
 } OptConfig;

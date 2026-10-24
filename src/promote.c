@@ -1316,3 +1316,18 @@ int pass_promote_loop_registers(AsmNode *head) {
     liveness_end();
     return optimizations;
 }
+
+// -------------------------------------------------------------------
+// For other passes (loop-unroll-partial): is the function containing `n` one
+// whose frame slots can only be reached through [BP+N]/[BP-N] operands? True
+// when the function has a recognizable prologue and no BP/SP value escapes
+// anywhere in it -- the same test the promote passes apply.
+// -------------------------------------------------------------------
+bool promote_frame_unaliased(AsmNode *n) {
+    AsmNode *entry = n;
+    while (entry && !is_function_entry(entry)) entry = entry->prev;
+    if (!entry) return false;
+    AsmNode *last = function_last(entry);
+    return !function_frame_escapes(entry->next, last) &&
+           prologue_anchor(entry->next, last->next) != NULL;
+}
