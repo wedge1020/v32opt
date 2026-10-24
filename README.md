@@ -425,8 +425,8 @@ v32opt <input.asm> [-o output.asm] [options]
 | `-O0` | **No Optimization** | Disables all optimization passes (default). |
 | `-O1` | **Local Peephole** | Enables all 16 local peephole optimizations (14 window passes, plus the liveness-driven **dead register write** and **copy cleanup**). |
 | `-O2` | **Global Analysis** | Enables all `-O1` passes + **CSE**, **Dead Code Elimination (DCE)**, **Global Constant Folding**, **Frame Pointer Elimination** & **Memory-to-Register Promotion** (`promote-regs`, `promote-leaf`, `promote-loops`). |
-| `-O3` | **Aggressive** | Enables all `-O2` passes + **Function Inlining**. |
-| `-Os` | **Space Saving** | Currently identical to `-O3` (a placeholder for a dedicated size-focused tier). |
+| `-O3` | **Aggressive** | Enables all `-O2` passes + **Function Inlining** + **Loop Inversion**. |
+| `-Os` | **Space Saving** | `-O3` without loop inversion (which duplicates each loop's test); a placeholder for a dedicated size-focused tier. |
 | `-o <file>` | **Output File** | Where to write the optimized assembly (default: `<input>Opt.asm`). |
 | `-v`, `--verbose` | **Verbose Mode** | Displays detailed pass statistics and optimization counts per iteration. |
 | `-t` | **Testing Mode** | Prints a machine-readable `pass:count` summary (plus a `total:N` line). |
@@ -991,6 +991,44 @@ appreciable optimization gains (performance and space-wise, due to how it
 can  eliminate a  bunch of  unnecessary instructions  related to  the set
 up  and  tear down  of  a  function). But  it  also  is considered  quite
 *aggressive* in the level in which it will modify your code.
+
+
+### Loop Inversion (`loop-invert`)
+
+Both compilers emit top-tested loops, so every iteration executes two
+branches: the test's conditional jump and the back edge. Loop inversion
+turns the back edge into a copy of the test plus a conditional jump
+straight back to the body, saving one jump (one cycle) per iteration:
+
+```vircon32
+; BEFORE                          ; AFTER
+__for_1_start:                    __for_1_start:
+    MOV R0, R1                        MOV R0, R1
+    ILT R0, R2                        ILT R0, R2
+    JF  R0, __for_1_end               JF  R0, __for_1_end
+    ...body...                    __v32opt_loop_1:
+    JMP __for_1_start                 ...body...
+__for_1_end:                          MOV R0, R1
+                                      ILT R0, R2
+                                      JT  R0, __v32opt_loop_1
+                                  __for_1_end:
+```
+
+The top copy of the test stays, so the loop entry and every other jump to
+the start (a `continue` in a `while` loop) still see the test first. A loop
+that runs zero or one time costs nothing extra; every further iteration
+saves a cycle, in exchange for the test's size once (at most 8 instructions).
+
+It is plain tail duplication of the code at the jump target, so no register
+is read or written that was not before. A back edge is only rewritten when
+the test is straight-line code (no label, `CALL` or other branch inside), the
+jump is a backward one, the code right after the jump begins with the test's
+exit label (so the fall-through is the loop exit), the labels are defined only
+once (the v32cc default `.local` labels repeat per function: use
+`--standard`), and the target is not a function entry. It runs once, after the
+promote passes (which find a loop by its back edge) and before the final
+cleanup. It is part of `-O3`, not `-O2` or `-Os`, because it trades code size
+for speed; `-floop-invert` enables it on its own.
 
 ---
 

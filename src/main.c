@@ -80,7 +80,8 @@ OptConfig config = {
     .opt_resolve_defines          = true,
     .opt_promote_leaf             = false,
     .opt_promote_loops            = false,
-    .opt_promote_regs             = false
+    .opt_promote_regs             = false,
+    .opt_loop_invert              = false
 };
 
 // Helper macro for aligned optimization output
@@ -147,7 +148,8 @@ int main(int argc, char **argv) {
             [OPT_INLINE]                   = config.opt_inline,
             [OPT_PROMOTE_REGS]             = config.opt_promote_regs,
             [OPT_PROMOTE_LEAF]             = config.opt_promote_leaf,
-            [OPT_PROMOTE_LOOPS]            = config.opt_promote_loops
+            [OPT_PROMOTE_LOOPS]            = config.opt_promote_loops,
+            [OPT_LOOP_INVERT]              = config.opt_loop_invert
         };
 
         for (OptType t = 0; t < MAX_OPTIMIZATION_ALGORITHMS; t++) {
@@ -322,6 +324,19 @@ int main(int argc, char **argv) {
 
         if (config.verbose && global_folds > 0) {
             printf("  - Global constant folds: %d\n", global_folds);
+        }
+    }
+
+    // ===================================================================
+    // Loop inversion (once: after the promote passes, which recognise a
+    // loop by its back edge, and before the cleanup that follows)
+    // ===================================================================
+    if (config.opt_loop_invert) {
+        int inverted = peephole_loop_invert(program_ast);
+        total_opts += inverted;
+        tally[OPT_LOOP_INVERT] += inverted;
+        if (config.verbose && inverted > 0) {
+            printf("  - Loops inverted: %d\n", inverted);
         }
     }
 

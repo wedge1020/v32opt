@@ -454,8 +454,8 @@ v32opt <entrada.asm> [-o salida.asm] [opciones]
 | `-O0` | **Sin Optimización** | Desactiva todas las pasadas de optimización (por defecto). |
 | `-O1` | **Mirilla Local** | Activa las 16 optimizaciones locales (14 de mirilla sobre ventana, más la **escritura muerta de registro** y la **limpieza de copias**, guiadas por vida de registros). |
 | `-O2` | **Análisis Global** | Activa todas las pasadas de `-O1` + **CSE**, **Eliminación de Código Muerto (DCE)**, **Plegado Global de Constantes**, **Eliminación del Puntero de Marco** y **Promoción de Memoria a Registros** (`promote-regs`, `promote-leaf`, `promote-loops`). |
-| `-O3` | **Agresivo** | Activa todas las pasadas de `-O2` + **Inserción de Funciones en Línea**. |
-| `-Os` | **Ahorro de Espacio** | Actualmente idéntico a `-O3` (un marcador de posición para un nivel dedicado al tamaño). |
+| `-O3` | **Agresivo** | Activa todas las pasadas de `-O2` + **Inserción de Funciones en Línea** + **Inversión de Bucles**. |
+| `-Os` | **Ahorro de Espacio** | `-O3` sin inversión de bucles (que duplica la prueba de cada bucle); marcador de posición para un nivel dedicado al tamaño. |
 | `-o <archivo>` | **Archivo de Salida** | Dónde escribir el ensamblador optimizado (por defecto: `<entrada>Opt.asm`). |
 | `-v`, `--verbose` | **Modo Detallado** | Muestra estadísticas detalladas de las pasadas y el número de optimizaciones de cada iteración. |
 | `-t` | **Modo de Pruebas** | Imprime un resumen `pasada:recuento` legible por máquina (más una línea `total:N`). |
@@ -1042,6 +1042,47 @@ mejoras apreciables (de rendimiento y de espacio, por cómo puede eliminar
 un montón de instrucciones innecesarias relacionadas con la preparación y
 la liberación de una función). Pero también se considera bastante
 *agresiva* por el grado en que modifica tu código.
+
+
+### Inversión de Bucles (`loop-invert`)
+
+Ambos compiladores generan bucles con la prueba arriba, así que cada
+iteración ejecuta dos saltos: el condicional de la prueba y el de retorno.
+La inversión convierte el salto de retorno en una copia de la prueba más un
+salto condicional directo al cuerpo, ahorrando un salto (un ciclo) por
+iteración:
+
+```vircon32
+; ANTES                           ; DESPUÉS
+__for_1_start:                    __for_1_start:
+    MOV R0, R1                        MOV R0, R1
+    ILT R0, R2                        ILT R0, R2
+    JF  R0, __for_1_end               JF  R0, __for_1_end
+    ...cuerpo...                  __v32opt_loop_1:
+    JMP __for_1_start                 ...cuerpo...
+__for_1_end:                          MOV R0, R1
+                                      ILT R0, R2
+                                      JT  R0, __v32opt_loop_1
+                                  __for_1_end:
+```
+
+La copia superior de la prueba se conserva, así que la entrada al bucle y
+cualquier otro salto al inicio (un `continue` en un `while`) siguen viendo
+primero la prueba. Un bucle que se ejecuta cero o una vez no cuesta nada
+extra; cada iteración adicional ahorra un ciclo, a cambio del tamaño de la
+prueba una vez (como máximo 8 instrucciones).
+
+Es simple duplicación de cola del código en el destino del salto, así que no
+se lee ni escribe ningún registro que no se hiciera antes. Solo se reescribe
+un salto de retorno si la prueba es código lineal (sin etiqueta, `CALL` ni
+otro salto), el salto es hacia atrás, el código tras el salto empieza con la
+etiqueta de salida de la prueba, las etiquetas están definidas una sola vez
+(las etiquetas `.local` por defecto de v32cc se repiten por función: usa
+`--standard`) y el destino no es la entrada de una función. Se ejecuta una
+vez, tras las pasadas promote (que reconocen un bucle por su salto de
+retorno) y antes de la limpieza final. Forma parte de `-O3`, no de `-O2` ni
+`-Os`, porque cambia tamaño de código por velocidad; `-floop-invert` la
+activa por separado.
 
 ---
 

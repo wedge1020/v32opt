@@ -34,7 +34,7 @@
 #define  AUTHOR                       "Matthew Haas"
 #define  URL                          "https://github.com/wedge1020/v32opt"
 
-#define  MAX_OPTIMIZATION_ALGORITHMS  24
+#define  MAX_OPTIMIZATION_ALGORITHMS  32
 
 // ---------------------------------------------------------------------------
 // Optimization pass registry -- indices into opt_type_names[] and the
@@ -66,7 +66,8 @@ typedef enum
     OPT_INLINE,
     OPT_PROMOTE_LEAF,
     OPT_PROMOTE_LOOPS,
-    OPT_PROMOTE_REGS
+    OPT_PROMOTE_REGS,
+    OPT_LOOP_INVERT
 } OptType;
 
 // ---------------------------------------------------------------------------
@@ -128,6 +129,7 @@ typedef struct {
     bool     opt_promote_leaf;
     bool     opt_promote_loops;
     bool     opt_promote_regs;
+    bool     opt_loop_invert;
     bool     opt_resolve_defines;   // let passes see numeric %define values
     LangMode lang_mode;
 } OptConfig;

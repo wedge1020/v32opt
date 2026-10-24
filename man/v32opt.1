@@ -138,14 +138,14 @@ and the memory-to-register promotion passes
 .TP
 .B \-O3
 .B \-O2
-plus trivial leaf-function inlining. The most aggressive tier:
+plus trivial leaf-function inlining and loop inversion. The most aggressive tier:
 sweeping structural changes, with the highest chance of breaking a
 program.
 .TP
 .B \-Os
-Currently identical to
+Identical to
 .B \-O3
-(a placeholder for a dedicated size-focused tier).
+but without loop inversion (a placeholder for a dedicated size-focused tier).
 .RE
 .TP
 .BR \-v ", " \-\-verbose
@@ -215,7 +215,7 @@ peephole\-dead\-stores, peephole\-loads, peephole\-immediate\-prop,
 peephole\-jmp\-chain, peephole\-zero\-test,
 peephole\-dead\-regs, peephole\-copies, cse, dce,
 constant\-folding, omit\-frame\-pointers, inline, promote\-regs,
-promote\-leaf, promote\-loops
+promote\-leaf, promote\-loops, loop\-invert
 .fi
 .RE
 .IP

@@ -464,8 +464,8 @@ v32opt <entrée.asm> [-o sortie.asm] [options]
 | `-O0` | **Aucune Optimisation** | Désactive toutes les passes d'optimisation (par défaut). |
 | `-O1` | **Lucarne Locale** | Active les 16 optimisations locales (14 à lucarne sur fenêtre, plus l'**écriture morte de registre** et le **nettoyage des copies**, guidés par la vivacité des registres). |
 | `-O2` | **Analyse Globale** | Active toutes les passes de `-O1` + **CSE**, **Élimination du Code Mort (DCE)**, **Repliement Global des Constantes**, **Élimination du Pointeur de Cadre** et **Promotion de la Mémoire en Registres** (`promote-regs`, `promote-leaf`, `promote-loops`). |
-| `-O3` | **Agressif** | Active toutes les passes de `-O2` + **Intégration des Fonctions (inlining)**. |
-| `-Os` | **Gain de Place** | Actuellement identique à `-O3` (un emplacement réservé pour un niveau dédié à la taille). |
+| `-O3` | **Agressif** | Active toutes les passes de `-O2` + **Intégration des Fonctions (inlining)** + **Inversion de Boucles**. |
+| `-Os` | **Gain de Place** | `-O3` sans inversion de boucles (qui duplique le test de chaque boucle) ; emplacement réservé pour un niveau dédié à la taille. |
 | `-o <fichier>` | **Fichier de Sortie** | Où écrire l'assembleur optimisé (par défaut : `<entrée>Opt.asm`). |
 | `-v`, `--verbose` | **Mode Verbeux** | Affiche des statistiques détaillées des passes et le nombre d'optimisations à chaque itération. |
 | `-t` | **Mode Test** | Affiche un résumé `passe:nombre` lisible par une machine (plus une ligne `total:N`). |
@@ -1060,6 +1060,47 @@ appréciables (de performances comme de place, du fait qu'elle peut
 supprimer quantité d'instructions inutiles liées à la mise en place et à
 la libération d'une fonction). Mais elle est aussi considérée comme assez
 *agressive* par l'ampleur des modifications qu'elle apporte à votre code.
+
+
+### Inversion de Boucles (`loop-invert`)
+
+Les deux compilateurs produisent des boucles testées en tête : chaque
+itération exécute donc deux sauts, le conditionnel du test et le saut de
+retour. L'inversion transforme le saut de retour en une copie du test suivie
+d'un saut conditionnel direct vers le corps, ce qui économise un saut (un
+cycle) par itération :
+
+```vircon32
+; AVANT                           ; APRÈS
+__for_1_start:                    __for_1_start:
+    MOV R0, R1                        MOV R0, R1
+    ILT R0, R2                        ILT R0, R2
+    JF  R0, __for_1_end               JF  R0, __for_1_end
+    ...corps...                   __v32opt_loop_1:
+    JMP __for_1_start                 ...corps...
+__for_1_end:                          MOV R0, R1
+                                      ILT R0, R2
+                                      JT  R0, __v32opt_loop_1
+                                  __for_1_end:
+```
+
+La copie du test en tête est conservée : l'entrée dans la boucle et tout autre
+saut vers le début (un `continue` dans un `while`) voient donc toujours le
+test d'abord. Une boucle exécutée zéro ou une fois ne coûte rien de plus ;
+chaque itération supplémentaire économise un cycle, au prix de la taille du
+test une fois (8 instructions au plus).
+
+C'est une simple duplication de queue du code à la cible du saut : aucun
+registre n'est lu ou écrit qui ne l'était pas avant. Un saut de retour n'est
+réécrit que si le test est du code linéaire (ni étiquette, ni `CALL`, ni autre
+branchement), si le saut est arrière, si le code qui suit le saut commence par
+l'étiquette de sortie du test, si les étiquettes ne sont définies qu'une fois
+(les étiquettes `.local` par défaut de v32cc se répètent par fonction :
+utilisez `--standard`) et si la cible n'est pas une entrée de fonction. Elle
+s'exécute une fois, après les passes promote (qui reconnaissent une boucle à
+son saut de retour) et avant le nettoyage final. Elle fait partie de `-O3`,
+pas de `-O2` ni de `-Os`, car elle échange de la taille de code contre de la
+vitesse ; `-floop-invert` l'active seule.
 
 ---
 
