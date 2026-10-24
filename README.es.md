@@ -54,12 +54,15 @@ entorno de nicho, que sea igual de fácil de ignorar.
 4. [Uso y Niveles de Optimización](#uso-y-niveles-de-optimización)
 5. [Fase 1: Optimizaciones Locales de Mirilla (-O1)](#fase-1-optimizaciones-locales-de-mirilla--o1)
 6. [Fase 2: Flujo de Datos Global y Código Muerto (-O2)](#fase-2-flujo-de-datos-global-y-código-muerto--o2)
-7. [Fase 3: Inserción en Línea Interprocedimental (-O3)](#fase-3-inserción-en-línea-interprocedimental--o3)
+7. [Fase 3: Inserción en Línea y Optimización de Bucles (-O3)](#fase-3-inserción-en-línea-y-optimización-de-bucles--o3)
 8. [Promoción de Memoria a Registros (-O2)](#promoción-de-memoria-a-registros--o2)
 9. [Visualización del CFG](#visualización-del-cfg)
 10. [Salvaguardas de Seguridad y Corrección](#salvaguardas-de-seguridad-y-corrección)
 11. [Opciones de Diagnóstico y Depuración](#opciones-de-diagnóstico-y-depuración)
 12. [Publicación de versiones (sellado de versión)](#publicación-de-versiones-sellado-de-versión)
+
+Véase también **[USAGE.md](USAGE.md)** (en inglés): una guía en lenguaje llano para
+elegir un nivel, comprobar el resultado, ajustar, perfilar y medir.
 
 ---
 
@@ -463,6 +466,8 @@ v32opt <entrada.asm> [-o salida.asm] [opciones]
 | `-L <c\|lua>`, `--langmode` | **Modo de Lenguaje** | `lua` activa el reconocimiento de tipos NaN-boxed para la salida de `v32lua`; `c` (por defecto) para C, C++ y ensamblador (véase [Lenguajes de Origen](#lenguajes-de-origen-c-c-lua-y-ensamblador)). |
 | `--dot <archivo>` | **Exportar el CFG** | Exporta el Grafo de Flujo de Control a un archivo `.dot` de Graphviz para visualizarlo. |
 | `--trigger-max=<N>` | **Límite de Bisección** | Presupuesto global del total de transformaciones aplicadas (véase abajo). |
+| `--profile <archivo>` | **Bucles Guiados por Perfil** | Un perfil por líneas hecho con `scripts/v32prof.py`: los bucles calientes se desenrollan más, los fríos no se tocan. |
+| `-f<ajuste>=N` | **Límites de los Bucles** | Los límites de tamaño de las pasadas de bucles (véase «Ajuste de las pasadas de bucles»). |
 | `-V`, `--version` / `-h`, `--help` | **Información** | Imprime la versión, o un resumen de uso, y termina. |
 
 `v32opt` no muestra nada si todo va bien, salvo que se indique `-v` o
@@ -497,10 +502,12 @@ función entera -- qué direcciones del marco escapan, qué registros están
 demostrablemente libres --, por eso están aquí y no entre las pasadas de
 mirilla).
 
-* **`-O3` (Transformaciones Interprocedimentales Agresivas):** Realiza
-modificaciones arquitectónicas profundas —como la inserción de funciones
-en línea— que cambian tamaño del binario por velocidad de ejecución y
-borran por completo los límites entre funciones.
+* **`-O3` (Transformaciones Agresivas):** Realiza modificaciones profundas
+que cambian tamaño del binario por velocidad de ejecución: la inserción de
+funciones en línea, que borra por completo los límites entre funciones, y las
+pasadas de bucles (inversión, desenrollado completo y parcial, plegado del
+índice), que copian código. Sus límites se pueden ajustar por programa y guiar
+con un perfil medido (véase [USAGE.md](USAGE.md)).
 
 #### Por qué la Eliminación del Puntero de Marco está en `-O2`
 
@@ -1015,7 +1022,7 @@ __function_add:          __function_add:
 
 ---
 
-## Fase 3: Inserción en Línea Interprocedimental (`-O3`)
+## Fase 3: Inserción en Línea y Optimización de Bucles (`-O3`)
 
 ### Inserción de Funciones en Línea (`inline`)
 
