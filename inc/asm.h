@@ -123,6 +123,7 @@ typedef struct AsmNode {
     int  mark;                   // scratch flag a pass may use within one run (not preserved)
     bool debug_note;             // a "; [DEBUG <pass>] ..." comment that -d
                                  // inserted (not part of the input program)
+    unsigned hints;              // NH_* flags from the compiler's ';@' hints (hints.h); copied by clone_node
 
     struct AsmNode *prev;
     struct AsmNode *next;
@@ -157,7 +158,8 @@ AsmNode *clone_node    (AsmNode    *);
 // ---------------------------------------------------------------------------
 void  safe_str_copy           (char *, const char *, size_t);
 char *trim                    (char *);
-bool  str_case_eq             (const char *, const char *);
+bool  str_case_eq             (const char *, const char *);   // case-insensitive: mnemonics, register names
+bool  name_eq                 (const char *, const char *);   // registers case-insensitive; labels/symbols/defines case-SENSITIVE
 void  strip_comment_from_line (char *, const char    *, size_t);
 void  normalize_whitespace    (char *, const char    *, size_t);
 bool  is_power_of_two         (int);

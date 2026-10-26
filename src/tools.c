@@ -100,6 +100,13 @@ bool is_boxed_tagging(AsmNode *node) {
 // returns true.
 bool remove_with_debug(AsmNode **curr_ptr, AsmNode *nodes[], int count, OptType opt_type)
 {
+    // A volatile access (compiler hint ';@v') is never deleted: it must happen as often as written.
+    for (int i = 0; i < count; i++) {
+        if (node_is_volatile(nodes[i])) {
+            if (curr_ptr) *curr_ptr = nodes[0]->next;
+            return false;
+        }
+    }
     if (!trigger_allowed()) {
         if (curr_ptr) *curr_ptr = nodes[0]->next;
         return false;
@@ -265,6 +272,18 @@ bool str_case_eq(const char *s1, const char *s2) {
 //   - reg_str: Register name (e.g., "R0", "SP", "r15")
 // Returns: Register index (0-15) or -1 if invalid
 // ===================================================================
+// ===================================================================
+// NAME COMPARISON for operands, symbols and labels
+// Register names are case-insensitive ("r1" is "R1"), but labels, symbols and %define
+// names are NOT: a C program may have both `foo` and `Foo`, `_exit` and `_Exit`, and treating
+// them as one miscompiles (inlining the wrong body, deleting the wrong function, merging loads
+// of two different globals). Case-insensitive only when both names are registers.
+// ===================================================================
+bool name_eq(const char *a, const char *b) {
+    if (get_reg_index(a) >= 0 && get_reg_index(b) >= 0) return str_case_eq(a, b);
+    return strcmp(a, b) == 0;
+}
+
 int get_reg_index(const char *reg_str) {
     if (!reg_str || strlen(reg_str) == 0) return -1;
 
@@ -273,9 +292,11 @@ int get_reg_index(const char *reg_str) {
     if (str_case_eq(reg_str, "BP") || str_case_eq(reg_str, "R14")) return 14;
 
     // Handle R0-R15 format
-    if (toupper((unsigned char)reg_str[0]) == 'R') {
-        int idx = atoi(reg_str + 1);  // Parse number after 'R'
-        if (idx >= 0 && idx < 16) return idx;
+    // (digits only: "Rate" or "R_x" are symbols, not R0)
+    if (toupper((unsigned char)reg_str[0]) == 'R' && isdigit((unsigned char)reg_str[1])) {
+        char *end = NULL;
+        long idx = strtol(reg_str + 1, &end, 10);
+        if (*end == '\0' && idx >= 0 && idx < 16) return (int)idx;
     }
     return -1;  // Invalid register
 }
@@ -866,7 +887,10 @@ void write_vircon32_asm(const char *filename, AsmNode *head) {
             }
         } else {
             // Write non-blank line as-is
-            write_unscoped(fp, curr->raw); fputc('\n', fp);
+            write_unscoped(fp, curr->raw);
+            // a volatile access whose text was rewritten by a pass keeps its mark
+            if (node_is_volatile(curr) && !strstr(curr->raw, ";@")) fputs("  ;@v", fp);
+            fputc('\n', fp);
             last_was_blank = false;
         }
 

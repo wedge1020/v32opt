@@ -35,17 +35,30 @@ CYC    = 3000                               # RAM words 3000/3001 receive the cy
 def sh(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=600, **kw)
 
+def _hdr(sig, ntex, nsnd, prog, vid, aud):
+    """The 128-byte header of a .v32 file: signature, version 1.0, then the section table."""
+    w = [0] * 32
+    w[2], w[3] = 1, 0
+    w[22], w[23] = ntex, nsnd
+    w[24], w[25] = 128, prog
+    w[26], w[27] = 128 + prog, vid
+    w[28], w[29] = 128 + prog + vid, aud
+    return sig + struct.pack('<32I', *w)[8:]
+
 def v32_file(vbin, out):
-    """Wrap a VBIN (3-word header) in a minimal .v32 (35-word header)."""
-    d = open(vbin, 'rb').read()[12:]
-    hdr = [0] * 0x23
-    hdr[0x22] = len(d) // 4
-    open(out, 'wb').write(struct.pack('<35I', *hdr) + d)
+    """Wrap a VBIN (what v32as writes) in a minimal cartridge: no textures, no sounds."""
+    d = open(vbin, 'rb').read()
+    open(out, 'wb').write(_hdr(b'V32-CART', 0, 0, len(d), 0, 0) + d)
 
 def bios_stub():
+    """A BIOS the simulator accepts (one word of code, a 1x1 texture, a 1-sample sound); it is
+    never run (-E starts at the cartridge)."""
     path = os.path.join(WORK, 'bios.v32')
     if not os.path.exists(path):
-        open(path, 'wb').write(struct.pack('<36I', *([0] * 0x22 + [1, 0])))   # header + one word: never run (-E)
+        prog = b'V32-VBIN' + struct.pack('<2I', 1, 0)
+        tex  = b'V32-VTEX' + struct.pack('<3I', 1, 1, 0)
+        snd  = b'V32-VSND' + struct.pack('<2I', 1, 0)
+        open(path, 'wb').write(_hdr(b'V32-BIOS', 1, 1, len(prog), len(tex), len(snd)) + prog + tex + snd)
     return path
 
 _BASE = {}      # source -> (asm, error): each program is compiled once, before the pool starts
@@ -68,6 +81,10 @@ def build_base(src):
         r = sh([V32STOCK, '-w', '-o', asm, ts])
     else:
         r = sh([V32CC, '--standard', '--keep-data', '--data-base', '0', '-w', '-I', HERE, src, '-o', asm])
+    if r.returncode == 0 and os.environ.get('HINTS'):      # HINTS=1: add the compiler hints v32cc would write
+        sys.path.insert(0, HERE)
+        import hinter
+        hinter.hint_file(asm)
     _BASE[src] = (asm, None) if r.returncode == 0 else (None, 'compiler: ' + (r.stdout + r.stderr)[:300])
     return _BASE[src]
 

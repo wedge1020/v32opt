@@ -153,10 +153,10 @@ int peephole_pairs(AsmNode *head)
                     bool src_match = false;
 
                     if (n1->src_op.mode == MODE_REG && next->src_op.mode == MODE_REG) {
-                        if (str_case_eq(n1->src_op.reg, next->src_op.reg)) src_match = true;
+                        if (name_eq(n1->src_op.reg, next->src_op.reg)) src_match = true;
                     }
                     else if (n1->src_op.mode == MODE_IMMEDIATE && next->src_op.mode == MODE_IMMEDIATE) {
-                        if (str_case_eq(n1->src_op.raw, next->src_op.raw)) src_match = true;
+                        if (name_eq(n1->src_op.raw, next->src_op.raw)) src_match = true;
                     }
 
                     if (src_match)

@@ -10,7 +10,8 @@ int peephole_compiler_myopia(AsmNode *head)
         // Target: MOV [mem], R_src (Store to indirect memory from register)
         if (curr->type == OP_MOV &&
             curr->dst_op.mode == MODE_INDIRECT &&
-            curr->src_op.mode == MODE_REG)
+            curr->src_op.mode == MODE_REG &&
+            !node_is_volatile(curr))
         {
             char *mem_reg = curr->dst_op.reg;
             int mem_off   = curr->dst_op.offset;
@@ -36,7 +37,7 @@ int peephole_compiler_myopia(AsmNode *head)
                     scan->dst_op.mode == MODE_REG &&
                     scan->src_op.mode == MODE_INDIRECT &&
                     str_case_eq(scan->dst_op.reg, src_reg) &&
-                    str_case_eq(scan->src_op.reg, mem_reg) &&
+                    name_eq(scan->src_op.reg, mem_reg) &&
                     scan->src_op.offset == mem_off &&
                     trigger_allowed())
                 {

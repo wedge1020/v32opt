@@ -66,6 +66,12 @@ PASSES
 
 [bug] peephole-zero-test: the rewritten jump loses its trailing source comment.
 
+[bug] Labels are compared case-insensitively (str_case_eq / strcasecmp everywhere), but the
+  assembler's are not: a C program with both `_exit` and `_Exit` has labels `__function__exit` and
+  `__function__Exit`, and dce deletes one of them as a duplicate of the other (the called one stays
+  referenced: undefined label). Seen on v32cc's t_libc_posix_bare. Mnemonics and registers are
+  case-insensitive; labels, symbols and %define names must not be.
+
 [bug] The stock Vircon32 compiler is not consistently callee-save (a function
   only ever called at statement level may write R1 without saving it).
   v32opt never adds such a write itself (testing/lint checks that against

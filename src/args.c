@@ -196,6 +196,9 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "  -d                       In-code debugging (mark the hits)\n");
     fprintf(stdout, "  -t                       Testing mode: just display opt:hits\n");
     fprintf(stdout, "  -L, --langmode <mode>    Language mode: 'c' (default) or 'lua'\n");
+    fprintf(stdout, "      --abi <abi>          Calling convention: 'auto' (default: what the input's\n");
+    fprintf(stdout, "                           ';@hints' header says, else 'stock'), 'stock' (callee-save,\n");
+    fprintf(stdout, "                           the stock compiler) or 'caller-save' (v32cc, v32lua)\n");
     fprintf(stdout, "                           (C, C++ via v32c++, and hand-written assembly\n");
     fprintf(stdout, "                           use 'c'; 'lua' adds NaN-boxed-type awareness\n");
     fprintf(stdout, "                           for v32lua output)\n");
@@ -267,12 +270,14 @@ void process_args(int argc, char **argv, OptConfig *cfg,
     opterr          = 0; // Suppress default errors
 
     cfg->lang_mode  = LANG_C;  // Default to C mode
+    cfg->abi        = ABI_AUTO; // calling convention: from the input's ';@hints' header, else stock
 
     // Long options
     static struct option long_opts[] = {
         {"dot",          required_argument, NULL, 'D'},
         {"verbose",      no_argument,       NULL, 'v'},
         {"langmode",     required_argument, NULL, 'L'},
+        {"abi",          required_argument, NULL, 'A'},
         {"version",      no_argument,       NULL, 'V'},
         {"help",         no_argument,       NULL, 'h'},
         {"trigger-max",  required_argument, NULL, 'T'},
@@ -363,6 +368,17 @@ void process_args(int argc, char **argv, OptConfig *cfg,
             case 'f':
                 if (!handle_f_arg(optarg, cfg, max_passes)) {
                     fprintf(stderr, "ERROR: unrecognized optimization '%s'\n", optarg);
+                    exit(1);
+                }
+                break;
+
+            case 'A':
+                if      (str_case_eq(optarg, "auto"))        cfg->abi = ABI_AUTO;
+                else if (str_case_eq(optarg, "stock") ||
+                         str_case_eq(optarg, "callee-save")) cfg->abi = ABI_CALLEE_SAVE;
+                else if (str_case_eq(optarg, "caller-save")) cfg->abi = ABI_CALLER_SAVE;
+                else {
+                    fprintf(stderr, "ERROR: Unknown ABI '%s'. Use 'auto', 'stock' (callee-save) or 'caller-save'.\n", optarg);
                     exit(1);
                 }
                 break;

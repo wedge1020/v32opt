@@ -48,7 +48,7 @@ int peephole_jumps(AsmNode *head)
                     char lbl_name[128];
                     get_label_name(next_non_comment, lbl_name, sizeof(lbl_name));
 
-                    if (str_case_eq(lbl_name, target_label))
+                    if (name_eq(lbl_name, target_label))
                     {
                         // Removed redundant debug comment insertion here
                         AsmNode *nodes[] = {curr};
@@ -75,7 +75,7 @@ int peephole_jumps(AsmNode *head)
                     char lbl_name[128];
                     get_label_name(next_lbl, lbl_name, sizeof(lbl_name));
 
-                    if (str_case_eq(lbl_name, branch_target))
+                    if (name_eq(lbl_name, branch_target))
                     {
                         // BUG FIX: jmp_target previously pointed directly into
                         // next_jmp->dst_op.raw / src_op.raw. remove_with_debug()

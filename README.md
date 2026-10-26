@@ -372,6 +372,16 @@ test after a boxed-boolean producer. `-L c` (the default) keeps the plain
 C-mode behavior. v32lua's internal  `__global_*` helper labels inside the
 global-scope initializer are understood in either mode.
 
+### Compiler hints (`;@` comments)
+
+A compiler can tell `v32opt` what it knows in `;@` comment lines (they assemble
+as comments, so nothing else notices): the calling convention (`abi=caller-save`
+for v32cc, which saves the promote passes a `PUSH`/`POP` pair per register), which
+frame words have their address taken (`escapes=`, so one `&x` no longer keeps every
+local of the function in memory), `noinline`, and `volatile` accesses (`;@v`, never
+merged, forwarded or removed). A file without hints is optimized exactly as before.
+The format and its rules are in [doc/hints.md](doc/hints.md).
+
 ### Hand-written assembly
 
 Use the default C mode. Things to know:
@@ -435,6 +445,7 @@ v32opt <input.asm> [-o output.asm] [options]
 | `-t` | **Testing Mode** | Prints a machine-readable `pass:count` summary (plus a `total:N` line). |
 | `-d` | **Debug Marking** | Marks every optimization inline in the output as `; [DEBUG <pass>] ...` comments. |
 | `-L <c\|lua>`, `--langmode` | **Language Mode** | `lua` enables NaN-boxed-type awareness for `v32lua` output; `c` (default) for C, C++ and assembly (see [Source Languages](#source-languages-c-c-lua-and-assembly)). |
+| `--abi <auto\|stock\|caller-save>` | **Calling Convention** | `stock` (callee-save, the stock compiler: what `auto` means unless the input says otherwise) or `caller-save` (v32cc, v32lua): the promote passes then add no `PUSH`/`POP`. `auto` reads the input's `;@hints` header (see [Compiler hints](doc/hints.md)). |
 | `--dot <file>` | **CFG Export** | Exports the Control Flow Graph to a Graphviz `.dot` file for visualization. |
 | `--trigger-max=<N>` | **Bisection Cap** | Global budget on total committed transformations (see below). |
 | `--profile <file>` | **Profile-Guided Loops** | A line profile made by `scripts/v32prof.py`: hot loops are unrolled harder, cold ones left alone (see [Profile-guided loop passes](#profile-guided-loop-passes---profile)). |

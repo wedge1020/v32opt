@@ -84,7 +84,7 @@ int opt_cse(AsmNode *head) {
     while (curr != NULL) {
         AsmNode *next = curr->next;
 
-        if (curr->type == OP_MOV && curr->dst_op.mode == MODE_REG) {
+        if (curr->type == OP_MOV && curr->dst_op.mode == MODE_REG && !node_is_volatile(curr)) {
             char *rx = curr->dst_op.reg;
             if (str_case_eq(rx, "SP") || str_case_eq(rx, "BP")) { curr = next; continue; }
 
@@ -98,7 +98,7 @@ int opt_cse(AsmNode *head) {
 
                 AsmNode *scan = op_rx->next;
                 while (scan != NULL) {
-                    if (is_cf_boundary(scan)) break;
+                    if (is_cf_boundary(scan) || node_is_volatile(scan)) break;
                     if (scan->type == OP_OTHER) { scan = scan->next; continue; }
                     if (modifies_register(scan, rx)) break;
 

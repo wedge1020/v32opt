@@ -20,7 +20,8 @@ int peephole_forwarding(AsmNode *head) {
     while (curr) {
         if (curr->type == OP_MOV) {
             // --- RULE 1: Store-to-Load Forwarding (Register -> Indirect) ---
-            if (curr->dst_op.mode == MODE_INDIRECT && curr->src_op.mode == MODE_REG) {
+            if (curr->dst_op.mode == MODE_INDIRECT && curr->src_op.mode == MODE_REG &&
+                !node_is_volatile(curr)) {
                 char *mem_reg = curr->dst_op.reg;
                 int mem_off = curr->dst_op.offset;
                 char *src_reg = curr->src_op.reg;
@@ -55,11 +56,11 @@ int peephole_forwarding(AsmNode *head) {
                     // -------------------------------------------------------
                     if (scan->type == OP_MOVS || scan->type == OP_SETS || scan->type == OP_CMPS) break;
                     if (scan->has_dst && scan->dst_op.mode == MODE_INDIRECT) {
-                        if (str_case_eq(scan->dst_op.reg, mem_reg) &&
+                        if (name_eq(scan->dst_op.reg, mem_reg) &&
                             scan->dst_op.offset == mem_off) {
                             break;   // exact overwrite of the tracked slot
                         }
-                        if (!str_case_eq(scan->dst_op.reg, mem_reg)) {
+                        if (!name_eq(scan->dst_op.reg, mem_reg)) {
                             break;   // different base register: may alias
                         }
                         // else: same base, different offset -> provably a
@@ -74,8 +75,8 @@ int peephole_forwarding(AsmNode *head) {
                     // --- CASE 1: Register Load from Same Memory (Standard) ---
                     if (scan->type == OP_MOV && scan->dst_op.mode == MODE_REG &&
                         scan->src_op.mode == MODE_INDIRECT &&
-                        str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset == mem_off &&
-                        trigger_allowed()) {
+                        name_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset == mem_off &&
+                        !node_is_volatile(scan) && trigger_allowed()) {
                         insert_debug_comment(scan->prev, OPT_PEEPHOLE_FORWARDING, scan->raw);
                         scan->src_op = curr->src_op; // Replace [mem] with R1
                         node_set_rawf(scan, "    MOV %s, %s",

@@ -179,6 +179,21 @@ Testing mode: machine-readable summary of the run. Prints one
 line per pass that changed something, then
 .IR total : N .
 .TP
+.BR \-\-abi " abi"
+Calling convention of the input: \(dqauto\(dq (the default: what the input's
+.B ;@hints
+header says, else \(dqstock\(dq), \(dqstock\(dq (callee-save, as the stock Vircon32
+compiler) or \(dqcaller-save\(dq (as v32cc and v32lua). With caller-save code
+the register promotion passes do not add
+.B PUSH
+and
+.B POP
+instructions to the functions they change. A compiler can also pass the
+convention, the address-taken frame words, \(dqnoinline\(dq and volatile accesses in
+.B ;@
+comment lines; see
+.IR doc/hints.md .
+.TP
 .BR \-L " mode" ", " \-\-langmode " mode"
 Language mode, \(dqc\(dq (the default) or \(dqlua\(dq (either case).
 Use \(dqc\(dq for C, for C++ compiled through

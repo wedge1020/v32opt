@@ -180,6 +180,10 @@ bool is_control_flow_boundary(AsmNode *node)
         str_case_eq(node->mnemonic, "HLT")) {
         return true;
     }
+    // A volatile access (compiler hint ';@v') is a barrier to every forward scan: nothing
+    // may be forwarded, merged or proven redundant across it, and none of the windowed
+    // load/store passes may look through it (hints.h).
+    if (node_is_volatile(node)) return true;
     return false;
 }
 
@@ -307,10 +311,10 @@ bool operands_equal(const Operand *op1, const Operand *op2) {
     if (op1->mode != op2->mode) return false;
 
     if (op1->mode == MODE_REG) {
-        return str_case_eq(op1->reg, op2->reg);
+        return name_eq(op1->reg, op2->reg);
     }
     if (op1->mode == MODE_INDIRECT) {
-        return str_case_eq(op1->reg, op2->reg) && (op1->offset == op2->offset);
+        return name_eq(op1->reg, op2->reg) && (op1->offset == op2->offset);
     }
 	if (op1->mode == MODE_IMMEDIATE) {
         if (op1->is_float != op2->is_float) return false;
@@ -343,9 +347,9 @@ bool operands_equal(const Operand *op1, const Operand *op2) {
         }
         // At least one side is a symbol: only equal if they're literally
         // the same text (covers symbol-vs-symbol and symbol-vs-0 alike).
-        return str_case_eq(op1->raw, op2->raw);
+        return name_eq(op1->raw, op2->raw);
     }
-    return str_case_eq(op1->raw, op2->raw);
+    return name_eq(op1->raw, op2->raw);
 }
 
 // ---------------------------------------------------------------

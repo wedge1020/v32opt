@@ -8,7 +8,7 @@ int peephole_dead_stores(AsmNode *head)
     while (curr)
     {
         // Target: MOV instruction that writes to a destination (register or memory)
-        if (curr->type == OP_MOV && curr->has_dst)
+        if (curr->type == OP_MOV && curr->has_dst && !node_is_volatile(curr))
         {
             bool is_dead = false;
             bool has_call_in_block = false;
@@ -106,7 +106,7 @@ int peephole_dead_stores(AsmNode *head)
                     // to have its MOV deleted, leaving the IADD reading
                     // garbage.
                     if (scan->has_dst && scan->dst_op.mode == MODE_INDIRECT &&
-                        str_case_eq(scan->dst_op.reg, mem_reg) && scan->dst_op.offset == mem_off)
+                        name_eq(scan->dst_op.reg, mem_reg) && scan->dst_op.offset == mem_off)
                     {
                         if (scan->type == OP_MOV) {
                             is_dead = true;
@@ -124,7 +124,7 @@ int peephole_dead_stores(AsmNode *head)
                     if (scan->has_src && scan->src_op.mode == MODE_INDIRECT) {
                         // The ONLY safe read is one sharing the same base register but a DIFFERENT offset.
                         // Any other read (exact match, or alien base register) might alias.
-                        if (!(str_case_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset != mem_off)) {
+                        if (!(name_eq(scan->src_op.reg, mem_reg) && scan->src_op.offset != mem_off)) {
                             clobbers = true;
                         }
                     }
@@ -133,7 +133,7 @@ int peephole_dead_stores(AsmNode *head)
                     if (scan->has_dst && scan->dst_op.mode == MODE_INDIRECT) {
                         // We already caught the exact overwrite above.
                         // Any write using a DIFFERENT base register might alias our location.
-                        if (!str_case_eq(scan->dst_op.reg, mem_reg)) {
+                        if (!name_eq(scan->dst_op.reg, mem_reg)) {
                             clobbers = true;
                         }
                     }

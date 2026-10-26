@@ -18,7 +18,7 @@ int peephole_loads(AsmNode *head) {
 
     while (curr) {
         if (curr->type == OP_MOV && curr->dst_op.mode == MODE_REG &&
-            curr->src_op.mode == MODE_INDIRECT) {
+            curr->src_op.mode == MODE_INDIRECT && !node_is_volatile(curr)) {
             
             char *base_reg = curr->src_op.reg;
             int offset = curr->src_op.offset;
@@ -52,7 +52,7 @@ int peephole_loads(AsmNode *head) {
                 // -------------------------------------------------------
                 if (scan->type == OP_MOVS || scan->type == OP_SETS || scan->type == OP_CMPS) break;
                 if (scan->has_dst && scan->dst_op.mode == MODE_INDIRECT) {
-                    if (!str_case_eq(scan->dst_op.reg, base_reg) ||
+                    if (!name_eq(scan->dst_op.reg, base_reg) ||
                         scan->dst_op.offset == offset) {
                         break;
                     }
@@ -61,11 +61,11 @@ int peephole_loads(AsmNode *head) {
 
                 if (scan->type == OP_MOV && scan->dst_op.mode == MODE_REG &&
                     scan->src_op.mode == MODE_INDIRECT &&
-                    str_case_eq(scan->src_op.reg, base_reg) &&
+                    name_eq(scan->src_op.reg, base_reg) &&
                     scan->src_op.offset == offset) {
                     
                     if (curr->src_op.mode == MODE_INDIRECT &&
-                        str_case_eq(curr->src_op.reg, curr->dst_op.reg)) {
+                        name_eq(curr->src_op.reg, curr->dst_op.reg)) {
                         break;
                     }
                     if (str_case_eq(scan->dst_op.reg, "SP") || str_case_eq(scan->dst_op.reg, "BP")) {

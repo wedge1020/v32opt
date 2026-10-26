@@ -239,7 +239,7 @@ static bool label_in_range(const char *name, AsmNode *from, AsmNode *to) {
     for (AsmNode *n = from; n && n != to; n = n->next) {
         if (n->type != OP_LABEL) continue;
         get_label_name(n, lbl, sizeof(lbl));
-        if (str_case_eq(lbl, name)) return true;
+        if (name_eq(lbl, name)) return true;
     }
     return false;
 }
@@ -264,7 +264,7 @@ static bool branch_enters_region(AsmNode *scope_first, AsmNode *scope_last,
         if (!inside && is_jump(n)) {
             char target[128];
             branch_target(n, target, sizeof(target));
-            if ((!except || !str_case_eq(target, except)) &&
+            if ((!except || !name_eq(target, except)) &&
                 label_in_range(target, from, to)) return true;
         }
         if (n == scope_last) break;
@@ -323,6 +323,50 @@ static bool function_frame_escapes(AsmNode *first, AsmNode *last) {
 }
 
 // -------------------------------------------------------------------
+// Compiler hints (hints.h): ';@fn <label> escapes=<list>' says exactly which
+// frame words have their address taken. Without it a single "LEA R, [BP-N]"
+// anywhere keeps EVERY slot of the function in memory (function_frame_escapes);
+// with it only the listed slots stay, and the rest are promoted as usual.
+//
+//   g_fh   the hints of the function being processed (set by each pass as it
+//          enters a function; NULL when there are none or no 'escapes=')
+//
+// The hint is only trusted as far as it can be checked: a frame address that
+// is captured any way other than "LEA R, [BP+off]" of a LISTED word ("MOV R1,
+// BP", an LEA of an unlisted word, anything with SP) still disables the whole
+// function, exactly as without hints.
+// -------------------------------------------------------------------
+static const FnHints *g_fh = NULL;
+
+static void set_fn_hints(AsmNode *first) {
+    g_fh = NULL;
+    AsmNode *e = first ? first->prev : NULL;
+    while (e && e->type != OP_LABEL) e = e->prev;
+    if (!e) return;
+    char lbl[128];
+    get_label_name(e, lbl, sizeof(lbl));
+    const FnHints *h = hints_fn(lbl);
+    if (h && h->escapes_known) g_fh = h;
+}
+
+// Does anything in [first, last] make slot promotion in this function unsafe?
+static bool function_frame_blocks_promotion(AsmNode *first, AsmNode *last) {
+    if (!g_fh) return function_frame_escapes(first, last);
+    if (g_fh->escapes_all) return true;
+    for (AsmNode *n = first; n; n = n->next) {
+        if (sp_value_escapes(n)) return true;
+        if (bp_value_escapes(n)) {
+            bool listed_lea = n->type == OP_LEA && n->has_src && n->src_op.mode == MODE_INDIRECT &&
+                              str_case_eq(n->src_op.reg, "BP") &&
+                              hints_fn_slot_escapes(g_fh, n->src_op.offset);
+            if (!listed_lea) return true;
+        }
+        if (n == last) break;
+    }
+    return false;
+}
+
+// -------------------------------------------------------------------
 // Helper: find the prologue's "MOV BP, SP" in [from, to) and return the
 // node after which function-frame loads may go -- the "ISUB SP, N" that
 // reserves the locals when it follows (BUG FIX: a load spliced in between
@@ -363,7 +407,7 @@ typedef struct {
 // today, saves nothing (the register copy that replaces each read still
 // executes). [BP+0] / [BP+1] are the saved BP and the return address.
 static bool slot_promotable(int off) {
-    return off <= -1 && off >= -SLOT_MAX_ABS;
+    return off <= -1 && off >= -SLOT_MAX_ABS && !hints_fn_slot_escapes(g_fh, off);
 }
 
 static void note_reg(RegionInfo *ri, const Operand *op) {
@@ -386,14 +430,17 @@ static void scan_region(AsmNode *from, AsmNode *to, const int *weights, RegionIn
             if (n->has_dst) note_reg(ri, &n->dst_op);
             if (n->has_src) note_reg(ri, &n->src_op);
         }
+        // a volatile slot ('volatile int x;' local, hint ';@v') stays in memory: pushing its
+        // count far below any threshold takes it out of every pass's candidates
+        const int VOL_PENALTY = 1 << 24;
         if (n->has_dst && n->dst_op.mode == MODE_INDIRECT && str_case_eq(n->dst_op.reg, "BP") &&
             slot_promotable(n->dst_op.offset)) {
-            ri->refs[n->dst_op.offset + SLOT_BIAS] += w;
+            ri->refs[n->dst_op.offset + SLOT_BIAS] += node_is_volatile(n) ? -VOL_PENALTY : w;
             ri->written[n->dst_op.offset + SLOT_BIAS] = true;
         }
         if (n->has_src && n->src_op.mode == MODE_INDIRECT && str_case_eq(n->src_op.reg, "BP") &&
             slot_promotable(n->src_op.offset)) {
-            ri->refs[n->src_op.offset + SLOT_BIAS] += w;
+            ri->refs[n->src_op.offset + SLOT_BIAS] += node_is_volatile(n) ? -VOL_PENALTY : w;
         }
     }
 }
@@ -409,7 +456,7 @@ typedef struct { char name[128]; int idx; } LabelRef;
 
 static int cmp_labelref(const void *a, const void *b) {
     const LabelRef *x = a, *y = b;
-    int c = strcasecmp(x->name, y->name);
+    int c = strcmp(x->name, y->name);
     return c ? c : x->idx - y->idx;
 }
 
@@ -452,7 +499,7 @@ static int *loop_weights(AsmNode *from, AsmNode *to, int *count) {
         int lo = 0, hi = n_labels - 1, first = -1;
         while (lo <= hi) {                                   // first entry with this name
             int mid = (lo + hi) / 2;
-            int c = strcasecmp(labels[mid].name, key.name);
+            int c = strcmp(labels[mid].name, key.name);
             if (c < 0) lo = mid + 1; else { if (c == 0) first = mid; hi = mid - 1; }
         }
         if (first >= 0 && labels[first].idx <= j) {
@@ -503,7 +550,7 @@ static bool region_reentered(AsmNode *scope_first, AsmNode *scope_last, AsmNode 
             int lo = 0, hi = before - 1;
             while (lo <= hi) {
                 int mid = (lo + hi) / 2;
-                int c = strcasecmp(labels[mid].name, key.name);
+                int c = strcmp(labels[mid].name, key.name);
                 if (c == 0) { again = true; break; }
                 if (c < 0) lo = mid + 1; else hi = mid - 1;
             }
@@ -553,7 +600,7 @@ static void link_after(AsmNode *pos, AsmNode *nn) {
 typedef struct {
     AsmNode *entry_end;             // last node of the prologue: loads go right after it
     bool     saved[16];             // registers the function saves/restores
-    bool     lua;                   // caller-save ABI: nothing needs saving
+    bool     lua;                   // caller-save ABI (v32lua, v32cc): nothing needs saving
     bool     can_save;              // a push/pop can be added (every exit is a recognised epilogue)
     int      n_epi;
     AsmNode *epi_first[MAX_EPILOGUES];   // our pops go right before this node, per epilogue
@@ -575,7 +622,7 @@ static int pushpop_reg(const AsmNode *n) {            // register number of PUSH
 static void frame_info(FrameInfo *fi, AsmNode *anchor, AsmNode *first, AsmNode *limit) {
     memset(fi, 0, sizeof(*fi));
     fi->entry_end = anchor;
-    fi->lua = (config.lang_mode == LANG_LUA);
+    fi->lua = abi_caller_save();        // caller-save ABI (v32lua, v32cc): no register needs saving
     for (AsmNode *n = anchor->next; n && n != limit; n = n->next) {
         if (n->type == OP_OTHER) continue;
         int r;
@@ -750,6 +797,7 @@ int pass_promote_stack_slots(AsmNode *head) {
         AsmNode *end_of_func = function_last(curr);
         AsmNode *first = curr->next;
         AsmNode *limit = end_of_func->next;
+        set_fn_hints(first);
 
         // Phase A: Analyze Function Safety & Register Liveness
         bool is_leaf = true;
@@ -757,7 +805,7 @@ int pass_promote_stack_slots(AsmNode *head) {
             if (str_case_eq(n->mnemonic, "CALL")) { is_leaf = false; break; }
         }
         AsmNode *anchor = NULL;
-        if (is_leaf && !function_frame_escapes(first, end_of_func)) {
+        if (is_leaf && !function_frame_blocks_promotion(first, end_of_func)) {
             anchor = prologue_anchor(first, limit);
         }
 
@@ -857,11 +905,12 @@ int pass_promote_regs(AsmNode *head) {
         AsmNode *end_of_func = function_last(curr);
         AsmNode *func_first = curr->next;
         AsmNode *func_limit = end_of_func->next;
+        set_fn_hints(func_first);
 
         // GUARD: function-wide frame-escape check -- see the file header.
         // CALL segmentation doesn't change this; it's unrelated to leafness.
         AsmNode *anchor = NULL;
-        if (!function_frame_escapes(func_first, end_of_func)) {
+        if (!function_frame_blocks_promotion(func_first, end_of_func)) {
             // The prologue must be recognizable for the function to be
             // trusted at all (a function with no "MOV BP, SP" -- naked, or
             // hand-written assembly -- has no frame of its own to promote
@@ -1121,7 +1170,8 @@ int pass_promote_loop_registers(AsmNode *head) {
         if (!cached_valid || cached_entry != entry) {
             cached_entry = entry;
             cached_valid = true;
-            cached_escapes = function_frame_escapes(func_first, func_last);
+            set_fn_hints(func_first);
+            cached_escapes = function_frame_blocks_promotion(func_first, func_last);
         }
         if (cached_escapes) { curr = curr->next; continue; }
 
@@ -1154,7 +1204,7 @@ int pass_promote_loop_registers(AsmNode *head) {
             if (is_jump(scan)) {
                 char target[128];
                 branch_target(scan, target, sizeof(target));
-                if (str_case_eq(target, start_lbl)) { end_jmp = scan; break; }
+                if (name_eq(target, start_lbl)) { end_jmp = scan; break; }
             }
         }
         if (!end_jmp) { curr = curr->next; continue; }
@@ -1193,7 +1243,7 @@ int pass_promote_loop_registers(AsmNode *head) {
             else if (is_jump(n)) {
                 char target[128];
                 branch_target(n, target, sizeof(target));
-                if (str_case_eq(target, exit_lbl)) { exit_shared = true; break; }
+                if (name_eq(target, exit_lbl)) { exit_shared = true; break; }
             }
             if (n == func_last) break;
         }
@@ -1211,7 +1261,7 @@ int pass_promote_loop_registers(AsmNode *head) {
             if (is_jump(n)) {
                 char target[128];
                 branch_target(n, target, sizeof(target));
-                if (!str_case_eq(target, start_lbl) && !str_case_eq(target, exit_lbl) &&
+                if (!name_eq(target, start_lbl) && !name_eq(target, exit_lbl) &&
                     !label_in_range(target, curr->next, end_jmp)) { loop_safe = false; break; }
             }
         }

@@ -183,6 +183,10 @@ int main(int argc, char **argv) {
     // --- Parse Input Assembly File ---
     AsmNode *program_ast = parse_vircon32_asm(inFile);
     assign_source_lines(program_ast);
+    // Compiler hints (';@' comments): optional facts that lift conservative assumptions
+    bool have_hints = hints_parse(program_ast);
+    if (config.verbose && have_hints)
+        printf("Compiler hints found (calling convention: %s).\n", abi_caller_save() ? "caller-save" : "callee-save");
     if (g_profile_file) {
         if (profile_load(program_ast, g_profile_file) == 0 && config.verbose)
             printf("Profile: %lld instructions executed (hot >= %.2f%%, cold < %.2f%% of them).\n",
@@ -507,6 +511,7 @@ int main(int argc, char **argv) {
     }
 
     // --- Write Output File ---
+    hints_verify(program_ast);
     write_vircon32_asm(outFile, program_ast);
 
     // --- Cleanup ---

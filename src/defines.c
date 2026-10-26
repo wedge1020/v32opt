@@ -30,7 +30,7 @@ static DefineEntry *g_defs      = NULL;
 static int          g_def_count = 0;
 
 static int cmp_def(const void *a, const void *b) {
-    return strcasecmp(((const DefineEntry *)a)->name, ((const DefineEntry *)b)->name);
+    return strcmp(((const DefineEntry *)a)->name, ((const DefineEntry *)b)->name);
 }
 
 // Parse "%define NAME VALUE [; comment]" from node->raw. Returns false
@@ -75,9 +75,9 @@ int defines_build(AsmNode *head) {
         // linear dedupe is fine: defines number in the hundreds
         DefineEntry *e = NULL;
         for (int i = 0; i < g_def_count; i++)
-            if (str_case_eq(g_defs[i].name, name)) { e = &g_defs[i]; break; }
+            if (name_eq(g_defs[i].name, name)) { e = &g_defs[i]; break; }
         if (e) {
-            if (!str_case_eq(e->value, value)) e->poisoned = true;
+            if (strcmp(e->value, value) != 0) e->poisoned = true;
             continue;
         }
         e = &g_defs[g_def_count++];

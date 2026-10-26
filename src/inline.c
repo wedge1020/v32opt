@@ -128,12 +128,28 @@ int inline_trivial_functions(AsmNode *head) {
             // Skip if this function is non-leaf (already marked)
             bool is_non_leaf = false;
             for (int i = 0; i < non_leaf_count; i++) {
-                if (str_case_eq(func_name, non_leaf_functions[i])) {
+                if (name_eq(func_name, non_leaf_functions[i])) {
                     is_non_leaf = true;
                     break;
                 }
             }
             if (is_non_leaf) {
+                curr = curr->next;
+                continue;
+            }
+
+            // The compiler said so (';@fn <label> noinline'): the source asked for this
+            // function to stay a real call (__attribute__((noinline))).
+            const FnHints *fh = hints_fn(func_name);
+            if (fh && fh->noinline) {
+                if (config.debug) {
+                    AsmNode *debug_node = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
+                    node_set_rawf(debug_node, "; [DEBUG inline] Skipped %s: marked noinline by the compiler", func_name);
+                    debug_node->prev = curr->prev;
+                    debug_node->next = curr;
+                    if (curr->prev) curr->prev->next = debug_node;
+                    curr->prev = debug_node;
+                }
                 curr = curr->next;
                 continue;
             }
@@ -348,7 +364,7 @@ int inline_trivial_functions(AsmNode *head) {
             // --- Skip if target is non-leaf ---
             bool target_is_non_leaf = false;
             for (int i = 0; i < non_leaf_count; i++) {
-                if (str_case_eq(target_label, non_leaf_functions[i])) {
+                if (name_eq(target_label, non_leaf_functions[i])) {
                     target_is_non_leaf = true;
                     break;
                 }
@@ -389,7 +405,7 @@ int inline_trivial_functions(AsmNode *head) {
                 bool excluded = false;
                 char *tok = strtok(list_copy, ",");
                 while (tok) {
-                    if (str_case_eq(trim(tok), target_label)) {
+                    if (name_eq(trim(tok), target_label)) {
                         excluded = true;
                         break;
                     }
@@ -412,7 +428,7 @@ int inline_trivial_functions(AsmNode *head) {
 
             // --- Find Matching Candidate ---
             for (int c = 0; c < candidate_count; c++) {
-                if (!str_case_eq(target_label, candidates[c].name)) continue;
+                if (!name_eq(target_label, candidates[c].name)) continue;
 
                 // BUG FIX: inlining copies the callee's body UP to the call
                 // site. %define is an in-order textual substitution, so if

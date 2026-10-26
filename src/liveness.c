@@ -68,7 +68,7 @@ static unsigned short *g_extra   = NULL;   // per-label: registers (bit n = Rn) 
 static signed char *g_is_fn      = NULL;   // per-label: target of a direct CALL
 
 static int cmp_label(const void *a, const void *b) {
-    return strcasecmp(((const LabelEntry *)a)->name, ((const LabelEntry *)b)->name);
+    return strcmp(((const LabelEntry *)a)->name, ((const LabelEntry *)b)->name);
 }
 
 void liveness_end(void) {
@@ -100,7 +100,7 @@ void liveness_begin(AsmNode *head) {
     // A duplicated label name makes the target ambiguous: drop both, so
     // any jump to it answers LIVE.
     for (int i = 0; i + 1 < g_label_count; i++)
-        if (strcasecmp(g_labels[i].name, g_labels[i + 1].name) == 0)
+        if (strcmp(g_labels[i].name, g_labels[i + 1].name) == 0)
             g_labels[i].node = g_labels[i + 1].node = NULL;
     g_stamp_id = 0;
 

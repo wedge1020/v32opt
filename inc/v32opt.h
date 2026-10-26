@@ -77,6 +77,7 @@ typedef enum
 // Section headers (project headers live in inc/, peers of src/)
 // ---------------------------------------------------------------------------
 #include "asm.h"        // instruction/operand model, parser & writer
+#include "hints.h"      // compiler hints (';@' comments)
 #include "peephole.h"   // local window passes (src/peephole/)
 #include "dataflow.h"   // CFG, constant folding, CSE, DCE
 #include "inline.h"     // trivial leaf-function inlining
@@ -139,6 +140,7 @@ typedef struct {
     bool     opt_loop_unroll_partial;
     bool     opt_resolve_defines;   // let passes see numeric %define values
     LangMode lang_mode;
+    AbiMode  abi;           // calling convention: auto (from hints), stock callee-save, caller-save
 } OptConfig;
 
 extern OptConfig  config;

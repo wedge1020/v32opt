@@ -82,7 +82,7 @@ static char **g_call_targets        = NULL; // sorted "__global_*" CALL targets
 static int    g_call_target_count   = 0;
 
 static int cmp_strp(const void *a, const void *b) {
-    return strcasecmp(*(char * const *)a, *(char * const *)b);
+    return strcmp(*(char * const *)a, *(char * const *)b);
 }
 
 static bool in_sorted_set(char **set, int count, const char *name) {
@@ -210,7 +210,7 @@ static char **g_func_stems      = NULL; // sorted "<stem>" of __function_<stem>:
 static int    g_func_stem_count = 0;
 
 static int cmp_stem(const void *a, const void *b) {
-    return strcasecmp(*(char * const *)a, *(char * const *)b);
+    return strcmp(*(char * const *)a, *(char * const *)b);
 }
 
 static bool is_nested_skip_label(const char *lbl) {
@@ -328,7 +328,7 @@ typedef struct {
 static int cmp_func_name_idx(const void *a, const void *b) {
     const FuncNameIdx *fa = (const FuncNameIdx *)a;
     const FuncNameIdx *fb = (const FuncNameIdx *)b;
-    return strcasecmp(fa->name, fb->name);
+    return strcmp(fa->name, fb->name);
 }
 
 // Returns the funcs[] index whose name matches 'name' (case-insensitive),
@@ -338,7 +338,7 @@ static int find_func_by_name(FuncNameIdx *name_idx, int func_count, const char *
     int lo = 0, hi = func_count - 1;
     while (lo <= hi) {
         int mid = lo + (hi - lo) / 2;
-        int cmp = strcasecmp(name_idx[mid].name, name);
+        int cmp = strcmp(name_idx[mid].name, name);
         if (cmp == 0) return name_idx[mid].idx;
         else if (cmp < 0) lo = mid + 1;
         else hi = mid - 1;

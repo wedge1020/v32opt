@@ -64,7 +64,7 @@ static int         g_lbl_count = 0;
 
 static int cmp_chain_label(const void *a, const void *b)
 {
-    return strcasecmp(((const ChainLabel *)a)->name, ((const ChainLabel *)b)->name);
+    return strcmp(((const ChainLabel *)a)->name, ((const ChainLabel *)b)->name);
 }
 
 static ChainLabel *find_label(const char *name)
@@ -143,7 +143,7 @@ static void build_label_table(AsmNode *head)
     // Mark duplicates (adjacent after sorting), then count references
     // from every non-label, non-comment line.
     for (int i = 1; i < g_lbl_count; i++) {
-        if (strcasecmp(g_lbl[i - 1].name, g_lbl[i].name) == 0) {
+        if (strcmp(g_lbl[i - 1].name, g_lbl[i].name) == 0) {
             g_lbl[i - 1].duplicate = true;
             g_lbl[i].duplicate     = true;
         }

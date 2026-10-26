@@ -16,6 +16,8 @@ n=0
 ROOT="$(dirname "${HERE}")"
 for f in "${ROOT}"/*/*.asm; do
     case "${f}" in *Opt.asm|*/differential/*|*/lint/*) continue;; esac
+    # a caller-save program (';@hints ... abi=caller-save') has no callee-save contract to check
+    grep -q '^;@hints.*abi=caller-save' "${f}" && continue
     for lv in -O1 -O2 -O3; do
         "${OPT}" "${f}" "${lv}" -o "${TMP}/o.asm" >/dev/null 2>&1 || { echo "FAIL: v32opt ${lv} ${f}"; status=1; continue; }
         out="$(python3 "${HERE}/callee_save_lint.py" "${f}" "${TMP}/o.asm")" || { echo "FAIL: ${lv} ${f}"; echo "${out}"; status=1; }

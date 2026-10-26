@@ -86,3 +86,13 @@ miscompiles in the register and frame logic, not in every instruction
 pattern a real game contains (floating point, the GPU/SPU ports, MOVS/SETS
 block operations are untouched by them). The Lua programs avoid printing and
 the GPU, since the simulator runs them without a BIOS.
+
+## Compiler hints (`HINTS=1`)
+
+`HINTS=1 python3 run.py ...` first runs `hinter.py` on each compiled program. It adds
+`;@hints 1 abi=caller-save` and a conservative `;@fn ... escapes=` line per function
+(computed from the `LEA [BP-n]` offsets), so the hint-driven passes are compared with
+the unoptimized program in v32sim. See `doc/hints.md`.
+
+The harness builds ROMs in v32sim's strict format (128-byte header, `V32-CART` /
+`V32-BIOS`, version 1.0), via `v32_file()` and `bios_stub()` in `run.py`.
