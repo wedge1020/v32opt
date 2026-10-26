@@ -82,7 +82,7 @@ static ChainLabel *find_label(const char *name)
 // its JMP is deleted while other jumps still land on it.
 static bool is_ident_char(char c)
 {
-    return isalnum((unsigned char)c) || c == '_';
+    return isalnum((unsigned char)c) || c == '_' || c == '.' || c == '~' || c == '$';
 }
 
 // Count every identifier-shaped token in a node's text (outside its
