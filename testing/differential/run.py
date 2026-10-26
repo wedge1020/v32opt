@@ -80,7 +80,7 @@ def build_base(src):
         open(ts, 'w').write(to_stock(open(src).read()))
         r = sh([V32STOCK, '-w', '-o', asm, ts])
     else:
-        r = sh([V32CC, '--standard', '--keep-data', '--data-base', '0', '-w', '-I', HERE, src, '-o', asm])
+        r = sh([V32CC, '--standard', '--keep-data', '--data-base', '0', '-w', *(['--emit-hints'] if os.environ.get('EMIT') else []), '-I', HERE, src, '-o', asm])
     if r.returncode == 0 and os.environ.get('HINTS'):      # HINTS=1: add the compiler hints v32cc would write
         sys.path.insert(0, HERE)
         import hinter

@@ -96,3 +96,6 @@ the unoptimized program in v32sim. See `doc/hints.md`.
 
 The harness builds ROMs in v32sim's strict format (128-byte header, `V32-CART` /
 `V32-BIOS`, version 1.0), via `v32_file()` and `bios_stub()` in `run.py`.
+
+`EMIT=1` makes `run.py` pass `--emit-hints` to v32cc, so the hints come from the compiler
+itself (use instead of `HINTS=1`; needs a v32cc that writes them).
