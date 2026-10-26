@@ -1,0 +1,105 @@
+--- crisp.git/src/portVircon32.c	2026-07-27 11:21:22.000000000 -0400
++++ fz/src/portVircon32.c	2026-10-26 16:18:49.824012003 -0400
+@@ -560,6 +560,12 @@
+ }
+ #endif
+ 
++#ifdef FUZZ
++int fuzz_cycles = 0;
++int fuzz_sum = 0;
++int fuzz_sink = 0;
++int fuzz_log[300];
++#endif
+ void main() {
+   // The embedded 1x1 white texture (region 0 of texture 0) is used for
+   // every rectangle/pixel draw in the whole program, so it only needs to
+@@ -615,6 +621,13 @@
+ #endif
+ 
+ 
++#ifdef FUZZ
++  int fuzzFrame = 0;
++  int fuzzRng = 12345;
++  int fuzzBits = 0;
++  int fuzzGame = FUZZ_FIRST;
++  bool fuzzDone = false;
++#endif
+   while (true) {
+     bool left = gamepad_left() > 0;
+     bool right = gamepad_right() > 0;
+@@ -627,6 +640,38 @@
+     if (startPressed && !prevStartPressed && !isInMenu) {
+       goToMenu();
+     }
++#ifdef FUZZ
++    {
++      fuzzFrame++;
++      if (fuzzFrame % FUZZ_HOLD == 1) {
++        fuzzRng = fuzzRng * 1103515 + 12345;
++        fuzzBits = (fuzzRng >> 8) & 255;
++      }
++      left = (fuzzBits & 1) != 0;
++      right = (fuzzBits & 2) != 0;
++      up = (fuzzBits & 4) != 0;
++      down = (fuzzBits & 8) != 0;
++      a = (fuzzBits & 16) != 0;
++      b = (fuzzBits & 32) != 0;
++      startPressed = false;
++      if (fuzzFrame % FUZZ_PER_GAME == 1) {
++        fuzz_log[fuzzGame] = fuzz_sum;
++        fuzzRng = 777 + (fuzzGame + 1) * 131;
++        fuzzBits = 0;
++        fuzzGame = fuzzGame + 1;
++        if (fuzzGame >= gameCount || fuzzGame >= FUZZ_STOP) {
++          fuzzDone = true;
++        } else {
++          restartGame(fuzzGame);
++        }
++      }
++      if (fuzzDone) {
++        while (true) {
++          end_frame();
++        }
++      }
++    }
++#endif
+     prevStartPressed = startPressed;
+ 
+ #ifdef DEBUG_MODE
+@@ -685,6 +730,9 @@
+     }
+ 
+     updateFrame();
++#ifdef FUZZ
++    fuzz_sum = fuzz_sum * 31 + ticks + (int)(score * 8.0) + hitBoxesIndex * 7 + currentGameIndex;
++#endif
+ 
+     // Vircon32 has no real mouse, so the 8 mouse-driven games can't show
+     // a real cursor either - this draws a synthetic one, matching the
+@@ -717,6 +765,14 @@
+     drawDebugOverlay(debugCyclesThisFrame, debugMaxCycles, debugInstantFps, debugMinFps, hitBoxesIndex, debugMaxObjCount);
+ #endif
+ 
++#ifdef FUZZ
++#ifdef FUZZ_DELAY
++    for (int dd = 0; dd < FUZZ_DELAY; dd++) {
++      fuzz_sink += dd;
++    }
++#endif
++    fuzz_cycles += get_cycle_counter();
++#endif
+     end_frame();
+ 
+ #ifdef DEBUG_MODE
+--- crisp.git/src/random.c	2026-07-23 06:09:49.000000000 -0400
++++ fz/src/random.c	2026-10-26 13:11:31.618218361 -0400
+@@ -80,5 +80,9 @@
+ void setRandomSeedWithTime(Random* random) {
+   // Vircon32 has no wall-clock time(NULL); combine the calendar time with
+   // the free-running cycle counter so seeds differ between runs/frames.
++  #ifdef FUZZ
++  setRandomSeed(random, 424242);
++#else
+   setRandomSeed(random, get_time() ^ get_cycle_counter());
++#endif
+ }

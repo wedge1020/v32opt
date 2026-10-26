@@ -94,6 +94,14 @@ TOOLING AND TESTS
   not exhaustive; every candidate is a full build and run, so large programs
   (crisp: 700K lines of assembly) take minutes per candidate.
 
+[fixed] Operand names were kept in a 32-byte field, so two symbols sharing their first
+  31 characters compared equal and the dead-store pass deleted a live store
+  (crisp: global_ringblastEnemyStoneAngle / ...AngleVel). Now 128 bytes;
+  testing/long-names.
+
+[limit] crisp-game-lib is timing-sensitive (see testing/crisp/README.md): builds of
+  different speed can diverge in the last games even with a fixed seed.
+
 [limit] Whole-RAM comparison of real programs works only when they are
   deterministic: use v32sim --fixed-clock/--seed/--fixed-cycles. A program
   that seeds its RNG from the cycle counter (crisp-game-lib) differs between

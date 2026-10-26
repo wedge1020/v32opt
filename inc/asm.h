@@ -97,7 +97,7 @@ typedef enum {
 
 typedef struct {
     AddressingMode mode;
-    char reg[32];
+    char reg[128];                // register or symbol name (a symbol was cut at 31 chars before)
     int offset;
     int immediate;
     char raw[128];
