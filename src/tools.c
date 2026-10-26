@@ -553,8 +553,116 @@ static long read_line_dyn(FILE *fp, char **buf, size_t *cap) {
     return (long)len;
 }
 
-AsmNode* parse_vircon32_asm(const char *filename) {
+
+// ===================================================================
+// FUNCTION-SCOPED ".local" LABELS
+// v32cc (default syntax) writes labels with a leading dot (".return:",
+// ".for_3_start:"), and v32as reads ".x" as "<last global label>__x": the
+// same name repeats in every function and means a different label in
+// each. The optimizer looks labels up by name, so it would see them as
+// duplicates and give up on everything that crosses one (liveness,
+// promote-*, the loop passes, ...). To keep every pass unchanged the file is
+// rewritten as it is read: a local label gets its scope in its name,
+//     .return   ->   .__sc17__return        (17: which global label it follows)
+// in its definition and in every operand that names it, and the writer
+// strips the scope again. A name a pass invents from a scoped one keeps the
+// scope, so it comes back out as a valid local label of the same function.
+// A file that already contains ".__sc" is left alone.
+// ===================================================================
+static bool scope_ident(char c) {
+    return isalnum((unsigned char)c) || c == '_' || c == '.' || c == '~' || c == '$';
+}
+
+// Append the scoped form of one line to *out (grown as needed).
+static void scope_line(const char *ln, int *scope, char **out, size_t *cap) {
+    size_t need = strlen(ln) * 2 + 64;
+    if (*cap < need) { *cap = need; *out = (char*)realloc(*out, *cap); if (!*out) { fprintf(stderr, "v32opt: out of memory\n"); exit(EXIT_FAILURE); } }
+    char *o = *out;
+    const char *p = ln;
+    while (*p == ' ' || *p == '\t') *o++ = *p++;
+    if (*p == '%') { strcpy(o, p); return; }          // preprocessor line: untouched
+    // a global label definition starts a new scope
+    if (*p && !strchr(".;", *p) && (isalpha((unsigned char)*p) || *p == '_' || *p == '~' || *p == '$')) {
+        const char *q = p;
+        while (scope_ident(*q)) q++;
+        if (*q == ':') (*scope)++;
+    }
+    bool in_str = false;
+    char prev = ' ';
+    while (*p) {
+        if (in_str) {
+            if (*p == '\\' && p[1]) { *o++ = *p++; }
+            else if (*p == '"') in_str = false;
+            prev = *p; *o++ = *p++;
+            continue;
+        }
+        if (*p == ';') { strcpy(o, p); return; }
+        if (*p == '"') { in_str = true; prev = *p; *o++ = *p++; continue; }
+        if (*p == '.' && !scope_ident(prev) && (isalpha((unsigned char)p[1]) || p[1] == '_')) {
+            o += sprintf(o, ".__sc%d__", *scope);
+            prev = '_'; p++;
+            continue;
+        }
+        prev = *p; *o++ = *p++;
+    }
+    *o = '\0';
+}
+
+// Open 'filename' for parsing with its local labels scoped (see above).
+static FILE *open_scoped(const char *filename) {
     FILE *fp = fopen(filename, "r");
+    if (!fp) return NULL;
+    // read it all
+    size_t cap = 1 << 16, len = 0;
+    char *buf = (char*)malloc(cap);
+    if (!buf) { fprintf(stderr, "v32opt: out of memory\n"); exit(EXIT_FAILURE); }
+    size_t n;
+    while ((n = fread(buf + len, 1, cap - len - 1, fp)) > 0) {
+        len += n;
+        if (cap - len < 2) { cap *= 2; buf = (char*)realloc(buf, cap); if (!buf) { fprintf(stderr, "v32opt: out of memory\n"); exit(EXIT_FAILURE); } }
+    }
+    buf[len] = '\0';
+    fclose(fp);
+    FILE *tmp = tmpfile();
+    if (!tmp || strstr(buf, ".__sc") || strlen(buf) != len) {
+        // cannot scope: parse the file as it is
+        if (tmp) fclose(tmp);
+        free(buf);
+        return fopen(filename, "r");
+    }
+    char *out = NULL; size_t ocap = 0, linecap = 0;
+    char *line = NULL;
+    int scope = 0;
+    for (char *p = buf; *p; ) {
+        char *e = strchr(p, '\n');
+        size_t ll = e ? (size_t)(e - p) : strlen(p);
+        if (ll + 1 > linecap) { linecap = ll + 1; line = (char*)realloc(line, linecap); }
+        memcpy(line, p, ll); line[ll] = '\0';
+        scope_line(line, &scope, &out, &ocap);
+        fputs(out, tmp);
+        if (e) fputc('\n', tmp);
+        p = e ? e + 1 : p + ll;
+    }
+    free(buf); free(line); free(out);
+    rewind(tmp);
+    return tmp;
+}
+
+// Remove the scope from a line on its way out: ".__sc17__x" -> ".x"
+static void write_unscoped(FILE *fp, const char *text) {
+    const char *p = text;
+    while (*p) {
+        if (p[0] == '.' && p[1] == '_' && p[2] == '_' && p[3] == 's' && p[4] == 'c' && isdigit((unsigned char)p[5])) {
+            const char *q = p + 5;
+            while (isdigit((unsigned char)*q)) q++;
+            if (q[0] == '_' && q[1] == '_') { fputc('.', fp); p = q + 2; continue; }
+        }
+        fputc(*p++, fp);
+    }
+}
+
+AsmNode* parse_vircon32_asm(const char *filename) {
+    FILE *fp = open_scoped(filename);
     if (!fp) {
         fprintf(stderr, "v32opt: cannot open input file '%s': %s\n",
                 filename, strerror(errno));
@@ -758,7 +866,7 @@ void write_vircon32_asm(const char *filename, AsmNode *head) {
             }
         } else {
             // Write non-blank line as-is
-            fprintf(fp, "%s\n", curr->raw);
+            write_unscoped(fp, curr->raw); fputc('\n', fp);
             last_was_blank = false;
         }
 

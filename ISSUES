@@ -15,11 +15,6 @@ PASSES
   Frameless, register-passing code has no frame to promote and is mostly
   left alone (primes.asm: -O3 gains 12% where compiled C gains 62%).
 
-[limit] The default v32cc syntax (".local" labels such as ".return:" that
-  repeat in every function) makes liveness.c answer "live" for anything that
-  crosses such a label, so promote-*, peephole-zero-test, peephole-dead-regs
-  and the loop passes mostly do nothing. Use "v32cc --standard".
-
 [limit] The loop passes (loop-invert, loop-unroll, loop-unroll-partial,
   loop-index) match the loop shape the C compilers emit. v32lua's loops have
   a different shape and are not touched: Lua gains from -O1/-O2 only.

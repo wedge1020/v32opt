@@ -109,8 +109,7 @@ cloning), at most ~8 instructions, factor limited so the loop stays under
 ## A note on the compiler's labels
 
 `v32cc` writes `.local` labels by default (`.return:`, `.for_3_start:`, ...),
-which repeat in every function. `liveness.c` treats a duplicated label name as
-ambiguous and answers "live" for any path through it, so with that output the
-promote passes (and `peephole-zero-test`) do nothing. Use `v32cc --standard`
-(`testing/differential/` does) until `v32opt` scopes `.local` labels to their
-function.
+which repeat in every function. `v32opt` scopes them to their function when it
+reads the file (`.return` -> `.__sc17__return` internally, restored on output),
+so the optimizer sees unique names and the default syntax optimizes as well as
+`--standard`.

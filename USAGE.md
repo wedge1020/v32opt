@@ -56,7 +56,7 @@ Optimization complete: 18432 total optimizations applied.
 ```
 
 If your compiler is `v32lua`, add `-L lua`. If you use `v32cc`, give it
-`--standard` (explained in section 10).
+`--standard` (optional now: section 10).
 
 ## 3. Choosing a level
 
@@ -315,12 +315,14 @@ you develop, and compare them.
 
 **"It made no difference."** Check `-v`: if it reports few optimizations, the
 input may be hand-written assembly (the big wins come from compiler-shaped code:
-frames, loops), or compiled with `v32cc` without `--standard`.
+frames, loops).
 
-**Why `v32cc --standard`?** `v32cc`'s default output uses short repeating labels
-like `.return:` in every function. `v32opt` cannot tell them apart, so many passes
-quietly skip such code. With `--standard` the labels are unique and everything
-works.
+**`.local` labels (`v32cc`'s default syntax)?** `v32cc` writes labels like `.return:`
+in every function; `v32as` reads `.x` as `<last global label>__x`. `v32opt` does the
+same when it reads the file: each local label gets its scope in its name
+(`.return` -> `.__sc17__return`) for the passes, and the scope is removed again
+on output, so the output is the same syntax. `--standard` is no longer needed for
+optimization (it gives the same optimization counts).
 
 **Lua?** Use `-L lua`. The loop passes do not apply to Lua's loops (their shape
 differs); you still get `-O1` and `-O2`.

@@ -75,6 +75,11 @@ static ChainLabel *find_label(const char *name)
     return bsearch(&key, g_lbl, (size_t)g_lbl_count, sizeof(ChainLabel), cmp_chain_label);
 }
 
+// The characters a label can be made of: v32cc writes local labels with a leading
+// dot (".if_321_end", ".case_7") and static functions as "F~name"; v32as reads
+// both.  Without '.' and '~' here a reference such as "JF R0, .if_321_end" names
+// the token "if_321_end", which is no label, so the label looks unreferenced and
+// its JMP is deleted while other jumps still land on it.
 static bool is_ident_char(char c)
 {
     return isalnum((unsigned char)c) || c == '_';
