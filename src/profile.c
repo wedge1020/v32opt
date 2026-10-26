@@ -16,6 +16,9 @@
 // its back edge decides whether it is hot (worth growing the code for), cold
 // (not worth even a copy of its test) or neither.
 //
+// With no profile (or where it has nothing to say) loop_heat() falls back on the compiler's static hints: ';@loop hot|cold'
+// before the loop, or ';@fn ... hot|cold' on its function.
+//
 // Nodes made by a pass have no line (src_line 0). A loop that contains one
 // -- or whose lines the profile does not cover at all -- is reported as
 // warm, i.e. treated as if there were no profile, never as cold.
@@ -84,7 +87,7 @@ int profile_load(AsmNode *head, const char *file)
     return 0;
 }
 
-int loop_heat(AsmNode *from, AsmNode *to)
+static int profile_heat(AsmNode *from, AsmNode *to)
 {
     if (!g_profile_on) return 0;
     long long sum = 0;
@@ -100,4 +103,13 @@ int loop_heat(AsmNode *from, AsmNode *to)
     if (share >= g_profile_hot_pct) return 1;
     if (share < g_profile_cold_pct) return -1;
     return 0;
+}
+
+// What the loop passes ask. A measured profile decides when it covers the loop; otherwise the compiler's hints do
+// (';@loop hot|cold', or the ';@fn ... hot|cold' of the function the loop is in; see hints.h). 'from' is the loop's
+// start label.
+int loop_heat(AsmNode *from, AsmNode *to)
+{
+    int h = profile_heat(from, to);
+    return h ? h : hints_static_heat(from);
 }

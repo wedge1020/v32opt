@@ -154,6 +154,27 @@ int inline_trivial_functions(AsmNode *head) {
                 continue;
             }
 
+            // The size limit for this function: the command line's, as the compiler's hints bend it
+            // (';@fn <label> alwaysinline | inline | hot | cold'). 'noinline' (above) beats all of them;
+            // 'alwaysinline' beats 'cold'.
+            int body_limit = config.opt_inline_max_body_ins;
+            if (fh) {
+                if (fh->alwaysinline)                body_limit = MAX_BODY_INS;
+                else if (fh->inline_kw || fh->hot)   body_limit = body_limit * 2 > MAX_BODY_INS ? MAX_BODY_INS : body_limit * 2;
+            }
+            if (fh && fh->cold && !fh->alwaysinline) {
+                if (config.debug) {
+                    AsmNode *debug_node = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
+                    node_set_rawf(debug_node, "; [DEBUG inline] Skipped %s: marked cold by the compiler", func_name);
+                    debug_node->prev = curr->prev;
+                    debug_node->next = curr;
+                    if (curr->prev) curr->prev->next = debug_node;
+                    curr->prev = debug_node;
+                }
+                curr = curr->next;
+                continue;
+            }
+
             // --- Skip Prologue (PUSH BP; MOV BP, SP) ---
             AsmNode *scan = curr->next;
             // (Stop at directives: skipping one here let it slip past the
@@ -303,13 +324,13 @@ int inline_trivial_functions(AsmNode *head) {
                 }
 
                 // Collect instruction if under the configurable limit
-                if (core_count < config.opt_inline_max_body_ins) {
+                if (core_count < body_limit) {
                     core_nodes[core_count++] = scan;
                 } else {
                     if (config.debug) {
                         AsmNode *debug_node = create_node(NULL, OP_OTHER, NULL, NULL, NULL);
                         node_set_rawf(debug_node, "; [DEBUG inline] Skipped %s: too large (%d insns, max=%d)",
-                                 func_name, core_count, config.opt_inline_max_body_ins);
+                                 func_name, core_count, body_limit);
                         debug_node->prev = curr;
                         debug_node->next = curr->next;
                         if (curr->next) curr->next->prev = debug_node;
@@ -322,7 +343,7 @@ int inline_trivial_functions(AsmNode *head) {
             }
 
             // Register valid candidate
-            if (valid_candidate && core_count > 0 && core_count <= config.opt_inline_max_body_ins) {
+            if (valid_candidate && core_count > 0 && core_count <= body_limit) {
                 safe_str_copy(candidates[candidate_count].name, func_name, sizeof(candidates[candidate_count].name));
                 candidates[candidate_count].body_count = core_count;
                 for (int i = 0; i < core_count; i++) {

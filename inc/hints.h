@@ -15,10 +15,22 @@
 //   ;@hints 1 abi=caller-save              file header (once, anywhere)
 //   ;@fn __function_f noinline escapes=-5..-3,-1
 //                                          one per function, named by its label
+//   ;@loop hot unroll=4                    before a loop's start label
 //   mov R0, [global_flag]   ;@v            this access is volatile
 // ===========================================================================
 
 #define  NH_VOLATILE   0x1u      // AsmNode.hints: a volatile memory access
+// On a label node (a loop's start label), from a ';@loop' line before it:
+#define  NH_LOOP_HOT       0x02u    //   'hot'
+#define  NH_LOOP_COLD      0x04u    //   'cold'
+#define  NH_LOOP_NOUNROLL  0x08u    //   'nounroll'
+// On every label node: the heat of the function it sits in (';@fn ... hot|cold'), inherited by its loops
+#define  NH_FN_HOT         0x10u
+#define  NH_FN_COLD        0x20u
+// 'unroll=N' / 'unroll=full': the count in the high half of AsmNode.hints (0: no request)
+#define  NH_UNROLL_SHIFT   16
+#define  NH_UNROLL_MASK    0xFFFF0000u
+#define  HINT_UNROLL_FULL  0xFFFF
 
 typedef enum {
     ABI_AUTO,                    // default: the file's ';@hints' header decides, else stock
@@ -29,6 +41,10 @@ typedef enum {
 typedef struct {
     char            name[128];   // the function's label, without the colon
     bool            noinline;
+    bool            inline_kw;       // 'inline': the source asked for it (a soft request: a larger size limit)
+    bool            alwaysinline;    // 'alwaysinline': inline it whatever its size (up to MAX_BODY_INS)
+    bool            hot;             // 'hot': inline more readily, loops count as hot when no profile says otherwise
+    bool            cold;            // 'cold': do not inline it; its loops are not grown (no unrolling, no inversion)
     bool            noreturn;
     bool            leaf;        // informational: v32opt still checks
     bool            naked;
@@ -44,6 +60,8 @@ bool           abi_caller_save (void);                 // the calling convention
 const FnHints *hints_fn        (const char *label);    // NULL: no ';@fn' line for it
 bool           hints_fn_slot_escapes (const FnHints *, int bp_offset);
 bool           node_is_volatile(const AsmNode *);
+int            hints_static_heat (const AsmNode *loop_label);    // -1 cold, 0 unknown, +1 hot: from ';@loop' / the function's ';@fn' (profile.c adds the measured one)
+int            hints_loop_unroll (const AsmNode *loop_label);    // 0: no request, 1: nounroll, N >= 2: unroll N, HINT_UNROLL_FULL: as far as possible
 int            hints_verify    (AsmNode *head);        // safety net before output: warns about a volatile access a pass turned into a non-access
 
 #endif

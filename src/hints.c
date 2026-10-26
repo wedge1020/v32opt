@@ -101,6 +101,10 @@ static void parse_fn_line(char *rest) {
     if (!h) return;
     for (char *tok = strtok_r(NULL, " \t", &save); tok; tok = strtok_r(NULL, " \t", &save)) {
         if      (strcmp(tok, "noinline") == 0) h->noinline = true;
+        else if (strcmp(tok, "inline")   == 0) h->inline_kw    = true;
+        else if (strcmp(tok, "alwaysinline") == 0) h->alwaysinline = true;
+        else if (strcmp(tok, "hot")      == 0) h->hot  = true;
+        else if (strcmp(tok, "cold")     == 0) h->cold = true;
         else if (strcmp(tok, "noreturn") == 0) h->noreturn = true;
         else if (strcmp(tok, "leaf")     == 0) h->leaf     = true;
         else if (strcmp(tok, "naked")    == 0) h->naked    = true;
@@ -158,6 +162,30 @@ bool hints_parse(AsmNode *head) {
             } else if (strcmp(kw, "fn") == 0) {
                 parse_fn_line(save ? save : (char *)"");
                 any = true;
+            } else if (strcmp(kw, "loop") == 0) {
+                // the attributes belong to the next label (the loop's start), if that is what follows
+                unsigned bits = 0;
+                for (char *tok = strtok_r(NULL, " \t", &save); tok; tok = strtok_r(NULL, " \t", &save)) {
+                    if      (strcmp(tok, "hot") == 0)      bits |= NH_LOOP_HOT;
+                    else if (strcmp(tok, "cold") == 0)     bits |= NH_LOOP_COLD;
+                    else if (strcmp(tok, "nounroll") == 0) bits = (bits & ~NH_UNROLL_MASK) | NH_LOOP_NOUNROLL;
+                    else if (strncmp(tok, "unroll=", 7) == 0) {
+                        const char *v = tok + 7;
+                        long c = strcmp(v, "full") == 0 ? HINT_UNROLL_FULL : strtol(v, NULL, 10);
+                        if (c >= 2 && c <= HINT_UNROLL_FULL)
+                            bits = (bits & ~(NH_UNROLL_MASK | NH_LOOP_NOUNROLL)) | ((unsigned)c << NH_UNROLL_SHIFT);
+                        else if (c == 1)
+                            bits = (bits & ~NH_UNROLL_MASK) | NH_LOOP_NOUNROLL;
+                    }                                               // anything else: ignored
+                }
+                AsmNode *l = n->next;
+                while (l && l->type == OP_OTHER) {                  // blank lines and comments between
+                    const char *q = l->raw;
+                    while (*q == ' ' || *q == '\t') q++;
+                    if (*q && *q != ';') { l = NULL; break; }       // a directive: not a loop label
+                    l = l->next;
+                }
+                if (l && l->type == OP_LABEL && bits) { l->hints |= bits; any = true; }
             }
             continue;
         }
@@ -180,7 +208,39 @@ bool hints_parse(AsmNode *head) {
         }
     }
     if (g_fn_n > 1) qsort(g_fn, (size_t)g_fn_n, sizeof(FnHints), cmp_fn);
+
+    // The heat of a function (';@fn ... hot|cold') is passed to every label that follows it, up to the next
+    // function label: that is how a loop finds out which function it is in (hints_static_heat).
+    if (g_fn_n > 0) {
+        unsigned heat = 0;
+        for (AsmNode *n = head ? head->next : NULL; n; n = n->next) {
+            if (n->type != OP_LABEL) continue;
+            char nm[128];
+            get_label_name(n, nm, sizeof(nm));
+            if (strncmp(nm, "__function_", 11) == 0) {
+                const FnHints *f = hints_fn(nm);
+                heat = f ? (f->cold ? NH_FN_COLD : f->hot ? NH_FN_HOT : 0) : 0;
+            }
+            n->hints |= heat;
+        }
+    }
     return any;
+}
+
+int hints_static_heat(const AsmNode *l) {
+    if (!l) return 0;
+    if (l->hints & NH_LOOP_COLD) return -1;
+    if (l->hints & NH_LOOP_HOT)  return +1;
+    if (l->hints & NH_FN_COLD)   return -1;
+    if (l->hints & NH_FN_HOT)    return +1;
+    return 0;
+}
+
+int hints_loop_unroll(const AsmNode *l) {
+    if (!l) return 0;
+    unsigned c = (l->hints & NH_UNROLL_MASK) >> NH_UNROLL_SHIFT;
+    if (c) return (int)c;
+    return (l->hints & NH_LOOP_NOUNROLL) ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------

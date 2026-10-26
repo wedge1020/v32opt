@@ -1,5 +1,8 @@
 #include "v32opt.h"
 
+#define LOOP_UNROLL_HINT_MAX_TRIPS 256     // 'unroll=full': the most iterations ever unrolled
+#define LOOP_UNROLL_HINT_MAX_SIZE  1024    // ... and the most instructions in the result, when the compiler asked
+
 // ===================================================================
 // FULL LOOP UNROLLING  (-floop-unroll)
 //
@@ -50,7 +53,9 @@
 //     in every function; use --standard).
 //
 // Size limits keep the growth bounded: at most LOOP_UNROLL_MAX_TRIPS
-// iterations and LOOP_UNROLL_MAX_TOTAL instructions in all.
+// iterations and LOOP_UNROLL_MAX_TOTAL instructions in all. A request from the
+// compiler (';@loop unroll=N', 'unroll=full', 'nounroll'; hints.h) replaces the
+// limits by N iterations / LOOP_UNROLL_HINT_MAX_SIZE instructions, or skips the loop.
 //
 // Runs once, after constant-folding (the loop's init has become a plain
 // "MOV Ri, <imm>" by then) and before loop-invert.
@@ -268,9 +273,16 @@ static int unroll_once(AsmNode *head)
 
         // a profile makes hot loops worth twice the usual growth and cold ones none
         int heat = loop_heat(start->node, jmp);
-        if (heat < 0) { jmp = after_jmp; continue; }
+        // the compiler's request for this loop (';@loop unroll=N|full|nounroll', from #pragma unroll): it beats the
+        // heat, and N raises the limits to what was asked (up to a hard bound), never the soundness checks below
+        int want = hints_loop_unroll(start->node);
+        if (want == 1 || (heat < 0 && !want)) { jmp = after_jmp; continue; }
         int max_trips = g_loop_tune.unroll_max_trips * (heat > 0 ? 2 : 1);
         long max_size = (long)g_loop_tune.unroll_max_size * (heat > 0 ? 2 : 1);
+        if (want) {
+            max_trips = want == HINT_UNROLL_FULL ? LOOP_UNROLL_HINT_MAX_TRIPS : want;
+            max_size  = LOOP_UNROLL_HINT_MAX_SIZE;
+        }
         int trips = trip_count(cmp->type, initv, stepv, bound, max_trips);
         if (trips < 1) { jmp = after_jmp; continue; }
 

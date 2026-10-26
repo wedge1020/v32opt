@@ -1,5 +1,8 @@
 #include "v32opt.h"
 
+#define LOOP_PARTIAL_HINT_MAX_K    16      // 'unroll=N' from the compiler: the most copies per round
+#define LOOP_PARTIAL_HINT_MAX_SIZE 256     // ... and the most instructions in the main loop
+
 // ===================================================================
 // PARTIAL LOOP UNROLLING  (-floop-unroll-partial)
 //
@@ -177,7 +180,9 @@ int peephole_loop_unroll_partial(AsmNode *head)
         }
         if (overlap) continue;
         int heat = loop_heat(L.start, jmp);
-        if (heat < 0) continue;                                  // cold per the profile
+        // the compiler's request (';@loop unroll=N|full|nounroll', from #pragma unroll) beats the heat
+        int want = hints_loop_unroll(L.start);
+        if (want == 1 || (heat < 0 && !want)) continue;          // nounroll, or cold per the profile / the hints
 
         // --- the bound -----------------------------------------------------
         // Forms: (A) cmp Rc, imm            (no loads)
@@ -240,12 +245,20 @@ int peephole_loop_unroll_partial(AsmNode *head)
         }
         if (!ok || body_ins < 1) continue;
         int per_copy = body_ins;            // the step is among them
-        if (per_copy > g_loop_tune.partial_max_body * (heat > 0 ? 2 : 1) ||
+        if (per_copy > g_loop_tune.partial_max_body * (want ? 4 : heat > 0 ? 2 : 1) ||
             per_copy < g_loop_tune.partial_min_body) continue;
         // hot loops (per the profile) get the biggest factor when it is automatic
         int k = g_loop_tune.partial_factor ? g_loop_tune.partial_factor
               : heat > 0 ? 8
               : (per_copy <= g_loop_tune.partial_big_body ? 4 : 2);
+        if (want >= 2 && want != HINT_UNROLL_FULL) {
+            // asked for N copies: N, but never more than LOOP_PARTIAL_HINT_MAX_K nor a main loop of more than
+            // LOOP_PARTIAL_HINT_MAX_SIZE instructions (a loop that cannot be unrolled completely gets what fits)
+            k = want > LOOP_PARTIAL_HINT_MAX_K ? LOOP_PARTIAL_HINT_MAX_K : want;
+            while (k > 2 && k * per_copy > LOOP_PARTIAL_HINT_MAX_SIZE) k /= 2;
+        } else if (want == HINT_UNROLL_FULL && !g_loop_tune.partial_factor) {
+            k = 8;                                               // 'unroll full' of a loop with no constant trip count
+        }
         if (k < 2) continue;
 
         long delta = (long)(k - 1) * L.stepv;

@@ -191,7 +191,13 @@ and
 instructions to the functions they change. A compiler can also pass the
 convention, the address-taken frame words, \(dqnoinline\(dq and volatile accesses in
 .B ;@
-comment lines; see
+comment lines; it can also pass on source-level requests: \(dqinline\(dq,
+\(dqalwaysinline\(dq, \(dqhot\(dq and \(dqcold\(dq on a function (the size limit of
+.BR \-finline ,
+and the heat of its loops) and
+.B ;@loop
+lines before a loop (\(dqunroll=N\(dq, \(dqunroll=full\(dq, \(dqnounroll\(dq, \(dqhot\(dq,
+\(dqcold\(dq); see
 .IR doc/hints.md .
 .TP
 .BR \-L " mode" ", " \-\-langmode " mode"

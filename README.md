@@ -379,7 +379,10 @@ as comments, so nothing else notices): the calling convention (`abi=caller-save`
 for v32cc, which saves the promote passes a `PUSH`/`POP` pair per register), which
 frame words have their address taken (`escapes=`, so one `&x` no longer keeps every
 local of the function in memory), `noinline`, and `volatile` accesses (`;@v`, never
-merged, forwarded or removed). A file without hints is optimized exactly as before.
+merged, forwarded or removed). It can also pass on what the programmer asked for in the
+source: `inline` / `always_inline` / `hot` / `cold` functions (the inliner's size limit, and
+whether a function's loops may grow) and, per loop, `#pragma unroll N` / `nounroll` / hot /
+cold (`;@loop`). A file without hints is optimized exactly as before.
 The format and its rules are in [doc/hints.md](doc/hints.md).
 
 ### Hand-written assembly
