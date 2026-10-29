@@ -57,6 +57,11 @@ file, including hand-written assembly it links in, follows the convention.*
 `<label>` is the function's label exactly as written in the assembly
 (`__function_f`, without the colon). Attributes, in any order:
 
+A `;@fn` line also settles one naming question: `__function_X_return:` is taken as the internal
+return label of function `X` (and not a function of its own) unless a `;@fn __function_X_return`
+line names it, or no `__function_X:` precedes it. A real function called `X_return` therefore
+needs no line unless a function `X` also exists.
+
 | Attribute | Meaning for `v32opt` | The compiler promises |
 | --- | --- | --- |
 | `noinline` | never inlines this function (`-finline` skips it) | the source said `noinline`, or the function must stay a real call (its address is compared, it is a `used` entry point, it must show up in a profile ...) |

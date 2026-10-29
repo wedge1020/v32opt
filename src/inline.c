@@ -43,9 +43,8 @@
 // function-body scans from running past the end of one function
 // into the next one (or into a data section).
 // ---------------------------------------------------------------
-static bool is_inline_boundary_label(const char *lbl) {
-    size_t lbl_len = strlen(lbl);
-    bool is_return_label = (lbl_len >= 8 && str_case_eq(lbl + lbl_len - 8, "_return:"));
+static bool is_inline_boundary_label(const AsmNode *n, const char *lbl) {
+    bool is_return_label = is_fn_return_label(n);
     return (strncmp(lbl, "__function_", 11) == 0 && !is_return_label) ||
            strncmp(lbl, "__literal_", 10) == 0 ||
            strncmp(lbl, "__global_", 9) == 0;
@@ -80,7 +79,7 @@ int inline_trivial_functions(AsmNode *head) {
                     char line_copy[8192];
                     safe_str_copy(line_copy, scan->raw, sizeof(line_copy));
                     char *lbl = trim(line_copy);
-                    if (is_inline_boundary_label(lbl)) break;
+                    if (is_inline_boundary_label(scan, lbl)) break;
                     scan = scan->next;
                     continue;
                 }
@@ -211,7 +210,7 @@ int inline_trivial_functions(AsmNode *head) {
                     char line_copy[8192];
                     safe_str_copy(line_copy, scan->raw, sizeof(line_copy));
                     char *lbl = trim(line_copy);
-                    if (is_inline_boundary_label(lbl)) {
+                    if (is_inline_boundary_label(scan, lbl)) {
                         valid_candidate = false;  // fell off the end: no epilogue
                         break;
                     }

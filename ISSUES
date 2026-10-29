@@ -43,11 +43,6 @@ PASSES
 [limit] Disassembled CARTs: ROM data is referenced by absolute address, which
   v32opt does not relocate, so any size-changing pass breaks them.
 
-[limit] dce's function-boundary heuristic treats any "__function_*_return:"
-  label as internal, so a REAL function whose name ends in "_return" (e.g. Lua
-  "function get_return()") is absorbed into the preceding function. Needs a
-  stronger naming contract from the compilers.
-
 [gap] Pointer strength reduction with a stepped pointer register (for loops
   that use the counter both as an index and as a value) is not implemented; it
   needs a free register chosen with the callee-save rules of the promote passes.
@@ -65,12 +60,6 @@ PASSES
   and the promote passes do not look at the profile.
 
 [bug] peephole-zero-test: the rewritten jump loses its trailing source comment.
-
-[bug] Labels are compared case-insensitively (str_case_eq / strcasecmp everywhere), but the
-  assembler's are not: a C program with both `_exit` and `_Exit` has labels `__function__exit` and
-  `__function__Exit`, and dce deletes one of them as a duplicate of the other (the called one stays
-  referenced: undefined label). Seen on v32cc's t_libc_posix_bare. Mnemonics and registers are
-  case-insensitive; labels, symbols and %define names must not be.
 
 [bug] The stock Vircon32 compiler is not consistently callee-save (a function
   only ever called at statement level may write R1 without saving it).

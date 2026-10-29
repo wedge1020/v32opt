@@ -275,11 +275,6 @@ static bool branch_enters_region(AsmNode *scope_first, AsmNode *scope_last,
 // -------------------------------------------------------------------
 // Helper: function boundaries
 // -------------------------------------------------------------------
-static bool is_return_label_text(const char *lbl) {
-    size_t len = strlen(lbl);
-    return len >= 7 && str_case_eq(lbl + len - 7, "_return");
-}
-
 // A function's entry label: "__function_<name>" (not "..._return"), or the
 // Lua compiler's "__global_scope_initialization".
 static bool is_function_entry(const AsmNode *n) {
@@ -287,7 +282,7 @@ static bool is_function_entry(const AsmNode *n) {
     char lbl[128];
     get_label_name(n, lbl, sizeof(lbl));
     if (str_case_eq(lbl, "__global_scope_initialization")) return true;
-    return strncmp(lbl, "__function_", 11) == 0 && !is_return_label_text(lbl);
+    return strncmp(lbl, "__function_", 11) == 0 && !is_fn_return_label(n);
 }
 
 // The last node belonging to the function whose entry label is `entry`.
@@ -297,7 +292,7 @@ static AsmNode *function_last(AsmNode *entry) {
         if (s->type == OP_LABEL) {
             char lbl[128];
             get_label_name(s, lbl, sizeof(lbl));
-            if ((strncmp(lbl, "__function_", 11) == 0 && !is_return_label_text(lbl)) ||
+            if ((strncmp(lbl, "__function_", 11) == 0 && !is_fn_return_label(s)) ||
                 strncmp(lbl, "__literal_", 10) == 0 ||
                 (strncmp(lbl, "__global_", 9) == 0 &&
                  !str_case_eq(lbl, "__global_scope_initialization"))) {

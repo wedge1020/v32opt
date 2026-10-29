@@ -241,7 +241,7 @@ static void collect_func_stems(AsmNode *head) {
         char *lbl = trim(line_copy);
         size_t len = strlen(lbl);
         if (strncmp(lbl, "__function_", 11) != 0 || len < 13 || lbl[len - 1] != ':') continue;
-        if (len >= 8 && str_case_eq(lbl + len - 8, "_return:")) continue;
+        if (is_fn_return_label(n)) continue;
         lbl[len - 1] = '\0';
         g_func_stems[g_func_stem_count++] = strdup(lbl + 11);
     }
@@ -255,9 +255,8 @@ static void free_func_stems(void) {
     g_func_stem_count = 0;
 }
 
-static bool is_function_boundary_label(const char *lbl) {
-    size_t lbl_len = strlen(lbl);
-    bool is_return_label = (lbl_len >= 8 && str_case_eq(lbl + lbl_len - 8, "_return:"));
+static bool is_function_boundary_label(const AsmNode *n, const char *lbl) {
+    bool is_return_label = is_fn_return_label(n);
     return (strncmp(lbl, "__function_", 11) == 0 && !is_return_label) ||
            strncmp(lbl, "__literal_", 10) == 0 ||
            (strncmp(lbl, "__global_", 9) == 0 && !is_global_scope_internal_label(lbl)) ||
@@ -424,7 +423,7 @@ int opt_dce (AsmNode *head)
                 char line_copy[8192];
                 safe_str_copy(line_copy, look->raw, sizeof(line_copy));
                 char *lbl = trim(line_copy);
-                if (is_function_boundary_label(lbl) || is_data_label_node(look)) break;
+                if (is_function_boundary_label(look, lbl) || is_data_label_node(look)) break;
             }
             preamble_end = look;
         }
@@ -450,8 +449,7 @@ int opt_dce (AsmNode *head)
             // FIX: Only __function_ prefixed labels are real functions.
             // Internal compiler labels (__if_N_start, __for_N_start, etc.)
             // and _return labels are NOT separate functions.
-            size_t lbl_len = strlen(lbl);
-            bool is_return_label = (lbl_len >= 8 && str_case_eq(lbl + lbl_len - 8, "_return:"));
+            bool is_return_label = is_fn_return_label(curr);
             bool is_global_scope_init = str_case_eq(lbl, "__global_scope_initialization:");
             // A nested function's "_skip:" continuation is a segment of the
             // enclosing scope, reached via its "JMP __<stem>_skip".
@@ -490,7 +488,7 @@ int opt_dce (AsmNode *head)
                     // __global_scope_initialization: now stops this scan
                     // like any other real boundary (see the comment on
                     // is_function_boundary_label() above).
-                    if (is_function_boundary_label(next_lbl) || is_data_label_node(scan)) {
+                    if (is_function_boundary_label(scan, next_lbl) || is_data_label_node(scan)) {
                         break;
                     }
                 }

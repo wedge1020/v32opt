@@ -174,6 +174,7 @@ bool  operands_equal        (const Operand *, const Operand *);
 bool  is_numeric_immediate  (const Operand *);
 long  parse_imm_val         (const char *);
 void  get_label_name        (const AsmNode *, char *, size_t);
+bool  is_fn_return_label    (const AsmNode *);   // "__function_<X>_return:" internal to function X (not a real function of that name)
 
 // ---------------------------------------------------------------------------
 // Node traversal helpers (helpers.c)

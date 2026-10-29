@@ -353,6 +353,43 @@ bool operands_equal(const Operand *op1, const Operand *op2) {
 }
 
 // ---------------------------------------------------------------
+// Is this OP_LABEL a function's own internal "__function_<X>_return:" label
+// (the epilogue target of function <X>), as opposed to the entry label of a
+// REAL function whose name merely ends in "_return" (e.g. Lua
+// "function get_return()" -> "__function_get_return:")?
+//
+//   1. A ';@fn' hint naming this very label says it is a function: trusted.
+//   2. Otherwise it is internal only if the function it would belong to,
+//      "__function_<X>:", is defined earlier in the program. If there is no
+//      such function, nothing can own the label, so it starts a function.
+//
+// (When both "get" and "get_return" are real functions and no hints say so,
+// the label is still taken as internal: the old, conservative reading.)
+// ---------------------------------------------------------------
+bool is_fn_return_label(const AsmNode *n)
+{
+    char lbl[256];
+    get_label_name(n, lbl, sizeof(lbl));
+    size_t len = strlen(lbl);
+    if (len < 11 + 1 + 7 || strncmp(lbl, "__function_", 11) != 0 ||
+        !str_case_eq(lbl + len - 7, "_return"))
+        return false;
+    if (hints_fn(lbl)) return false;
+
+    size_t stem_len = len - 11 - 7;                    // "<X>"
+    for (const AsmNode *p = n->prev; p; p = p->prev) {
+        if (p->type != OP_LABEL) continue;
+        char other[256];
+        get_label_name(p, other, sizeof(other));
+        if (strncmp(other, "__function_", 11) == 0 &&
+            strlen(other) == 11 + stem_len &&
+            strncmp(other + 11, lbl + 11, stem_len) == 0)
+            return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------
 // Extract clean label name from an OP_LABEL node
 // Removes trailing colon and trims whitespace
 // Example: get_label_name(label_node, buf, 128) -> buf = "my_label"
