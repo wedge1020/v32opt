@@ -33,6 +33,7 @@ static void set_opt_level(OptConfig *cfg, int level) {
     cfg -> opt_loop_unroll               = false;
     cfg -> opt_loop_index                = false;
     cfg -> opt_loop_unroll_partial       = false;
+    cfg -> opt_peephole_lua_checks       = false;
 
     if (level                           == 0) return; // -O0: all off
 
@@ -48,6 +49,7 @@ static void set_opt_level(OptConfig *cfg, int level) {
     cfg -> opt_peephole_loads            = true;
     cfg -> opt_peephole_movs             = true;
     cfg -> opt_peephole_pairs            = true;
+    cfg -> opt_peephole_lua_checks       = true;
     cfg -> opt_peephole_reduce           = true;
     cfg -> opt_peephole_shifts           = true;
     cfg -> opt_peephole_zero_test        = true;
@@ -93,6 +95,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
         // Disable
         const char *name = arg + 3;
         if (strcmp(name, "peephole-pairs") == 0) cfg->opt_peephole_pairs = false;
+        else if (strcmp(name, "peephole-lua-checks") == 0) cfg->opt_peephole_lua_checks = false;
         else if (strcmp(name, "peephole-algebra") == 0) cfg->opt_peephole_algebra = false;
         else if (strcmp(name, "peephole-compiler-myopia") == 0) cfg->opt_peephole_compiler_myopia = false;
         else if (strcmp(name, "peephole-forwarding") == 0) cfg->opt_peephole_forwarding = false;
@@ -146,6 +149,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
 
     // Enable
     if (strcmp(arg, "peephole-pairs") == 0) cfg->opt_peephole_pairs = true;
+    else if (strcmp(arg, "peephole-lua-checks") == 0) cfg->opt_peephole_lua_checks = true;
     else if (strcmp(arg, "peephole-algebra") == 0) cfg->opt_peephole_algebra = true;
     else if (strcmp(arg, "peephole-compiler-myopia") == 0) cfg->opt_peephole_compiler_myopia = true;
     else if (strcmp(arg, "peephole-forwarding") == 0) cfg->opt_peephole_forwarding = true;
@@ -203,6 +207,11 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "                           use 'c'; 'lua' adds NaN-boxed-type awareness\n");
     fprintf(stdout, "                           for v32lua output)\n");
     fprintf(stdout, "  -o <file>                Output assembly file (default: <input>Opt.asm)\n");
+    fprintf(stdout, "  -g                       Keep the compiler's ';@src FILE:LINE' source markers, moved along\n");
+    fprintf(stdout, "                           with the code they describe (the default when the input has any)\n");
+    fprintf(stdout, "  -g0, --strip-src         Remove the source markers from the output\n");
+    fprintf(stdout, "      --check-src          Verify the markers afterwards (no instruction without one, none in\n");
+    fprintf(stdout, "                           a function it does not belong to); exit status 3 on a problem\n");
     fprintf(stdout, "  --dot <cfg.dot>          Export Control Flow Graph to DOT format\n");
     fprintf(stdout, "  --profile <file>         Line profile of the program (scripts/v32prof.py): hot loops\n");
     fprintf(stdout, "                           get more unrolling, cold ones none (-fprofile-hot=PCT, -fprofile-cold=PCT)\n\n");
@@ -218,7 +227,7 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "  -f<name>                 Enable specific pass (e.g., -fpeephole-algebra)\n");
     fprintf(stdout, "  -fno-<name>              Disable specific pass (e.g., -fno-inline)\n\n");
     fprintf(stdout, "Available optimization names:\n");
-    fprintf(stdout, "  peephole-pairs, peephole-algebra, peephole-forwarding,\n");
+    fprintf(stdout, "  peephole-lua-checks (-L lua), peephole-pairs, peephole-algebra, peephole-forwarding,\n");
     fprintf(stdout, "  peephole-jumps, peephole-movs, peephole-immediates,\n");
     fprintf(stdout, "  peephole-reduce, peephole-shifts, peephole-dead-stores,\n");
     fprintf(stdout, "  peephole-loads, peephole-immediate-prop, peephole-jmp-chain,\n");
@@ -282,6 +291,8 @@ void process_args(int argc, char **argv, OptConfig *cfg,
         {"help",         no_argument,       NULL, 'h'},
         {"trigger-max",  required_argument, NULL, 'T'},
         {"profile",      required_argument, NULL, 'P'},
+        {"strip-src",    no_argument,       NULL, 'S'},
+        {"check-src",    no_argument,       NULL, 'C'},
         {NULL, 0, NULL, 0}
     };
 
@@ -299,7 +310,7 @@ void process_args(int argc, char **argv, OptConfig *cfg,
     // literal "--" is collected after the loop.
     const char *input_arg = NULL;   // the input file
     const char *extra_arg = NULL;   // a second positional (an error)
-    while ((opt = getopt_long(argc, argv, "-:hVvdto:O:f:L:", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "-:hVvdtg::o:O:f:L:", long_opts, NULL)) != -1) {
         switch (opt) {
             case 1:
                 if      (!input_arg) input_arg = optarg;
@@ -346,6 +357,13 @@ void process_args(int argc, char **argv, OptConfig *cfg,
                 break;
 
             case 'D': safe_str_copy(dot_file, optarg, dot_size); break;
+
+            case 'g':
+                // -g keeps the ';@src' markers (the default when the input has any); -g0 drops them
+                cfg->strip_src = (optarg && strcmp(optarg, "0") == 0);
+                break;
+            case 'S': cfg->strip_src = true; break;
+            case 'C': cfg->check_src = true; break;
 
             case 'P':
                 g_profile_file = optarg;

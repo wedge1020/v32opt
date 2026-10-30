@@ -384,6 +384,7 @@ source: `inline` / `always_inline` / `hot` / `cold` functions (the inliner's siz
 whether a function's loops may grow) and, per loop, `#pragma unroll N` / `nounroll` / hot /
 cold (`;@loop`). A file without hints is optimized exactly as before.
 The format and its rules are in [doc/hints.md](doc/hints.md).
+Source-line markers (`;@src`, `-g`, `--strip-src`, `--check-src`) are described in [doc/srcmarks.md](doc/srcmarks.md); `-L lua` type-check removal (`-fpeephole-lua-checks`) uses the `;@loop kind=for`, `;@cold` and `clobbers=` hints.
 
 ### Hand-written assembly
 

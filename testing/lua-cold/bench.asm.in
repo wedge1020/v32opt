@@ -1,0 +1,205 @@
+; ===================================================================
+; TEST: lua-cold -- a v32lua-shaped loop-and-table benchmark, written by hand
+;
+;   for j = 1, 50 do
+;     for i = 1, 200 do s = s + t[i] % 7 end
+;   end
+;
+; with v32lua's emitted shapes (see PROPOSAL-v32opt.md): the counted loop with hidden counter/limit/step
+; slots, the four table-index checks with a cold slow path, the arithmetic guards with a cold coerce
+; block, and PUSH/POP spills around the right operand. The table has 150 entries (the loop reads 200:
+; the last 50 take the slow path) and entry 51 is a boxed string (takes the coerce path), so the cold
+; blocks DO run and clobber registers: a promoted register that is not saved around them shows up as a
+; different checksum.
+;
+; @@COERCE_HINT@@ and @@GET_HINT@@ are filled in by run.sh (a runtime helper that really keeps
+; everything but R0, or one that trashes R1..R10 and says nothing).
+; ===================================================================
+%define NAN_VALUE      0x7F800000
+%define BOXED_DATA     0xFFFF0000
+%define BOXED_TABLE    0xFFF90000
+%define BOXED_STRING   0xFFFA0000
+%define BOXED_PAYLOAD  0x0000FFFF
+%define RESULT         0x2000
+%define TABLE          0x1000
+
+;@hints 1 abi=caller-save
+;@lang lua
+@@COERCE_HINT@@
+@@GET_HINT@@
+;@fn __function_sumt escapes=none lines=10..20
+
+    CALL __function_init
+    CALL __function_sumt
+    MOV [RESULT], R0
+    HLT
+
+; ---- runtime: table of 150 floats at TABLE (word 0 = capacity), entry 51 a boxed string ----
+__function_init:
+    MOV R1, 1
+    MOV R3, TABLE
+    MOV R2, 150
+    MOV [R3], R2
+__init_loop:
+    MOV R2, R1
+    CIF R2
+    FMUL R2, 1.5
+    MOV R3, TABLE
+    IADD R3, R1
+    MOV [R3], R2
+    IADD R1, 1
+    MOV R4, R1
+    ILE R4, 150
+    JT R4, __init_loop
+    MOV R2, 0xFFFA0001
+    MOV R3, TABLE
+    IADD R3, 51
+    MOV [R3], R2
+    RET
+
+; ---- runtime helpers ----
+__arith_coerce:
+    ;@@COERCE_BODY@@
+    MOV R0, 3.0
+    RET
+
+__builtin_table_get:
+    ;@@GET_BODY@@
+    MOV R0, 5.0
+    RET
+
+; ---- the Lua function ----
+__function_sumt:
+;@src bench.lua:10
+    PUSH BP
+    MOV BP, SP
+    ISUB SP, 14
+;@src bench.lua:11
+    MOV R0, TABLE
+    OR R0, BOXED_TABLE
+    MOV [BP-2], R0
+    MOV R0, 0.0
+    MOV [BP-3], R0
+;@src bench.lua:12
+    MOV R0, 1.0
+    MOV [BP-11], R0
+    MOV R0, 50.0
+    MOV [BP-12], R0
+    MOV R0, 1.0
+    MOV [BP-13], R0
+    ;@loop kind=for counter=-11 limit=-12 step=-13 stepval=1 from=1 to=50
+__sumt_for_start_1:
+    MOV R1, [BP-11]
+    MOV R3, R1
+    MOV R2, [BP-12]
+    FGT R1, R2
+    JT R1, __sumt_for_end_1
+    MOV [BP-14], R3
+;@src bench.lua:13
+    MOV R0, 1.0
+    MOV [BP-9], R0
+    MOV R0, 200.0
+    MOV [BP-7], R0
+    MOV R0, 1.0
+    MOV [BP-8], R0
+    ;@loop kind=for counter=-9 limit=-7 step=-8 stepval=1 from=1 to=200
+__sumt_for_start_2:
+    MOV R1, [BP-9]
+    MOV R3, R1
+    MOV R2, [BP-7]
+    FGT R1, R2
+    JT R1, __sumt_for_end_2
+    MOV [BP-10], R3
+;@src bench.lua:14
+    MOV R6, [BP-3]
+    PUSH R6
+    MOV R3, [BP-2]
+    MOV R4, [BP-10]
+    MOV R0, R3
+    AND R0, BOXED_DATA
+    IEQ R0, BOXED_TABLE
+    JF R0, __sumt_idx_slow_3
+    MOV R0, R4
+    AND R0, NAN_VALUE
+    IEQ R0, NAN_VALUE
+    JT R0, __sumt_idx_slow_3
+    MOV R5, R4
+    CFI R5
+    MOV R0, R5
+    CIF R0
+    IEQ R0, R4
+    JF R0, __sumt_idx_slow_3
+    MOV R0, R5
+    ILT R0, 1
+    JT R0, __sumt_idx_slow_3
+    MOV R0, R3
+    AND R0, BOXED_PAYLOAD
+    MOV R7, [R0]
+    ILT R7, R5
+    JT R7, __sumt_idx_slow_3
+    IADD R0, R5
+    MOV R2, [R0]
+    JMP __sumt_idx_done_3
+    ;@cold
+__sumt_idx_slow_3:
+    PUSH R3
+    PUSH R4
+    CALL __builtin_table_get
+    IADD SP, 2
+    MOV R2, R0
+__sumt_idx_done_3:
+    MOV R0, R2
+    AND R0, NAN_VALUE
+    IEQ R0, NAN_VALUE
+    JF R0, __sumt_num_4
+    ;@cold
+__sumt_co_4:
+    MOV R0, R2
+    CALL __arith_coerce
+    MOV R2, R0
+__sumt_num_4:
+    MOV R4, R2
+    FDIV R4, 7.0
+    FLR R4
+    FMUL R4, 7.0
+    FSUB R2, R4
+    POP R6
+    MOV R0, R6
+    AND R0, NAN_VALUE
+    IEQ R0, NAN_VALUE
+    JF R0, __sumt_num_5
+    ;@cold
+__sumt_co_5:
+    MOV R0, R6
+    CALL __arith_coerce
+    MOV R6, R0
+__sumt_num_5:
+    MOV R0, R2
+    AND R0, NAN_VALUE
+    IEQ R0, NAN_VALUE
+    JF R0, __sumt_num_6
+    ;@cold
+__sumt_co_6:
+    MOV R0, R2
+    CALL __arith_coerce
+    MOV R2, R0
+__sumt_num_6:
+    FADD R6, R2
+    MOV [BP-3], R6
+    MOV R1, [BP-9]
+    MOV R2, [BP-8]
+    FADD R1, R2
+    MOV [BP-9], R1
+    JMP __sumt_for_start_2
+__sumt_for_end_2:
+    MOV R1, [BP-11]
+    MOV R2, [BP-13]
+    FADD R1, R2
+    MOV [BP-11], R1
+    JMP __sumt_for_start_1
+__sumt_for_end_1:
+;@src bench.lua:20
+    MOV R0, [BP-3]
+    MOV SP, BP
+    POP BP
+    RET

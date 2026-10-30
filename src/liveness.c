@@ -66,18 +66,24 @@ static signed char (*g_callee)[11] = NULL; // per-label, per-reg cache (-1 = unk
 static int         g_steps       = 0;
 static unsigned short *g_extra   = NULL;   // per-label: registers (bit n = Rn) a direct caller reads after the call
 static signed char *g_is_fn      = NULL;   // per-label: target of a direct CALL
+static unsigned short *g_in      = NULL;   // per-label: registers (bit n = Rn) the function at that label may READ before writing
+                                           // (only valid where g_in_ok[label]; computed by compute_inputs, a fixed point
+                                           // that, unlike the depth-limited walk, copes with recursion)
+static signed char *g_in_ok      = NULL;
+static bool g_summary_mode       = false;  // flow() is computing g_in: a CALL asks g_in instead of walking the callee
 
 static int cmp_label(const void *a, const void *b) {
     return strcmp(((const LabelEntry *)a)->name, ((const LabelEntry *)b)->name);
 }
 
 void liveness_end(void) {
-    free(g_labels); free(g_stamp); free(g_callee); free(g_extra); free(g_is_fn);
-    g_labels = NULL; g_stamp = NULL; g_callee = NULL; g_extra = NULL; g_is_fn = NULL;
+    free(g_labels); free(g_stamp); free(g_callee); free(g_extra); free(g_is_fn); free(g_in); free(g_in_ok);
+    g_labels = NULL; g_stamp = NULL; g_callee = NULL; g_extra = NULL; g_is_fn = NULL; g_in = NULL; g_in_ok = NULL;
     g_label_count = 0;
 }
 
 static void compute_outputs(AsmNode *head);
+static void compute_inputs(void);
 
 void liveness_begin(AsmNode *head) {
     liveness_end();
@@ -108,6 +114,7 @@ void liveness_begin(AsmNode *head) {
     g_is_fn = calloc((size_t)g_label_count + 1, 1);
     if (!g_extra || !g_is_fn) { liveness_end(); return; }
     compute_outputs(head);
+    compute_inputs();
 }
 
 static int find_label(const char *name) {
@@ -148,10 +155,75 @@ static int callee_summary(int lbl, const char *reg, int ridx, int depth) {
     if (g_callee[lbl][ridx] >= 0) return g_callee[lbl][ridx];
     if (depth >= LV_MAX_DEPTH) return LV_LIVE;
     int r = flow(g_labels[lbl].node, reg, ridx, depth + 1, ++g_stamp_id);
+    // The walk gives up on recursion and deep call chains (answering LIVE); the fixed point does not. A register the
+    // function can never read before writing (calls included) is never read by it: it passes through or is replaced.
+    if ((r & LV_LIVE) && g_in_ok && g_in_ok[lbl] && !((g_in[lbl] >> ridx) & 1u))
+        r = (r & ~LV_LIVE) | LV_PASSTHRU;
     // Only cache a result that didn't hit the step budget (LIVE from an
     // exhausted budget is query-specific, not a property of the callee).
     if (g_steps < LV_MAX_STEPS) g_callee[lbl][ridx] = (signed char)r;
     return r;
+}
+
+// Is `push` (a PUSH of `reg`) the first half of a register SAVE: the stack stays balanced from here up to a
+// POP of the same register, which gives it back? Then a callee that starts with it neither reads the caller's value
+// nor loses it, and the register reaches the callee's RET as it came in. Only the straight-line text is followed
+// (the compiler's prologue / epilogue); any other use of SP, or a PUSH never popped back, is not a save.
+static bool is_register_save(const AsmNode *push, const char *reg) {
+    if (!push->has_dst || push->dst_op.mode != MODE_REG || !str_case_eq(push->dst_op.reg, reg)) return false;
+
+    // Where the pushed word sits, in words below BP: count back to the frame setup "MOV BP, SP" (the prologue's
+    // straight-line text). If it is not found, only the stack balance relative to this PUSH is followed.
+    bool have_bp = false;
+    long below = 0;                                      // words pushed between MOV BP, SP and this PUSH
+    {
+        int steps = 0;
+        for (const AsmNode *q = push->prev; q && steps < 64; q = q->prev, steps++) {
+            if (q->type == OP_OTHER) continue;
+            if (q->type == OP_LABEL || q->type == OP_JMP || q->type == OP_JT || q->type == OP_JF || q->type == OP_RET) break;
+            if (q->type == OP_MOV && q->has_dst && q->has_src && q->dst_op.mode == MODE_REG && q->src_op.mode == MODE_REG &&
+                str_case_eq(q->dst_op.reg, "BP") && str_case_eq(q->src_op.reg, "SP")) { have_bp = true; break; }
+            if (q->type == OP_PUSH) { below++; continue; }
+            if (q->type == OP_POP) { below--; continue; }
+            if ((q->type == OP_IADD || q->type == OP_ISUB) && q->has_dst && q->dst_op.mode == MODE_REG &&
+                str_case_eq(q->dst_op.reg, "SP") && q->has_src && q->src_op.mode == MODE_IMMEDIATE && !q->src_op.is_float) {
+                below += (q->type == OP_ISUB ? 1 : -1) * q->src_op.immediate;
+                continue;
+            }
+            if ((q->has_dst && q->dst_op.mode == MODE_REG && str_case_eq(q->dst_op.reg, "SP")) ||
+                (q->has_src && (q->src_op.mode == MODE_REG || q->src_op.mode == MODE_INDIRECT) && str_case_eq(q->src_op.reg, "SP"))) break;
+        }
+    }
+    long mine = have_bp ? below + 1 : 1;                 // depth (below BP, or below this PUSH) right after it
+    long depth = mine;
+    int steps = 0;
+    for (const AsmNode *q = push->next; q && steps < 600; q = q->next, steps++) {
+        if (q->type == OP_OTHER || q->type == OP_LABEL) continue;
+        if (q->type == OP_PUSH) { depth++; continue; }
+        if (q->type == OP_POP) {
+            if (depth == mine) return q->has_dst && q->dst_op.mode == MODE_REG && str_case_eq(q->dst_op.reg, reg);
+            depth--;
+            if (depth < mine) return false;
+            continue;
+        }
+        bool sp_dst = q->has_dst && q->dst_op.mode == MODE_REG && str_case_eq(q->dst_op.reg, "SP");
+        bool sp_src = q->has_src && ((q->src_op.mode == MODE_REG || q->src_op.mode == MODE_INDIRECT) &&
+                                     str_case_eq(q->src_op.reg, "SP"));
+        if (sp_dst) {
+            if ((q->type == OP_IADD || q->type == OP_ISUB) && q->has_src && q->src_op.mode == MODE_IMMEDIATE &&
+                !q->src_op.is_float) {
+                depth += (q->type == OP_ISUB ? 1 : -1) * q->src_op.immediate;
+                if (depth < mine) return false;
+                continue;
+            }
+            if (have_bp && q->type == OP_MOV && q->has_src && q->src_op.mode == MODE_REG &&
+                str_case_eq(q->src_op.reg, "BP")) { depth = 0; continue; }      // MOV SP, BP: nothing above BP
+            return false;
+        }
+        if (sp_src) return false;
+        if (q->type == OP_RET) return false;
+    }
+    return false;
 }
 
 static int flow(AsmNode *node, const char *reg, int ridx, int depth, int stamp) {
@@ -184,11 +256,18 @@ static int flow(AsmNode *node, const char *reg, int ridx, int depth, int stamp) 
             const char *t = branch_target(n);
             int li = (t && !is_register_operand(t)) ? find_label(t) : -1;
             if (li < 0) return result | LV_LIVE;
+            if (g_summary_mode) {                        // g_in so far: a bit once set stays set
+                if (g_in && ((g_in[li] >> ridx) & 1u)) return result | LV_LIVE;
+                continue;
+            }
             int cs = callee_summary(li, reg, ridx, depth);
             if (cs & LV_LIVE) return result | LV_LIVE;
             if (!(cs & LV_PASSTHRU)) return result;      // overwritten on every path
             continue;                                    // may survive the call
         }
+
+        // inside a callee: "PUSH Rn ... POP Rn" saves and restores the caller's register
+        if (depth > 0 && n->type == OP_PUSH && is_register_save(n, reg)) return result | LV_PASSTHRU;
 
         // POP Rd / IN Rd, port overwrite Rd without reading it.
         // (is_register_read() conservatively reports any non-MOV register
@@ -243,6 +322,46 @@ bool reg_dead_at_label(const char *label, const char *reg) {
     int li = find_label(label);
     if (li < 0) return false;
     return reg_dead_from(g_labels[li].node, reg);
+}
+
+
+// Fixed point of g_in over the functions (call targets and compiler "__function_" entries): a register is in g_in[f] when
+// some path from f's entry may read it before writing it. A call reads what its callee reads (nothing is assumed killed).
+// A register save (PUSH Rn ... POP Rn) is not a read (see is_register_save).
+static void compute_inputs(void) {
+    int nl = g_label_count;
+    g_in    = calloc((size_t)nl + 1, sizeof(unsigned short));
+    g_in_ok = calloc((size_t)nl + 1, 1);
+    if (!g_in || !g_in_ok) { free(g_in); free(g_in_ok); g_in = NULL; g_in_ok = NULL; return; }
+    bool *is_entry = calloc((size_t)nl + 1, 1);
+    if (!is_entry) { free(g_in); free(g_in_ok); g_in = NULL; g_in_ok = NULL; return; }
+    for (int i = 0; i < nl; i++) {
+        if (!g_labels[i].node) continue;
+        size_t ln = strlen(g_labels[i].name);
+        bool fn = g_is_fn[i] || (strncmp(g_labels[i].name, "__function_", 11) == 0 &&
+                                 !(ln > 7 && strcmp(g_labels[i].name + ln - 7, "_return") == 0));
+        is_entry[i] = fn;
+        g_in_ok[i] = fn;
+    }
+    g_summary_mode = true;
+    for (int iter = 0; iter < 30; iter++) {
+        bool changed = false;
+        for (int i = 0; i < nl; i++) {
+            if (!is_entry[i]) continue;
+            for (int r = 0; r <= 10; r++) {
+                if ((g_in[i] >> r) & 1u) continue;
+                char nm[8];
+                snprintf(nm, sizeof(nm), "R%d", r);
+                g_steps = 0;
+                int res = flow(g_labels[i].node, nm, r, 1, ++g_stamp_id);   // depth 1: a RET is a pass-through
+                if (res & LV_LIVE) { g_in[i] |= (unsigned short)(1u << r); changed = true; }
+            }
+        }
+        if (!changed) break;
+        if (iter == 29) for (int i = 0; i < nl; i++) g_in_ok[i] = 0;        // did not settle: trust nothing
+    }
+    g_summary_mode = false;
+    free(is_entry);
 }
 
 // ===================================================================

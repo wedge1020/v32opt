@@ -91,6 +91,12 @@
 #define LOOP_WEIGHT       8
 #define MAX_LOOP_DEPTH    3
 
+// A call whose callee is known (';@fn F clobbers=...') to leave R1..R10 alone needs no save around it.
+static bool cold_call_may_clobber(const AsmNode *call) {
+    const FnHints *h = hints_fn_of_call(call);
+    return !(h && h->clobbers_known && (h->clobbers & 0x7FEu) == 0);
+}
+
 // -------------------------------------------------------------------
 // Helper: Rewrite an operand to a general-purpose register
 // -------------------------------------------------------------------
@@ -395,7 +401,20 @@ typedef struct {
     bool reg_used[16];
     int  refs[SLOT_COUNT];       // weighted reference count
     bool written[SLOT_COUNT];    // appears as a destination at least once
+    int  cold_calls;             // ';@cold' CALLs in the region
+    int  cold_cost;              // sum of the loop-nesting weights of those that can clobber a promoted register (each costs a store and a reload per register)
 } RegionInfo;
+
+// A cold block runs about one time in COLD_DIV of the pass through the code around it. Saving a register
+// around a cold CALL costs 2 instructions there; that is charged against what the promotion saves.
+#define COLD_DIV 16
+
+// References of a slot net of what saving its register around the region's cold CALLs would cost.
+static int eff_refs(const RegionInfo *ri, int idx) {
+    int r = ri->refs[idx];
+    if (r < 0 || ri->cold_calls == 0) return r;          // (negative: a volatile slot)
+    return r - (2 * ri->cold_cost) / COLD_DIV;
+}
 
 // Only locals ([BP-N]). Parameters ([BP+N], N >= 2) are deliberately left
 // alone: promoting one costs a load and, with the cleanup passes there are
@@ -403,6 +422,23 @@ typedef struct {
 // executes). [BP+0] / [BP+1] are the saved BP and the return address.
 static bool slot_promotable(int off) {
     return off <= -1 && off >= -SLOT_MAX_ABS && !hints_fn_slot_escapes(g_fh, off);
+}
+
+// The slots worth promoting in a region, in the order to try them. Without cold CALLs that is the old order
+// (by offset); with them registers are scarcer than they were (a cold CALL no longer ends the stretch) and the
+// heaviest slot goes first.
+static int order_candidates(const RegionInfo *ri, int min_refs, int *out) {
+    int n = 0;
+    for (int idx = 0; idx < SLOT_COUNT; idx++)
+        if (slot_promotable(idx - SLOT_BIAS) && eff_refs(ri, idx) >= min_refs) out[n++] = idx;
+    if (ri->cold_calls > 0) {
+        for (int i = 1; i < n; i++) {                                  // insertion sort, stable
+            int v = out[i], j = i - 1;
+            while (j >= 0 && eff_refs(ri, out[j]) < eff_refs(ri, v)) { out[j + 1] = out[j]; j--; }
+            out[j + 1] = v;
+        }
+    }
+    return n;
 }
 
 static void note_reg(RegionInfo *ri, const Operand *op) {
@@ -418,6 +454,11 @@ static void scan_region(AsmNode *from, AsmNode *to, const int *weights, RegionIn
     int i = 0;
     for (AsmNode *n = from; n && n != to; n = n->next, i++) {
         int w = weights ? weights[i] : 1;
+        if (n->type == OP_CALL && node_in_cold_block(n)) {
+            ri->cold_calls++;
+            if (cold_call_may_clobber(n)) ri->cold_cost += w;
+        }
+        if (node_in_cold_block(n)) w = 1;      // a rarely taken block does not run as often as its loop
         // (a PUSH/POP of a register is bookkeeping -- the prologue and
         // epilogue of a callee-save function, or a spill: liveness decides
         // whether the register is free, so they don't count as "used")
@@ -778,6 +819,64 @@ static void slot_text(int off, char *buf, size_t sz) {
     snprintf(buf, sz, "[BP%+d]", off);
 }
 
+// -------------------------------------------------------------------
+// Cold CALLs (';@cold' blocks, hints.h). A loop or segment whose only CALLs lie in
+// blocks the compiler marked as rarely taken is promoted anyway: every promoted
+// register is stored to its home slot right before such a CALL and reloaded right
+// after it, so the cost lands on the cold path only. This needs no help from the
+// hint to be CORRECT -- the register holds the slot's value again as soon as the
+// reload has run, whatever the callee did (callee-save or caller-save) -- the hint
+// only says that it is worth it. What keeps it sound:
+//   - the callee cannot reach the slot: the escape checks made for the whole
+//     function already ruled out a pointer into the frame;
+//   - the callee may leave anything in the promoted register (it was chosen to be
+//     dead from the region's start on, which includes the callee's own reads and
+//     writes, see pick_register) so the reload cannot destroy a returned value;
+//   - the store before and the reload after the CALL are adjacent to it, so no
+//     path can see the register without the slot or the other way round.
+// A callee with `;@fn F clobbers=...` that does not list the register needs neither.
+// -------------------------------------------------------------------
+static bool is_cold_call(const AsmNode *n) {
+    return n && n->type == OP_CALL && node_in_cold_block(n);
+}
+
+static bool callee_keeps_reg(const AsmNode *call, int reg) {
+    const FnHints *h = hints_fn_of_call(call);
+    return h && h->clobbers_known && !((h->clobbers >> reg) & 1u);
+}
+
+// Is `n` a CALL that ends a CALL-free stretch? (A cold one does not.)
+static bool is_barrier_call(const AsmNode *n) {
+    return n && str_case_eq(n->mnemonic, "CALL") && !is_cold_call(n);
+}
+
+// Around every cold CALL in [from, to): store `reg` to `slot` before it, reload after it.
+// Run AFTER rewrite_slot (which must not see these two). Returns the number of nodes added.
+static int wrap_cold_calls(AsmNode *from, AsmNode *to, const char *slot, const char *reg_name, int reg, OptType t) {
+    int added = 0;
+    AsmNode *next;
+    for (AsmNode *n = from; n && n != to; n = next) {
+        next = n->next;
+        if (!is_cold_call(n) || callee_keeps_reg(n, reg)) continue;
+        // a register nobody reads after the call (it is rewritten first, on every path) needs no saving
+        if (n->next && reg_dead_from(n->next, reg_name)) continue;
+        AsmNode *store = make_mov(slot, reg_name);
+        link_before(n, store);
+        AsmNode *load = make_mov(reg_name, slot);
+        link_after(n, load);
+        srcmarks_inherit(store, n);
+        srcmarks_inherit(load, n);
+        store->hints |= NH_COLD_BLK;
+        load->hints  |= NH_COLD_BLK;
+        added += 2;
+        char dbg[160];
+        snprintf(dbg, sizeof(dbg), "PROMOTE: %s is saved to %s around this cold CALL (only the slow path pays)", reg_name, slot);
+        insert_debug_comment(store, t, dbg);
+    }
+    return added;
+}
+
+
 // ===================================================================
 // Pass: Stack Slot to Register Promotion (Scalar Replacement)
 // ===================================================================
@@ -797,7 +896,7 @@ int pass_promote_stack_slots(AsmNode *head) {
         // Phase A: Analyze Function Safety & Register Liveness
         bool is_leaf = true;
         for (AsmNode *n = first; n && n != limit; n = n->next) {
-            if (str_case_eq(n->mnemonic, "CALL")) { is_leaf = false; break; }
+            if (is_barrier_call(n)) { is_leaf = false; break; }
         }
         AsmNode *anchor = NULL;
         if (is_leaf && !function_frame_blocks_promotion(first, end_of_func)) {
@@ -814,9 +913,11 @@ int pass_promote_stack_slots(AsmNode *head) {
             scan_region(first, limit, w, &ri);
             free(w);
 
-            for (int idx = 0; idx < SLOT_COUNT; idx++) {
+            int order[SLOT_COUNT];
+            int norder = order_candidates(&ri, MIN_REFS_FUNC, order);
+            for (int oi = 0; oi < norder; oi++) {
+                int idx = order[oi];
                 int off = idx - SLOT_BIAS;
-                if (!slot_promotable(off) || ri.refs[idx] < MIN_REFS_FUNC) continue;
 
                 // TRIGGER CAP: gate this offset's whole promotion (every
                 // rewritten reference plus its load) as one atomic unit.
@@ -824,7 +925,7 @@ int pass_promote_stack_slots(AsmNode *head) {
 
                 bool fresh;
                 int r = pick_register(fi.entry_end->next, &ri, &fi,
-                                      ri.refs[idx] >= MIN_REFS_FUNC + FRESH_SAVE_EXTRA, &fresh);
+                                      eff_refs(&ri, idx) >= MIN_REFS_FUNC + FRESH_SAVE_EXTRA, &fresh);
                 if (r < 0) continue;
                 char reg_name[16], slot[24];
                 snprintf(reg_name, sizeof(reg_name), "R%d", r);
@@ -832,6 +933,7 @@ int pass_promote_stack_slots(AsmNode *head) {
                 if (fresh) frame_save_reg(&fi, r, OPT_PROMOTE_LEAF);
 
                 optimizations += rewrite_slot(first, limit, off, reg_name, OPT_PROMOTE_LEAF);
+                optimizations += wrap_cold_calls(first, limit, slot, reg_name, r, OPT_PROMOTE_LEAF);
 
                 char dbg[128];
                 if (reg_dead_from(fi.entry_end->next, reg_name)) {
@@ -929,7 +1031,7 @@ int pass_promote_regs(AsmNode *head) {
 
             AsmNode *seg_limit = seg_start;
             while (seg_limit && seg_limit != func_limit &&
-                   !str_case_eq(seg_limit->mnemonic, "CALL")) {
+                   !is_barrier_call(seg_limit)) {
                 seg_limit = seg_limit->next;
             }
             AsmNode *next_seg_start = (seg_limit == func_limit) ? func_limit
@@ -991,9 +1093,11 @@ int pass_promote_regs(AsmNode *head) {
             scan_region(seg_start, seg_limit, w, &ri);
             free(w);
 
-            for (int idx = 0; idx < SLOT_COUNT; idx++) {
+            int order[SLOT_COUNT];
+            int norder = order_candidates(&ri, MIN_REFS_FUNC, order);
+            for (int oi = 0; oi < norder; oi++) {
+                int idx = order[oi];
                 int off = idx - SLOT_BIAS;
-                if (!slot_promotable(off) || ri.refs[idx] < MIN_REFS_FUNC) continue;
 
                 // The load goes right after the prologue in the first
                 // segment, right before seg_start in a later one (after the
@@ -1009,7 +1113,7 @@ int pass_promote_regs(AsmNode *head) {
 
                 bool fresh;
                 int r = pick_register(load_at, &ri, &fi,
-                                      ri.refs[idx] >= MIN_REFS_FUNC + FRESH_SAVE_EXTRA, &fresh);
+                                      eff_refs(&ri, idx) >= MIN_REFS_FUNC + FRESH_SAVE_EXTRA, &fresh);
                 if (r < 0) continue;
                 char reg_name[16], slot[24];
                 snprintf(reg_name, sizeof(reg_name), "R%d", r);
@@ -1036,6 +1140,9 @@ int pass_promote_regs(AsmNode *head) {
                              reg_name, slot);
                     insert_debug_comment(store, OPT_PROMOTE_REGS, dbg);
                 }
+
+                // cold CALLs inside the segment (after the flush above, which keeps the register live)
+                optimizations += wrap_cold_calls(seg_start, seg_limit, slot, reg_name, r, OPT_PROMOTE_REGS);
 
                 // The load is needed only if some path reads the register
                 // before writing it (asked AFTER the flush above, which is a
@@ -1247,8 +1354,9 @@ int pass_promote_loop_registers(AsmNode *head) {
         // Phase A: Safety Scan across the Loop Body
         bool loop_safe = true;
         for (AsmNode *n = curr->next; n && n != end_jmp; n = n->next) {
-            // Rule 1: No CALLs, RETs, or HLTs inside the loop
-            if (str_case_eq(n->mnemonic, "CALL") || str_case_eq(n->mnemonic, "RET") ||
+            // Rule 1: No CALLs, RETs, or HLTs inside the loop -- except CALLs that lie in a
+            // ';@cold' block: those are wrapped in a store/reload of each promoted register
+            if (is_barrier_call(n) || str_case_eq(n->mnemonic, "RET") ||
                 str_case_eq(n->mnemonic, "HLT")) { loop_safe = false; break; }
             // Rule 2 (the whole function was checked above): no frame writes
             // by name either
@@ -1273,9 +1381,9 @@ int pass_promote_loop_registers(AsmNode *head) {
         int ncand = 0;
         for (int idx = 0; idx < SLOT_COUNT; idx++) {
             int off = idx - SLOT_BIAS;
-            if (!slot_promotable(off) || ri.refs[idx] < MIN_REFS_LOOP) continue;
+            if (!slot_promotable(off) || eff_refs(&ri, idx) < MIN_REFS_LOOP) continue;
             cand[ncand].idx = idx;
-            cand[ncand].weight = ri.refs[idx];
+            cand[ncand].weight = eff_refs(&ri, idx);
             ncand++;
         }
         qsort(cand, (size_t)ncand, sizeof(SlotCand), cmp_cand);
@@ -1291,7 +1399,7 @@ int pass_promote_loop_registers(AsmNode *head) {
             if (!trigger_allowed()) continue;
 
             bool fresh;
-            int r = pick_register(curr, &ri, &fi, ri.refs[idx] >= MIN_REFS_LOOP + FRESH_SAVE_EXTRA_LOOP, &fresh);
+            int r = pick_register(curr, &ri, &fi, eff_refs(&ri, idx) >= MIN_REFS_LOOP + FRESH_SAVE_EXTRA_LOOP, &fresh);
             if (r < 0) continue;
             char reg_name[16], slot[24];
             snprintf(reg_name, sizeof(reg_name), "R%d", r);
@@ -1311,6 +1419,10 @@ int pass_promote_loop_registers(AsmNode *head) {
                 store = make_mov(slot, reg_name);
                 link_after(exit_label_node, store);
             }
+
+            // Cold CALLs in the loop: save the register around them (after the exit store above
+            // exists: it is a read of the register that keeps it live out of the loop)
+            optimizations += wrap_cold_calls(curr->next, body_end, slot, reg_name, r, OPT_PROMOTE_LOOPS);
 
             // The preheader load goes BEFORE the loop label -- unless every
             // path through the loop writes the register before reading it.
@@ -1376,3 +1488,9 @@ bool promote_frame_unaliased(AsmNode *n) {
     return !function_frame_escapes(entry->next, last) &&
            prologue_anchor(entry->next, last->next) != NULL;
 }
+
+// -------------------------------------------------------------------
+// For other passes (peephole-lua-checks): the function a node belongs to.
+// -------------------------------------------------------------------
+bool promote_function_entry(const AsmNode *n) { return is_function_entry(n); }
+AsmNode *promote_function_last(AsmNode *entry) { return function_last(entry); }

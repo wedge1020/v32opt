@@ -206,7 +206,8 @@ set(V32OPT_CORE_SRC
     src/liveness.c
     src/loops.c
     src/profile.c
-    src/hints.c)
+    src/hints.c
+    src/srcmarks.c)
 
 file(GLOB V32OPT_PEEPHOLE_SRC CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/peephole/*.c")

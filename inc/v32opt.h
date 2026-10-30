@@ -70,7 +70,8 @@ typedef enum
     OPT_LOOP_INVERT,
     OPT_LOOP_UNROLL,
     OPT_LOOP_INDEX,
-    OPT_LOOP_UNROLL_PARTIAL
+    OPT_LOOP_UNROLL_PARTIAL,
+    OPT_PEEPHOLE_LUA_CHECKS
 } OptType;
 
 // ---------------------------------------------------------------------------
@@ -78,6 +79,7 @@ typedef enum
 // ---------------------------------------------------------------------------
 #include "asm.h"        // instruction/operand model, parser & writer
 #include "hints.h"      // compiler hints (';@' comments)
+#include "srcmarks.h"   // source locations (';@src' comments, see doc/srcmarks.md)
 #include "peephole.h"   // local window passes (src/peephole/)
 #include "dataflow.h"   // CFG, constant folding, CSE, DCE
 #include "inline.h"     // trivial leaf-function inlining
@@ -138,9 +140,12 @@ typedef struct {
     bool     opt_loop_unroll;
     bool     opt_loop_index;
     bool     opt_loop_unroll_partial;
+    bool     opt_peephole_lua_checks;   // -L lua: drop type checks the code proves (lua_checks.c)
     bool     opt_resolve_defines;   // let passes see numeric %define values
     LangMode lang_mode;
     AbiMode  abi;           // calling convention: auto (from hints), stock callee-save, caller-save
+    bool     strip_src;     // --strip-src / -g0: drop the ';@src' source markers from the output
+    bool     check_src;     // --check-src: verify the markers after optimization (srcmarks.c)
 } OptConfig;
 
 extern OptConfig  config;

@@ -13,6 +13,7 @@
 #define  PEEPHOLE_MAX_SCAN_DISTANCE   256
 
 int  peephole_pairs           (AsmNode *);
+int  peephole_lua_checks      (AsmNode *);   // -fpeephole-lua-checks (-O1, -L lua only), lua_checks.c
 int  peephole_algebra         (AsmNode *);
 int  peephole_compiler_myopia (AsmNode *);
 int  peephole_forwarding      (AsmNode *);

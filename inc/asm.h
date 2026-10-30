@@ -124,6 +124,9 @@ typedef struct AsmNode {
     bool debug_note;             // a "; [DEBUG <pass>] ..." comment that -d
                                  // inserted (not part of the input program)
     unsigned hints;              // NH_* flags from the compiler's ';@' hints (hints.h); copied by clone_node
+    int  loc_file;               // source location from the ';@src' markers (srcmarks.h); copied by clone_node.
+    int  loc_line;               //   loc_file: 0 = no marker yet, -1 = ';@src -' (no source), n > 0 = file number n
+    int  loc_col;                //   (1-based index into the file-name table); loc_col 0 = no column
 
     struct AsmNode *prev;
     struct AsmNode *next;

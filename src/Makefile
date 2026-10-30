@@ -25,7 +25,7 @@ TARGET = ../bin/v32opt$(EXE)
 # --- Object Files ---
 
 # Core sources
-CORE_SRCS = main.c args.c tools.c cfg.c stack.c dce.c cse.c inline.c promote.c helpers.c defines.c liveness.c loops.c profile.c hints.c
+CORE_SRCS = main.c args.c tools.c cfg.c stack.c dce.c cse.c inline.c promote.c helpers.c defines.c liveness.c loops.c profile.c hints.c srcmarks.c
 
 # Peephole modules - automatically include all .c files in peephole/
 PEEPHOLE_DIR = peephole

@@ -84,7 +84,8 @@ OptConfig config = {
     .opt_loop_invert              = false,
     .opt_loop_unroll              = false,
     .opt_loop_index               = false,
-    .opt_loop_unroll_partial      = false
+    .opt_loop_unroll_partial      = false,
+    .opt_peephole_lua_checks      = false
 };
 
 // Helper macro for aligned optimization output
@@ -129,6 +130,7 @@ int main(int argc, char **argv) {
         // Map OptType -> config field for this loop
         bool opt_states[MAX_OPTIMIZATION_ALGORITHMS] = {
             [OPT_PEEPHOLE_PAIRS]           = config.opt_peephole_pairs,
+            [OPT_PEEPHOLE_LUA_CHECKS]      = config.opt_peephole_lua_checks,
             [OPT_PEEPHOLE_ALGEBRA]         = config.opt_peephole_algebra,
             [OPT_PEEPHOLE_COMPILER_MYOPIA] = config.opt_peephole_compiler_myopia,
             [OPT_PEEPHOLE_FORWARDING]      = config.opt_peephole_forwarding,
@@ -192,6 +194,10 @@ int main(int argc, char **argv) {
             printf("Profile: %lld instructions executed (hot >= %.2f%%, cold < %.2f%% of them).\n",
                    g_profile_total, g_profile_hot_pct, g_profile_cold_pct);
     }
+    // Source markers (';@src'): taken out of the list, carried on the instructions
+    bool have_src = srcmarks_attach(program_ast);
+    if (config.verbose && have_src)
+        printf("Source markers found%s.\n", config.strip_src ? " (will be removed: --strip-src)" : "");
     // %define table. Directive nodes are never deleted (remove_node()
     // refuses), so one build stays valid for the whole run.
     defines_build(program_ast);
@@ -224,6 +230,12 @@ int main(int argc, char **argv) {
         // 1. Interprocedural & Structural
         if (config.opt_inline) {
             opts[OPT_INLINE] = inline_trivial_functions(program_ast);
+        }
+
+        // 1b. Lua type checks the code proves (and ;@loop kind=for facts). Before promotion: the facts name frame
+        //     slots, which promotion turns into registers.
+        if (config.opt_peephole_lua_checks) {
+            opts[OPT_PEEPHOLE_LUA_CHECKS] = peephole_lua_checks(program_ast);
         }
 
         // 2. Memory-to-Register Promotion
@@ -512,10 +524,13 @@ int main(int argc, char **argv) {
 
     // --- Write Output File ---
     hints_verify(program_ast);
+    int src_problems = config.check_src ? srcmarks_check(program_ast) : 0;
+    srcmarks_emit(program_ast);
     write_vircon32_asm(outFile, program_ast);
 
     // --- Cleanup ---
     if (cfg) free_cfg(cfg);
+    srcmarks_free();
     defines_free();
     // Free the ENTIRE instruction list, not just the dummy head (the old
     // "free(program_ast)" leaked every parsed node; harmless for output
@@ -524,6 +539,10 @@ int main(int argc, char **argv) {
         AsmNode *next = program_ast->next;
         free(program_ast);
         program_ast = next;
+    }
+    if (src_problems) {
+        fprintf(stderr, "v32opt: --check-src: %d problem(s) with the source markers\n", src_problems);
+        return 3;
     }
     return 0;
 }

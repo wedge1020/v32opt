@@ -20,7 +20,7 @@ Design rules:
 * **Cheap to produce.** One header line, one line per function, and a suffix
   on the few instructions that need one.
 
-## The four forms
+## The forms
 
 ```
 ;@hints 1 abi=caller-save                  once, anywhere (the top by convention)
@@ -111,12 +111,64 @@ says what the programmer wants done with the one that has it.
 | `unroll=full` | complete unrolling up to 256 iterations (1024 instructions); a loop whose count is not constant gets 8 copies |
 | `nounroll` | neither pass touches the loop (`unroll=1` means the same) |
 
+Facts (v32lua's numeric `for`; all optional, all promises of the compiler):
+
+```
+;@loop kind=for counter=-9 limit=-7 step=-8 stepval=1 from=1 to=200
+```
+
+| Attribute | Meaning |
+|---|---|
+| `kind=for` | a counted loop made by the compiler's numeric `for` |
+| `counter=N` `limit=N` `step=N` | BP-relative frame words (`-9` is `[BP-9]`): the counter is written only by the loop's increment; limit and step only before the loop; none has its address taken |
+| `stepval=K` | the step is the integer constant K |
+| `from=A` `to=B` | the start and the limit are the integer constants A and B |
+
+`v32opt` still checks what it cheaply can before it believes them (the counter written once between the
+start label and the back edge, limit and step never, no jump into the body from outside, no escaping frame
+address in the function); a loop that visibly breaks them is treated as if it had no facts. With `-L lua`
+(`peephole-lua-checks`, `-O1`): loads of `limit` / `step` become immediates when `to=` / `stepval=` are given
+(and their initializing stores go when nothing else reads them), and the counter is known to be a number
+(and, with `from>=1`, `stepval>=1`, a whole number >= 1 for the table-index checks).
+
 A measured profile (`--profile`) that covers the loop outranks `hot` and `cold` on the
 loop and on its function; where the profile has nothing to say, the hints decide. An
 explicit `unroll` beats `cold` (of the loop or of the function). The soundness
 conditions of the passes (no call in the body, the counter written only by the step,
 labels used only inside, ...) are still checked: a loop that cannot be unrolled stays as
 it is.
+
+### `;@cold` before a label
+
+```
+    ;@cold
+  __main_idx_slow_3:
+    PUSH R3 ...   CALL __builtin_table_get ...   JMP __main_idx_done_3
+```
+
+The block that starts at the next label and runs to its first `JMP` / `RET` / `HLT` is rarely executed. It
+is a frequency hint and may be wrong. The effect: `promote-regs`, `promote-leaf` and `promote-loops` no
+longer treat a `CALL` inside such a block as a barrier. A promoted register that the callee could change
+is **stored to its home slot before the call and reloaded after it** (only on the cold path), unless
+liveness shows it dead after the call, or `;@fn F clobbers=` says the callee keeps it. A promotion is
+only chosen when its saved loads and stores outweigh that cost (cold calls count 1/16 as much as hot ones).
+Nothing here depends on the hint being right: the callee cannot reach the slot (the escape checks of the
+promote passes still apply), and the register is one liveness proves free over the region.
+
+The same hint also has a **region form** for code the hot path falls into and out of without a label:
+
+```
+    JF   R0, __main_num_4
+    ;@cold {
+    MOV  R0, R2
+    CALL __arith_coerce
+    MOV  R2, R0
+    ;@cold }
+__main_num_4:
+```
+
+The instructions between the two lines are cold. A label or a jump inside the region ends it (the hint is
+then ignored from there on).
 
 ### `;@v` on an instruction
 
@@ -136,6 +188,13 @@ A volatile access survives into the output carrying its `;@v` again, and
 before writing the output `v32opt` warns on stderr if a marked instruction
 stopped being a memory access (that would be a `v32opt` bug).
 
+### More attributes on `;@fn`
+
+| Attribute | Meaning |
+|---|---|
+| `clobbers=R0,R2-R4` (or `none`) | the registers a call to the function (and everything it calls) may write. The promote passes keep values in the other registers across the call, and the type-check dataflow of `-L lua` keeps what the call does not list. Spill removal around calls is not done: v32lua's `PUSH Rn ... CALL f ... POP Rn` is often an argument, not a spill. A wrong list is a compiler bug |
+| `lines=A..B` | the function's source range, informational (kept for debuggers; see `srcmarks.md`) |
+
 ## What `v32opt` does with them
 
 | Hint | Effect |
@@ -145,6 +204,9 @@ stopped being a memory access (that would be a `v32opt` bug).
 | `escapes=` | the promote passes work per slot instead of per function. |
 | `;@v` | see above. |
 | `inline`, `alwaysinline`, `hot`, `cold` on `;@fn` | the inliner's size limit for that function (`inline.c`); `hot` / `cold` also reach the function's loops through `loop_heat()` |
+| `;@cold` | the promote passes work across cold `CALL`s (see above) |
+| `;@loop kind=for ...` | `-L lua`: constant limit/step, and the number / whole / >= 1 facts that remove the index checks |
+| `clobbers=` | the promote passes and the `-L lua` check dataflow |
 | `;@loop` | `loop-unroll`, `loop-unroll-partial` (`unroll=`, `nounroll`, `hot`, `cold`), `loop-invert` (`cold`) |
 
 `-v` prints `Compiler hints found (calling convention: ...)` when a file has hints.
@@ -153,13 +215,7 @@ stopped being a memory access (that would be a `v32opt` bug).
 
 These are *not* read yet; compilers may write them and old `v32opt`s ignore them.
 
-* `clobbers=R0-R3` on `;@fn`: the registers the function (and everything it
-  calls) may write. It would let a caller keep values in the other registers
-  across the call, and let `v32opt` drop the register saves a caller emits around
-  calls.
-* More attributes on `;@loop` that are facts rather than requests: the counter slot, the
-  step, the bound or trip count, whether the body contains a call and how many exits it
-  has, so the loop passes need not rediscover them from the shape of the code.
+* `;@var NAME loc=...` / `;@scope` (debug information after promotion).
 * `noreturn` / `pure` to let calls to such functions be treated as barriers or
   as removable.
 
@@ -179,3 +235,15 @@ These are *not* read yet; compilers may write them and old `v32opt`s ignore them
   (the calling convention, and a conservative `escapes=` computed from the
   assembly), so the hint-driven passes are compared with the unoptimized program
   in the simulator.
+
+## Liveness and the runtime routines (`liveness.c`)
+
+The register-free proofs the promote passes need ("this register is never read again") look into the routines a
+`CALL` reaches. Two things make that work for v32lua's runtime, whose routines save registers with `PUSH`/`POP`
+and call each other recursively:
+
+* `PUSH Rn ... POP Rn` that gives the register back (the stack balanced, also across `MOV SP, BP` / `ISUB SP, k`
+  epilogues) is a **save**, not a read of the caller's value;
+* a fixed point over all routines computes which registers each may read before writing them, so recursion and deep
+  call chains no longer make every register look live. The walk of a callee still decides when it can; the fixed
+  point only turns an unprovable "live" into "passes through" when the routine can never read the register.
