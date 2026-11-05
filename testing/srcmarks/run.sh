@@ -10,7 +10,7 @@ OPT=${V32OPT:-../../bin/v32opt}
 cd "$(dirname "$0")" || exit 2
 T=${TMPDIR:-/tmp}/v32opt_src.$$; mkdir -p $T
 fail=0; n=0
-for f in $(find .. -name '*.asm' -not -path '../srcmarks/*' -not -name '*Opt.asm' | sort); do
+for f in $(find .. -name '*.asm' -not -path '../srcmarks/*' -not -path '../vars/*' -not -name '*Opt.asm' | sort); do
   b=$(echo $f | tr '/.' '__')
   python3 inject.py $f $T/$b.asm
   for M in c lua; do

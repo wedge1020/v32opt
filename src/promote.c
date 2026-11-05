@@ -820,6 +820,25 @@ static void slot_text(int off, char *buf, size_t sz) {
 }
 
 // -------------------------------------------------------------------
+// Debug records (SO-1, inc/srcmarks.h). A slot promoted to a register over [from, to): the ';@var' lines inside the region say
+// the register; a variable declared earlier is moved by a ';@home' where the register takes over (after the load) and one where
+// the slot is the truth again (after the flush; "optimized-out" when the region wrote it and nothing keeps it). All of them are
+// comment lines, written only when the input had ';@var' lines and the function has a variable in that slot.
+// -------------------------------------------------------------------
+static void home_inside(AsmNode *from, AsmNode *to, int off, const char *reg_name) {
+    varloc_rewrite(from, to, off, reg_name);
+}
+
+static bool home_wanted(AsmNode *func_first, AsmNode *func_limit, int off) {
+    return varloc_present() && varloc_has(func_first, func_limit, off);
+}
+
+// the node that ends a region's use of the register: back to the slot, or gone
+static AsmNode *home_leave(int off, const char *reg_name, bool slot_is_true) {
+    return slot_is_true ? varloc_home(off, reg_name, false) : varloc_gone(reg_name);
+}
+
+// -------------------------------------------------------------------
 // Cold CALLs (';@cold' blocks, hints.h). A loop or segment whose only CALLs lie in
 // blocks the compiler marked as rarely taken is promoted anyway: every promoted
 // register is stored to its home slot right before such a CALL and reloaded right
@@ -933,6 +952,7 @@ int pass_promote_stack_slots(AsmNode *head) {
                 if (fresh) frame_save_reg(&fi, r, OPT_PROMOTE_LEAF);
 
                 optimizations += rewrite_slot(first, limit, off, reg_name, OPT_PROMOTE_LEAF);
+                home_inside(first, limit, off, reg_name);        // the whole function: every record of the slot says the register
                 optimizations += wrap_cold_calls(first, limit, slot, reg_name, r, OPT_PROMOTE_LEAF);
 
                 char dbg[128];
@@ -1123,6 +1143,8 @@ int pass_promote_regs(AsmNode *head) {
                     if (is_first_segment) load_at = fi.entry_end->next;   // the push went in ahead of it
                 }
 
+                bool want_home = home_wanted(func_first, func_limit, off);
+                home_inside(seg_start, seg_limit, off, reg_name);
                 optimizations += rewrite_slot(seg_start, seg_limit, off, reg_name, OPT_PROMOTE_REGS);
 
                 // A write must reach the stack slot before the CALL that ends
@@ -1130,10 +1152,12 @@ int pass_promote_regs(AsmNode *head) {
                 // segment reloads it). The last segment ends in RET, where the
                 // frame dies: no flush. A slot nobody else reads needs none.
                 char dbg[160];
+                bool flushed = false;
                 if (ri.written[idx] && seg_limit && str_case_eq(seg_limit->mnemonic, "CALL") &&
                     slot_read_outside(func_first, end_of_func, seg_start, seg_limit, off)) {
                     AsmNode *store = make_mov(slot, reg_name);
                     link_before(seg_limit, store);
+                    flushed = true;
                     optimizations++;
                     snprintf(dbg, sizeof(dbg),
                              "PROMOTE-REGS: flush %s back to %s before the CALL that ends this segment (next segment reloads independently)",
@@ -1144,6 +1168,13 @@ int pass_promote_regs(AsmNode *head) {
                 // cold CALLs inside the segment (after the flush above, which keeps the register live)
                 optimizations += wrap_cold_calls(seg_start, seg_limit, slot, reg_name, r, OPT_PROMOTE_REGS);
 
+                // the slot is the truth again after the segment: a record for the CALL that ends it (written before the load's
+                // is placed: it goes right before the CALL, after the flush)
+                if (want_home && seg_limit && seg_limit != func_limit && str_case_eq(seg_limit->mnemonic, "CALL")) {
+                    AsmNode *leave = home_leave(off, reg_name, flushed || !ri.written[idx]);
+                    if (leave) link_before(seg_limit, leave);
+                }
+
                 // The load is needed only if some path reads the register
                 // before writing it (asked AFTER the flush above, which is a
                 // read of the register too).
@@ -1152,10 +1183,18 @@ int pass_promote_regs(AsmNode *head) {
                              "PROMOTE-REGS: %s lives in %s (always written before read: no load)",
                              slot, reg_name);
                     insert_debug_comment(load_at->prev, OPT_PROMOTE_REGS, dbg);
+                    if (want_home) {
+                        AsmNode *enter = varloc_home(off, reg_name, true);
+                        if (enter) { if (is_first_segment) link_after(fi.entry_end, enter); else link_before(seg_start, enter); }
+                    }
                 } else {
                     AsmNode *load = make_mov(reg_name, slot);
                     if (is_first_segment) link_after(fi.entry_end, load);
                     else                  link_before(seg_start, load);
+                    if (want_home) {
+                        AsmNode *enter = varloc_home(off, reg_name, true);
+                        if (enter) { if (is_first_segment) link_after(load, enter); else link_before(seg_start, enter); }
+                    }
                     snprintf(dbg, sizeof(dbg),
                              "PROMOTE-REGS: %s-segment load of %s into %s (CALL-free segment, independent of any other segment)",
                              is_first_segment ? "first" : "later", slot, reg_name);
@@ -1407,6 +1446,8 @@ int pass_promote_loop_registers(AsmNode *head) {
             if (fresh) frame_save_reg(&fi, r, OPT_PROMOTE_LOOPS);
 
             // Rewrite all references inside the loop body to the register
+            bool want_home = home_wanted(func_first, func_last->next, off);
+            home_inside(curr->next, body_end, off, reg_name);
             optimizations += rewrite_slot(curr->next, body_end, off, reg_name, OPT_PROMOTE_LOOPS);
 
             // Exit store right after the exit label, if the loop writes the
@@ -1437,6 +1478,11 @@ int pass_promote_loop_registers(AsmNode *head) {
                 store = NULL;
                 need_load = !reg_dead_from(curr, reg_name);
             }
+            if (want_home) {
+                // after the loop the slot is the truth again (the exit store), unless the loop wrote it and nothing keeps it
+                AsmNode *leave = home_leave(off, reg_name, store != NULL || !ri.written[idx]);
+                if (leave) link_after(store ? store : exit_label_node, leave);
+            }
             if (store) {
                 snprintf(dbg, sizeof(dbg),
                          "PROMOTE-LOOPS: flush %s back to %s at the loop exit (%s)",
@@ -1454,9 +1500,11 @@ int pass_promote_loop_registers(AsmNode *head) {
                          "PROMOTE-LOOPS: %s lives in %s inside %s (always written before read: no preheader load)",
                          slot, reg_name, start_lbl);
                 insert_debug_comment(curr->prev, OPT_PROMOTE_LOOPS, dbg);
+                if (want_home) { AsmNode *enter = varloc_home(off, reg_name, true); if (enter) link_before(curr, enter); }
             } else {
                 AsmNode *load = make_mov(reg_name, slot);
                 link_before(curr, load);
+                if (want_home) { AsmNode *enter = varloc_home(off, reg_name, true); if (enter) link_before(curr, enter); }
                 snprintf(dbg, sizeof(dbg),
                          "PROMOTE-LOOPS: preheader load of %s into %s (runs once, before %s)",
                          slot, reg_name, start_lbl);

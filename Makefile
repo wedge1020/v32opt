@@ -133,6 +133,8 @@ tests: bin/$(TARGET)
 	bash testing/lint/run.sh bin/$(TARGET)
 	V32OPT=$(CURDIR)/bin/$(TARGET) sh testing/case-sensitive/run.sh
 	V32OPT=$(CURDIR)/bin/$(TARGET) sh testing/return-label/run.sh
+	V32OPT=$(CURDIR)/bin/$(TARGET) sh testing/srcmarks/run.sh
+	V32OPT=$(CURDIR)/bin/$(TARGET) sh testing/vars/run.sh
 
 archive: clean
 	zip -r ../v32opt-project.zip .github *

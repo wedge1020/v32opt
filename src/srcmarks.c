@@ -21,6 +21,7 @@ static char **g_files    = NULL;       // interned file names; loc_file n refers
 static int    g_nfiles   = 0;
 static int    g_cap      = 0;
 static bool   g_present  = false;
+static bool   g_vars     = false;      // the input has ';@var' lines (varloc_*)
 
 bool srcmarks_present(void) { return g_present; }
 
@@ -28,11 +29,14 @@ const char *srcmarks_file(int f) {
     return (f >= 1 && f <= g_nfiles) ? g_files[f - 1] : NULL;
 }
 
+static void fnslots_free(void);
 void srcmarks_free(void) {
+    fnslots_free();
     for (int i = 0; i < g_nfiles; i++) free(g_files[i]);
     free(g_files);
     g_files = NULL; g_nfiles = g_cap = 0;
     g_present = false;
+    g_vars = false;
 }
 
 static int intern_file(const char *name, size_t len) {
@@ -123,6 +127,7 @@ bool srcmarks_attach(AsmNode *head) {
     while (n) {
         AsmNode *next = n->next;
         const char *txt;
+        if (n->type == OP_OTHER && !n->debug_note && strncmp(n->raw + strspn(n->raw, " \t"), ";@var", 5) == 0) g_vars = true;
         if (is_marker_line(n, &txt)) {
             Loc l;
             if (parse_loc(txt, &l)) {
@@ -250,5 +255,265 @@ int srcmarks_check(AsmNode *head) {
     }
     if (problems > shown)
         fprintf(stderr, "v32opt: --check-src: ... and %d more\n", problems - shown);
+    return problems;
+}
+
+// ============================================================================
+// Variable homes (SO-1) and --check-vars (SO-3)
+// ============================================================================
+bool varloc_present(void) { return g_vars; }
+
+bool varloc_is_record(const AsmNode *n) {
+    if (n->type != OP_OTHER || n->debug_note) return false;
+    const char *p = n->raw + strspn(n->raw, " \t");
+    if (strncmp(p, ";@", 2) != 0) return false;
+    p += 2;
+    return strncmp(p, "var", 3) == 0 || strncmp(p, "scope", 5) == 0 || strncmp(p, "home", 4) == 0;
+}
+
+static bool is_var_line(const AsmNode *n) {
+    if (n->type != OP_OTHER || n->debug_note) return false;
+    const char *p = n->raw + strspn(n->raw, " \t");
+    return strncmp(p, ";@var", 5) == 0 && (p[5] == ' ' || p[5] == '\t');
+}
+
+// Where the "loc=" word of a ;@var line is, and how long it is (0: none)
+static const char *var_loc_word(const char *raw, size_t *len) {
+    const char *p = raw;
+    while ((p = strstr(p, "loc=")) != NULL) {
+        if (p > raw && (p[-1] == ' ' || p[-1] == '\t')) {
+            const char *e = p + 4;
+            while (*e && *e != ' ' && *e != '\t' && *e != '\r') e++;
+            *len = (size_t)(e - (p + 4));
+            return p + 4;
+        }
+        p += 4;
+    }
+    *len = 0;
+    return NULL;
+}
+
+static void slot_name(int off, char *buf, size_t sz) { snprintf(buf, sz, "BP%+d", off); }
+
+int varloc_rewrite(AsmNode *from, AsmNode *to, int off, const char *reg) {
+    if (!g_vars) return 0;
+    char want[24];
+    slot_name(off, want, sizeof(want));
+    int count = 0;
+    for (AsmNode *n = from; n && n != to; n = n->next) {
+        if (!is_var_line(n)) continue;
+        size_t len;
+        const char *w = var_loc_word(n->raw, &len);
+        if (!w || len != strlen(want) || strncasecmp(w, want, len) != 0) continue;
+        size_t pre = (size_t)(w - n->raw);
+        char *nr = malloc(strlen(n->raw) + strlen(reg) + 1);
+        if (!nr) continue;
+        memcpy(nr, n->raw, pre);
+        strcpy(nr + pre, reg);
+        strcat(nr, w + len);
+        node_set_raw(n, nr);
+        free(nr);
+        count++;
+    }
+    return count;
+}
+
+bool varloc_has(AsmNode *from, AsmNode *to, int off) {
+    if (!g_vars) return false;
+    char want[24];
+    slot_name(off, want, sizeof(want));
+    for (AsmNode *n = from; n && n != to; n = n->next) {
+        if (!is_var_line(n)) continue;
+        size_t len;
+        const char *w = var_loc_word(n->raw, &len);
+        if (w && len == strlen(want) && strncasecmp(w, want, len) == 0) return true;
+    }
+    return false;
+}
+
+AsmNode *varloc_home(int off, const char *reg, bool to_reg) {
+    if (!g_vars) return NULL;
+    char slot[24], buf[96];
+    slot_name(off, slot, sizeof(slot));
+    snprintf(buf, sizeof(buf), ";@home %s %s", to_reg ? slot : reg, to_reg ? reg : slot);
+    return create_node(buf, OP_OTHER, NULL, NULL, NULL);
+}
+
+AsmNode *varloc_gone(const char *reg) {
+    if (!g_vars) return NULL;
+    char buf[64];
+    snprintf(buf, sizeof(buf), ";@home %s optimized-out", reg);
+    return create_node(buf, OP_OTHER, NULL, NULL, NULL);
+}
+
+// ---------------------------------------------------------------------------
+// --check-vars: are the ';@var' records still true?
+//   1. a variable at BP<n> whose slot [n, n+words) the INPUT referenced (an operand [BP+n]) but the output does not: the value
+//      moved or was removed and the record still points at the slot (what promoting a slot to a register did before it
+//      rewrote the records);
+//   2. ';@scope {' / '}' balanced in every function, ';@home' with two words.
+// A variable no instruction ever touched (an unused local) is not reported: its record is as true as it was.
+// Returns the number of problems; the first few are described on stderr.
+// ---------------------------------------------------------------------------
+#define SLOT_LO  (-512)
+#define SLOT_N   1024
+
+typedef struct { char *name; unsigned char *used; } FnSlots;
+static FnSlots *g_fs = NULL;
+static int      g_nfs = 0, g_capfs = 0;
+
+static void fnslots_free(void) {
+    for (int i = 0; i < g_nfs; i++) { free(g_fs[i].name); free(g_fs[i].used); }
+    free(g_fs);
+    g_fs = NULL; g_nfs = g_capfs = 0;
+}
+
+static void note_bp(unsigned char *used, const Operand *op) {
+    if (op->mode == MODE_INDIRECT && str_case_eq(op->reg, "BP") && op->offset >= SLOT_LO && op->offset < SLOT_LO + SLOT_N)
+        used[op->offset - SLOT_LO] = 1;
+}
+
+// the slots each function references, by function name
+static FnSlots *collect_slots(AsmNode *head, FnSlots **table, int *n, int *cap) {
+    FnSlots *cur = NULL;
+    for (AsmNode *p = head ? head->next : NULL; p; p = p->next) {
+        if (p->type == OP_LABEL) {
+            if (starts_function(p)) {
+                char nm[128];
+                get_label_name(p, nm, sizeof(nm));
+                if (*n == *cap) {
+                    int nc = *cap ? *cap * 2 : 64;
+                    FnSlots *t = realloc(*table, (size_t)nc * sizeof(FnSlots));
+                    if (!t) return NULL;
+                    *table = t; *cap = nc;
+                }
+                cur = &(*table)[(*n)++];
+                cur->name = strdup(nm);
+                cur->used = calloc(SLOT_N, 1);
+            }
+            continue;
+        }
+        if (!cur || !is_instruction(p)) continue;
+        if (p->has_dst) note_bp(cur->used, &p->dst_op);
+        if (p->has_src) note_bp(cur->used, &p->src_op);
+    }
+    return *table;
+}
+
+void varloc_snapshot(AsmNode *head) {
+    fnslots_free();
+    if (!g_vars) return;
+    collect_slots(head, &g_fs, &g_nfs, &g_capfs);
+}
+
+// words of a type= string: T, T[N], struct:TAG:W{...}, struct:TAG:W{...}[N], int[2][3]
+static int type_words(const char *t) {
+    if (!t || !*t) return 1;
+    long base = 1;
+    const char *p = t;
+    if (strncmp(p, "struct:", 7) == 0 || strncmp(p, "union:", 6) == 0) {
+        p = strchr(p, ':') + 1;                 // after the kind
+        p = strchr(p, ':');                     // after the tag
+        if (!p) return 1;
+        base = strtol(p + 1, (char **)&p, 10);
+        if (base < 1) base = 1;
+        if (*p == '{') {                        // the members: skip to the matching brace
+            int depth = 0;
+            for (; *p; p++) {
+                if (*p == '{') depth++;
+                else if (*p == '}' && --depth == 0) { p++; break; }
+            }
+        }
+    } else {
+        while (*p && *p != '[') p++;
+    }
+    while (*p == '[') {
+        long n = strtol(p + 1, (char **)&p, 10);
+        if (n > 0) base *= n;
+        while (*p && *p != ']') p++;
+        if (*p == ']') p++;
+    }
+    return base > SLOT_N ? SLOT_N : (int)base;
+}
+
+static bool slot_range_used(const unsigned char *used, int off, int words) {
+    for (int i = 0; i < words; i++) {
+        int o = off + i;
+        if (o >= SLOT_LO && o < SLOT_LO + SLOT_N && used[o - SLOT_LO]) return true;
+    }
+    return false;
+}
+
+int varloc_check(AsmNode *head) {
+    if (!head) return 0;
+    int problems = 0, shown = 0;
+    const int MAX_SHOWN = 20;
+    FnSlots out = {NULL, NULL};
+    FnSlots *in = NULL;
+    int depth = 0;
+    char fname[128] = "";
+    FnSlots *table = NULL; int nt = 0, ct = 0;
+    // the output's slots per function
+    collect_slots(head, &table, &nt, &ct);
+    int fi = -1;
+    unsigned char homed[SLOT_N];            // slots the current function says it moves (;@home BPn ...)
+    memset(homed, 0, sizeof homed);
+
+    #define REPORT(...) do { problems++; if (shown++ < MAX_SHOWN) fprintf(stderr, __VA_ARGS__); } while (0)
+    for (AsmNode *n = head->next; n; n = n->next) {
+        if (n->type == OP_LABEL) {
+            if (starts_function(n)) {
+                if (depth != 0) REPORT("v32opt: --check-vars: in %s a ';@scope {' is never closed\n", fname);
+                depth = 0;
+                get_label_name(n, fname, sizeof(fname));
+                fi++;
+                in = NULL;
+                for (int i = 0; i < g_nfs; i++) if (strcmp(g_fs[i].name, fname) == 0) { in = &g_fs[i]; break; }
+                memset(homed, 0, sizeof homed);
+                for (AsmNode *q = n->next; q && !(q->type == OP_LABEL && starts_function(q)); q = q->next) {
+                    if (q->type != OP_OTHER || q->debug_note) continue;
+                    const char *h = q->raw + strspn(q->raw, " \t");
+                    if (strncmp(h, ";@home", 6) != 0 || (h[6] != ' ' && h[6] != '\t')) continue;
+                    h += 6 + strspn(h + 6, " \t");
+                    if (strncasecmp(h, "BP", 2) == 0 && (h[2] == '+' || h[2] == '-')) {
+                        int o = atoi(h + 2);
+                        if (o >= SLOT_LO && o < SLOT_LO + SLOT_N) homed[o - SLOT_LO] = 1;
+                    }
+                }
+            }
+            continue;
+        }
+        if (n->type != OP_OTHER || n->debug_note) continue;
+        const char *p = n->raw + strspn(n->raw, " \t");
+        if (strncmp(p, ";@scope", 7) == 0) {
+            const char *q = p + 7 + strspn(p + 7, " \t");
+            if (*q == '{') depth++;
+            else if (*q == '}') {
+                if (depth == 0) REPORT("v32opt: --check-vars: in %s a ';@scope }' has no ';@scope {'\n", fname[0] ? fname : "(top)");
+                else depth--;
+            }
+        } else if (strncmp(p, ";@home", 6) == 0 && (p[6] == ' ' || p[6] == '\t')) {
+            char a[64], b[64], c[8];
+            if (sscanf(p + 6, "%63s %63s %7s", a, b, c) != 2) REPORT("v32opt: --check-vars: malformed %s\n", n->raw);
+        } else if (is_var_line(n) && fi >= 0 && fi < nt) {
+            size_t len;
+            const char *w = var_loc_word(n->raw, &len);
+            if (!w || len < 4 || strncasecmp(w, "BP", 2) != 0 || (w[2] != '+' && w[2] != '-')) continue;
+            int off = atoi(w + 2);
+            if (w[2] == '+' && off == 0) off = 0;
+            const char *tp = strstr(n->raw, "type=");
+            int words = type_words(tp && (tp == n->raw || tp[-1] == ' ') ? tp + 5 : NULL);
+            if (in && slot_range_used(in->used, off, words) && !slot_range_used(table[fi].used, off, words)
+                && !slot_range_used(homed, off, words))
+                REPORT("v32opt: --check-vars: in %s the variable at BP%+d is no longer there (no [BP%+d] left, it was used in the input): %s\n",
+                       fname, off, off, n->raw);
+        }
+    }
+    #undef REPORT
+    if (depth != 0) { problems++; fprintf(stderr, "v32opt: --check-vars: in %s a ';@scope {' is never closed\n", fname); }
+    for (int i = 0; i < nt; i++) { free(table[i].name); free(table[i].used); }
+    free(table);
+    (void)out;
+    if (problems > shown) fprintf(stderr, "v32opt: --check-vars: ... and %d more\n", problems - shown);
     return problems;
 }

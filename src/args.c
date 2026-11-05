@@ -212,6 +212,8 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "  -g0, --strip-src         Remove the source markers from the output\n");
     fprintf(stdout, "      --check-src          Verify the markers afterwards (no instruction without one, none in\n");
     fprintf(stdout, "                           a function it does not belong to); exit status 3 on a problem\n");
+    fprintf(stdout, "      --check-vars         Verify the ';@var' records afterwards (a variable still pointing at a\n");
+    fprintf(stdout, "                           frame slot the code no longer uses, unbalanced ';@scope'); exit status 3\n");
     fprintf(stdout, "  --dot <cfg.dot>          Export Control Flow Graph to DOT format\n");
     fprintf(stdout, "  --profile <file>         Line profile of the program (scripts/v32prof.py): hot loops\n");
     fprintf(stdout, "                           get more unrolling, cold ones none (-fprofile-hot=PCT, -fprofile-cold=PCT)\n\n");
@@ -293,6 +295,7 @@ void process_args(int argc, char **argv, OptConfig *cfg,
         {"profile",      required_argument, NULL, 'P'},
         {"strip-src",    no_argument,       NULL, 'S'},
         {"check-src",    no_argument,       NULL, 'C'},
+        {"check-vars",   no_argument,       NULL, 1003},
         {NULL, 0, NULL, 0}
     };
 
@@ -364,6 +367,7 @@ void process_args(int argc, char **argv, OptConfig *cfg,
                 break;
             case 'S': cfg->strip_src = true; break;
             case 'C': cfg->check_src = true; break;
+            case 1003: cfg->check_vars = true; break;
 
             case 'P':
                 g_profile_file = optarg;

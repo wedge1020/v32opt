@@ -34,4 +34,19 @@ bool        srcmarks_present(void);
 void        srcmarks_inherit(AsmNode *dst, const AsmNode *src);   // a node a pass made up gets the location of `src`                          // the input had markers
 void        srcmarks_free   (void);
 
+// ---------------------------------------------------------------------------
+// Variable homes (V32DBG ';@var'): when a pass moves a variable's stack slot into a register it keeps the debug
+// records true (SO-1). A ';@var NAME loc=BP-3 ...' line inside the promoted region is rewritten to 'loc=R5'; a
+// variable declared before the region is moved by a line ';@home BP-3 R5' where the register takes over and
+// ';@home R5 BP-3' (or ';@home R5 optimized-out') where the slot is the truth again (v32as, README ".vars").
+// ---------------------------------------------------------------------------
+bool        varloc_is_record(const AsmNode *n);                            // a ';@var' / ';@scope' / ';@home' line
+bool        varloc_present  (void);                                        // the input has ';@var' lines
+int         varloc_rewrite  (AsmNode *from, AsmNode *to, int off, const char *reg);   // [from,to): loc=BP<off> -> loc=reg; count
+bool        varloc_has      (AsmNode *from, AsmNode *to, int off);        // some ';@var' of [from,to) lives at BP<off>
+AsmNode    *varloc_home     (int off, const char *reg, bool to_reg);      // ';@home BP<off> reg' / ';@home reg BP<off>'; NULL without ';@var'
+AsmNode    *varloc_gone     (const char *reg);                            // ';@home reg optimized-out'
+int         varloc_check    (AsmNode *head);                              // --check-vars: report problems on stderr, return their number
+void        varloc_snapshot (AsmNode *head);                              // remember which frame slots each function uses (input side of --check-vars)
+
 #endif

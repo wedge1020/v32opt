@@ -1,0 +1,151 @@
+You've identified a **critical insight** about Vircon32: since all instructions are 1 cycle, traditional performance optimizations don't help, and some current optimizations may actually be *counterproductive* for space efficiency.
+
+---
+
+## 🔍 The Problem with Current Optimizations
+
+On Vircon32:
+- **Register operand**: 1 word (e.g., `IADD R1, R2`)
+- **Immediate operand**: 2 words (e.g., `IADD R1, 42` — opcode + immediate value)
+
+**Current optimizations that may hurt space efficiency:**
+- `peephole_immediate_prop`: Propagates immediates, *increasing* immediate usage
+- `peephole_forwarding`: Can replace register operands with immediates
+
+---
+
+## 🎯 Vircon32-Specific Optimization Opportunities
+
+### **Category 1: Space Saving (Primary Focus)**
+
+| Optimization | Benefit | Example |
+|--------------|---------|---------|
+| **Immediate Promotion** | Eliminates immediate words | `IADD R1,42; IADD R2,42` → `MOV R3,42; IADD R1,R3; IADD R2,R3` (saves 1 word) |
+| **Common Subexpression Elimination** | Reduces redundant computations | `IMUL R1,R2; ... IMUL R3,R2` → compute once, reuse |
+| **Strength Reduction (word-saving)** | Replace ops with immediate → ops with registers | `IMUL R1,2` → `IADD R1,R1` (saves 1 word) |
+| **Dead Immediate Elimination** | Remove unused immediate loads | `MOV R1,42` (never used) → remove |
+| **Register Reuse Extension** | Keep values in registers longer | Avoid reloading constants |
+
+### **Category 2: Performance (via Space Reduction)**
+
+Since all instructions are 1 cycle:
+- **Fewer instructions = faster** (less to fetch/decode)
+- **Fewer words = better cache locality** (if applicable)
+- **Smaller code = more room for data**
+
+---
+
+## 💡 New Optimization Passes to Consider
+
+### 1. **Immediate Promotion Pass** (Highest Priority)
+```c
+// Before: 4 words total
+IADD R1, 42
+IADD R2, 42
+ISUB R3, 42
+
+// After: 4 words total (but more flexible)
+MOV  R4, 42    // 2 words
+IADD R1, R4    // 1 word
+IADD R2, R4    // 1 word
+ISUB R3, R4    // 1 word
+// Net: Same words if used 2+ times, but enables further optimizations
+```
+
+**Implementation**: Track immediate usage frequency, promote those used ≥2 times to registers.
+
+### 2. **Common Subexpression Elimination (CSE)**
+```c
+// Before: 4 words
+IMUL R1, R2, R3
+...
+IMUL R4, R2, R3  // Same computation!
+
+// After: 3 words
+IMUL R1, R2, R3
+...
+MOV  R4, R1      // Reuse result
+```
+
+### 3. **Word-Saving Strength Reduction**
+```c
+// Current peephole_algebra does this for IMUL by 2
+IMUL R1, 2  →  IADD R1, R1  // Saves 1 word (immediate → register)
+
+// Extend to other patterns:
+IMUL R1, 3  →  IADD R1, R1; IADD R1, R1  // Only worth it if used multiple times
+IDIV R1, 1  →  (remove entirely)         // Already in peephole_algebra
+```
+
+### 4. **Register Allocation Optimization**
+- **Prefer registers over immediates** in copy propagation
+- **Keep frequently used values in registers** longer
+- **Minimize spilling** to memory
+
+### 5. **Instruction Sequence Compaction**
+```c
+// Before: 3 words
+MOV  R1, 0
+MOV  R2, 0
+MOV  R3, 0
+
+// After: Could use a loop or block fill if architecture supports it
+// Or: XOR R1, R1; XOR R2, R2; XOR R3, R3 (if XOR with self clears)
+```
+
+---
+
+## ⚠️ Reconsider Current Optimizations
+
+### **Potentially Counterproductive:**
+1. **`peephole_immediate_prop`**: Propagating immediates increases word count
+   - **Fix**: Add a mode that *prefers* registers over immediates
+   - Or: Only propagate if it doesn't increase immediate usage
+
+2. **`peephole_forwarding`**: Store-to-load forwarding can introduce immediates
+   - **Fix**: Prefer register-to-register forwarding
+
+### **Still Valuable:**
+1. **`peephole_algebra`**: `IMUL r,2` → `IADD r,r` (saves word)
+2. **`peephole_jumps`**: Removes instructions entirely
+3. **`peephole_jmp_chain`**: Removes instructions entirely
+4. **`peephole_pairs`**: Removes redundant pairs
+5. **`peephole_dead_stores`**: Removes instructions entirely
+6. **`peephole_loads`**: Removes redundant loads
+
+---
+
+## 📊 Recommendation: New Optimization Pass
+
+```c
+// ===================================================================
+// PEEPHOLE: Immediate Promotion (Vircon32-Specific)
+// Promotes frequently used immediates to registers to save words
+// ===================================================================
+int peephole_promote_immediates(AsmNode *head)
+{
+    // Phase 1: Count immediate usage
+    // Phase 2: Promote immediates used >=2 times to registers
+    // Phase 3: Replace uses with register operands
+}
+```
+
+**Heuristic**: Promote an immediate if:
+- Used ≥2 times in a basic block
+- Register pressure is low
+- The immediate value is not already in a register
+
+---
+
+## 🎯 Summary: Vircon32 Optimization Strategy
+
+| Priority | Optimization | Type | Benefit |
+|----------|--------------|------|---------|
+| 1 | Immediate Promotion | Space | Reduces word count |
+| 2 | Common Subexpression Elimination | Space | Reduces instruction count |
+| 3 | Dead Code Elimination | Space | Removes unused code |
+| 4 | Strength Reduction (word-saving) | Space | Replaces 2-word with 1-word ops |
+| 5 | Register Reuse | Space | Avoids reloading |
+| 6 | Current peephole optimizations | Mixed | Mostly good, some need adjustment |
+
+**Key Principle**: On Vircon32, **space optimization = performance optimization**. Focus on reducing total word count and instruction count rather than traditional "faster" transformations.

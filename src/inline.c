@@ -228,6 +228,13 @@ int inline_trivial_functions(AsmNode *head) {
                     break;
                 }
 
+                // SO-2: the callee's own debug records ('@var x loc=BP+2', its scopes) describe its frame, which the
+                // inlined copy does not have: they stay with the callee, and are neither copied nor counted
+                if (varloc_is_record(scan)) {
+                    scan = scan->next;
+                    continue;
+                }
+
                 // --- Epilogue Detection ---
                 if ((scan->type == OP_MOV && str_case_eq(scan->dst_op.reg, "SP") &&
                      str_case_eq(scan->src_op.reg, "BP")) ||

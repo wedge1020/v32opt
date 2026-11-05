@@ -196,6 +196,7 @@ int main(int argc, char **argv) {
     }
     // Source markers (';@src'): taken out of the list, carried on the instructions
     bool have_src = srcmarks_attach(program_ast);
+    if (config.check_vars) varloc_snapshot(program_ast);       // which slots each function uses, before the passes touch them
     if (config.verbose && have_src)
         printf("Source markers found%s.\n", config.strip_src ? " (will be removed: --strip-src)" : "");
     // %define table. Directive nodes are never deleted (remove_node()
@@ -525,6 +526,7 @@ int main(int argc, char **argv) {
     // --- Write Output File ---
     hints_verify(program_ast);
     int src_problems = config.check_src ? srcmarks_check(program_ast) : 0;
+    int var_problems = config.check_vars ? varloc_check(program_ast) : 0;
     srcmarks_emit(program_ast);
     write_vircon32_asm(outFile, program_ast);
 
@@ -542,6 +544,10 @@ int main(int argc, char **argv) {
     }
     if (src_problems) {
         fprintf(stderr, "v32opt: --check-src: %d problem(s) with the source markers\n", src_problems);
+        return 3;
+    }
+    if (var_problems) {
+        fprintf(stderr, "v32opt: --check-vars: %d problem(s) with the variable records\n", var_problems);
         return 3;
     }
     return 0;

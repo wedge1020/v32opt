@@ -30,7 +30,7 @@
 // shape. To release: edit the string and run `make version`, or run
 // `make version VERSION=YYYYMMDD-release` to have make edit it for you.
 // ---------------------------------------------------------------------------
-#define  VERSION                      "20261030-dev"
+#define  VERSION                      "20261105-dev"
 #define  AUTHOR                       "Matthew Haas"
 #define  URL                          "https://github.com/wedge1020/v32opt"
 
@@ -146,6 +146,7 @@ typedef struct {
     AbiMode  abi;           // calling convention: auto (from hints), stock callee-save, caller-save
     bool     strip_src;     // --strip-src / -g0: drop the ';@src' source markers from the output
     bool     check_src;     // --check-src: verify the markers after optimization (srcmarks.c)
+    bool     check_vars;    // --check-vars: verify the ';@var' records after optimization (srcmarks.c)
 } OptConfig;
 
 extern OptConfig  config;

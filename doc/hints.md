@@ -215,12 +215,13 @@ stopped being a memory access (that would be a `v32opt` bug).
 
 These are *not* read yet; compilers may write them and old `v32opt`s ignore them.
 
-* `;@var NAME loc=...` / `;@scope` (debug information after promotion).
+* (`;@var NAME loc=...` / `;@scope` / `;@home` are now carried and rewritten; see [srcmarks.md](srcmarks.md).)
 * `noreturn` / `pure` to let calls to such functions be treated as barriers or
   as removable.
 
 ## Testing
 
+* `testing/vars/run.sh` — `;@var` / `;@home` after register promotion (see srcmarks.md).
 * `testing/hints/run.sh` — volatile accesses survive every optimization level.
 * `testing/hints/run_requests.sh` — the requests: which functions `-finline` inlines under
   `inline` / `alwaysinline` / `hot` / `cold` (and with `-finline-max=0`), how many copies of
