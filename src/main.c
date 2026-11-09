@@ -525,6 +525,7 @@ int main(int argc, char **argv) {
 
     // --- Write Output File ---
     hints_verify(program_ast);
+    varloc_finish(program_ast);        // before --check-vars, which then sees the final records
     int src_problems = config.check_src ? srcmarks_check(program_ast) : 0;
     int var_problems = config.check_vars ? varloc_check(program_ast) : 0;
     srcmarks_emit(program_ast);

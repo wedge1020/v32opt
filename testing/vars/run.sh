@@ -10,7 +10,7 @@ cd "$(dirname "$0")" || exit 2
 T=${TMPDIR:-/tmp}/v32opt_vars.$$; mkdir -p $T
 fail=0; n=0
 bad() { echo "FAIL $*"; fail=1; }
-for f in leaf segment loops; do
+for f in leaf segment loops dead; do
   for L in -O0 -O1 -O2 -O3 -Os; do
     n=$((n+1))
     $OPT $f.asm $L --check-vars --check-src -o $T/$f.out.asm 2>$T/err || { bad "$f $L: $(head -2 $T/err)"; continue; }
@@ -25,6 +25,16 @@ $OPT loops.asm -O3 -o $T/l.asm 2>/dev/null
 [ "$(grep -c '^;@home BP' $T/l.asm)" -ge 3 ] || bad "loops -O3: fewer than 3 ';@home BP'"
 # a call-terminated segment ends with ';@home Rk BPn' before the call
 awk '/^;@home R[0-9]+ BP/{h=1;next} h&&/^ *call /{ok=1} {if(!/^;@/&&!/^ *$/)h=0} END{exit !ok}' $T/l.asm || bad "loops -O3: no ';@home Rk BPn' right before a call"
+# dead.asm: at -O3 the loop is unrolled away and nothing writes the registers of `i` and `junk` any more: they are
+# marked optimized-out (not left at a register that holds garbage); `sum`, still written, keeps its register. At -O2
+# every variable is still written, so none is marked.
+$OPT dead.asm -O3 -o $T/d3.asm 2>/dev/null
+grep -q '^;@var i optimized-out type=int' $T/d3.asm || bad "dead -O3: i is not optimized-out"
+grep -q '^;@var junk optimized-out type=int' $T/d3.asm || bad "dead -O3: junk is not optimized-out"
+grep -q '^;@var sum loc=R[0-9]' $T/d3.asm || bad "dead -O3: sum lost its register"
+$OPT dead.asm -O2 -o $T/d2.asm 2>/dev/null
+! grep -q 'optimized-out' $T/d2.asm || bad "dead -O2: a variable that is still written was marked optimized-out"
+n=$((n+2))
 # a variable that is only written: the slot is either still used or the move is recorded
 cat > $T/w.asm <<'EOA'
 ;@hints 1 abi=caller-save

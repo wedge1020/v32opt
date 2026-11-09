@@ -49,8 +49,10 @@ A compiler with `-g` writes `;@var NAME loc=... type=...` where a variable becom
 with status 3 if a `;@var loc=BP+n` points at a slot that no instruction uses any more and that no
 `;@home BPn ...` accounts for, if `;@scope` braces do not balance, or if a `;@home` is malformed.
 
-Not done: a variable whose stores are all dead (dead-store elimination) is not yet marked
-`optimized-out`; `--check-vars` reports it only when the slot also disappeared.
+A variable whose register is no longer written by any instruction of the region that is still open at the end
+of the function (all its stores were eliminated, e.g. an unrolled loop counter or a dead local) is rewritten to
+`;@var NAME optimized-out type=T` (`varloc_finish` in `src/srcmarks.c`, run before `--check-src`/`--check-vars`).
+Regions closed by a `;@home Rn S` are not judged. Test: `testing/vars/dead.asm`.
 
 `testing/vars/run.sh` runs `leaf.asm` (one promoted loop variable), `segment.asm` (a promoted value that
 is saved before a call) and `loops.asm` (three variables and a nested block) at every level.

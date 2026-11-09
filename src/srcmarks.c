@@ -347,6 +347,110 @@ AsmNode *varloc_gone(const char *reg) {
 }
 
 // ---------------------------------------------------------------------------
+// Variables whose register nobody writes any more (dead-store elimination, V32DBG "optimized-out").
+//
+// Promotion puts a variable in a register for a region of code and says so with ';@var NAME loc=Rn'. If constant propagation,
+// unrolling or dead-register elimination then removed EVERY write to Rn in that region, the register holds whatever was there
+// before, and a debugger would show it as the variable's value. Such a record is rewritten to ';@var NAME optimized-out type=T'
+// (the spec's own wording; v32as writes the flag into .vbin.vars and v32sim prints <optimized out>).
+//
+// A region of Rn runs from the ';@home S Rn' that moved the variable in (or from the previous region's end, or the function's
+// start when the variable was declared inside the region) to the function's end. Only the region still open at the end is
+// judged: one that a ';@home Rn S' left has put the value back in its slot (possibly by a store that never went through Rn).
+// A write is an instruction with Rn as its destination; PUSH/POP are the callee-save of the register, not a write of the
+// variable, and a CALL is not one either (a convention that lets a call change the register ends the region with a ';@home').
+// A variable that is written but never read is NOT touched: its register is still the truth.
+// ---------------------------------------------------------------------------
+static int reg_of_word(const char *w, size_t len) {
+    if (len < 2 || len > 3 || (w[0] != 'R' && w[0] != 'r')) return -1;
+    int v = 0;
+    for (size_t i = 1; i < len; i++) {
+        if (w[i] < '0' || w[i] > '9') return -1;
+        v = v * 10 + (w[i] - '0');
+    }
+    return v <= 15 ? v : -1;
+}
+
+static bool writes_reg(const AsmNode *n, int reg) {
+    if (n->type == OP_OTHER || n->type == OP_LABEL || n->type == OP_PUSH || n->type == OP_POP) return false;
+    if (!n->has_dst || n->dst_op.mode != MODE_REG) return false;
+    if (str_case_eq(n->mnemonic, "JMP") || str_case_eq(n->mnemonic, "JT") ||
+        str_case_eq(n->mnemonic, "JF")  || str_case_eq(n->mnemonic, "CALL")) return false;
+    return get_reg_index(n->dst_op.reg) == reg;
+}
+
+// is `n` ';@home FROM TO' ? sets *from/*to to the register numbers (-1: not a register)
+static bool home_regs(const AsmNode *n, int *from, int *to) {
+    if (n->type != OP_OTHER || n->debug_note) return false;
+    const char *p = n->raw + strspn(n->raw, " \t");
+    if (strncmp(p, ";@home", 6) != 0 || (p[6] != ' ' && p[6] != '\t')) return false;
+    p += 6;
+    p += strspn(p, " \t");
+    const char *a = p;
+    while (*p && *p != ' ' && *p != '\t' && *p != '\r') p++;
+    size_t alen = (size_t)(p - a);
+    p += strspn(p, " \t");
+    const char *b = p;
+    while (*p && *p != ' ' && *p != '\t' && *p != '\r') p++;
+    size_t blen = (size_t)(p - b);
+    *from = reg_of_word(a, alen);
+    *to = reg_of_word(b, blen);
+    return true;
+}
+
+static int gone_in_region(AsmNode *from, AsmNode *to, int reg) {
+    bool written = false;
+    for (AsmNode *n = from; n && n != to; n = n->next)
+        if (writes_reg(n, reg)) { written = true; break; }
+    if (written) return 0;
+    int count = 0;
+    for (AsmNode *n = from; n && n != to; n = n->next) {
+        if (!is_var_line(n)) continue;
+        size_t len;
+        const char *w = var_loc_word(n->raw, &len);
+        if (!w || reg_of_word(w, len) != reg) continue;
+        size_t pre = (size_t)(w - n->raw) - 4;                 // the text up to "loc="
+        const char *rest = w + len;
+        char *nr = malloc(strlen(n->raw) + 20);
+        if (!nr) continue;
+        memcpy(nr, n->raw, pre);
+        nr[pre] = '\0';
+        strcat(nr, "optimized-out");
+        strcat(nr, rest);
+        node_set_raw(n, nr);
+        free(nr);
+        count++;
+    }
+    return count;
+}
+
+int varloc_finish(AsmNode *head) {
+    if (!g_vars || !head) return 0;
+    int total = 0;
+    AsmNode *fn_first = NULL;
+    AsmNode *start[16];
+    for (AsmNode *n = head->next;; n = n->next) {
+        bool boundary = (n == NULL) || starts_function(n);
+        if (boundary && fn_first) {
+            for (int r = 0; r < 16; r++) total += gone_in_region(start[r], n, r);
+            fn_first = NULL;
+        }
+        if (n == NULL) break;
+        if (boundary) {
+            fn_first = n;
+            for (int r = 0; r < 16; r++) start[r] = n;
+            continue;
+        }
+        int from, to;
+        if (fn_first && home_regs(n, &from, &to)) {
+            if (to >= 0) start[to] = n;
+            if (from >= 0) start[from] = n;       // a region that was left (the slot is the truth again) is not judged: the value went to the slot directly
+        }
+    }
+    return total;
+}
+
+// ---------------------------------------------------------------------------
 // --check-vars: are the ';@var' records still true?
 //   1. a variable at BP<n> whose slot [n, n+words) the INPUT referenced (an operand [BP+n]) but the output does not: the value
 //      moved or was removed and the record still points at the slot (what promoting a slot to a register did before it

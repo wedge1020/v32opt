@@ -46,6 +46,7 @@ int         varloc_rewrite  (AsmNode *from, AsmNode *to, int off, const char *re
 bool        varloc_has      (AsmNode *from, AsmNode *to, int off);        // some ';@var' of [from,to) lives at BP<off>
 AsmNode    *varloc_home     (int off, const char *reg, bool to_reg);      // ';@home BP<off> reg' / ';@home reg BP<off>'; NULL without ';@var'
 AsmNode    *varloc_gone     (const char *reg);                            // ';@home reg optimized-out'
+int         varloc_finish   (AsmNode *head);                              // after the passes: ';@var NAME loc=Rn' whose register is never written -> 'optimized-out'; count
 int         varloc_check    (AsmNode *head);                              // --check-vars: report problems on stderr, return their number
 void        varloc_snapshot (AsmNode *head);                              // remember which frame slots each function uses (input side of --check-vars)
 

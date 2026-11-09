@@ -1,5 +1,10 @@
 # v32opt changes
 
+## 20261109-dev
+
+* Dead variables: a `;@var loc=Rn` whose register is never written in the final region of the function becomes
+  `optimized-out` (so v32sim shows `<optimized out>` instead of a stale register). New test `testing/vars/dead`.
+
 ## 20261105-dev
 
 * Variable locations after register promotion (V32DBG): `;@var loc=BP+n` is rewritten to the register in
