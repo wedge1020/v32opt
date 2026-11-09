@@ -10,4 +10,4 @@ Pipeline:  compile prog.c -g  ->  v32srcmark.py prog.asm  ->  v32opt  ->  v32as 
 
 Optional (proposal): `v32opt --stock-c FILE.asm` runs the pass itself when the input has
 `__function_X:` labels and no `;@hints` header and a FILE.asm.debug beside it.
-Design and limits: v32lua proposals/V32DBG-SPEC.md, "Tier B".
+Design and limits: v32sim docs/V32DBG-SPEC.md, "Tier B".
