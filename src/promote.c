@@ -626,21 +626,13 @@ static void link_after(AsmNode *pos, AsmNode *nn) {
 // used if the function already saves it, or if a push/pop pair for it can
 // be added to the prologue and to every epilogue.
 // -------------------------------------------------------------------
-#define MAX_EPILOGUES 8
 // A fresh push/pop costs 2 instructions per call: ask for this many more
 // (weighted) references before spending one. Tuned on the stock-compiler
 // corpus (any value from 1 to 6 landed within 0.15 points).
 #define FRESH_SAVE_EXTRA      3
 #define FRESH_SAVE_EXTRA_LOOP 1
 
-typedef struct {
-    AsmNode *entry_end;             // last node of the prologue: loads go right after it
-    bool     saved[16];             // registers the function saves/restores
-    bool     lua;                   // caller-save ABI (v32lua, v32cc): nothing needs saving
-    bool     can_save;              // a push/pop can be added (every exit is a recognised epilogue)
-    int      n_epi;
-    AsmNode *epi_first[MAX_EPILOGUES];   // our pops go right before this node, per epilogue
-} FrameInfo;
+// FrameInfo (and MAX_EPILOGUES) live in inc/promote.h: loop-strength uses them too.
 
 static AsmNode *prev_real(AsmNode *n) {
     n = n ? n->prev : NULL;
@@ -653,6 +645,97 @@ static int pushpop_reg(const AsmNode *n) {            // register number of PUSH
     if (!op || op->mode != MODE_REG) return -1;
     int r = get_reg_index(op->reg);
     return (r >= 1 && r <= 13) ? r : -1;
+}
+
+// -------------------------------------------------------------------
+// A fresh PUSH goes right after fi->entry_end, so it takes the word just
+// below everything pushed so far, and moves everything the body pushes
+// later one word down. "[SP+k]" is addressed from the top of the stack: it
+// still means the same word as long as it stays among the words pushed
+// after that point (0 <= k < d, d = words pushed since entry_end). A k >= d
+// reaches the fresh save or above it -- v32cc's single "ISUB SP, N" for
+// locals and arguments with "MOV [SP+k], x" stores: the store would
+// overwrite the saved word, and the epilogue's POP would hand the caller the
+// argument instead of its register. The stock compiler reserves its argument
+// area with a second "ISUB SP, A" after its saves (k < A = d): safe.
+//
+// Walk the function from entry_end, following d through PUSH/POP and
+// "ISUB/IADD SP, <integer>". Anything that makes d uncertain refuses:
+//   - d differing between labels and jumps: every label and every jump must
+//     see the same depth D0 (whatever is reached by a jump then arrives with
+//     D0 as well; the stock compiler's argument area keeps D0 = A through the
+//     whole body), and code after a JMP, HLT or epilogue starts again at D0;
+//   - d != 0 at the start of an epilogue (fi->epi_first), where the fresh POP
+//     goes;
+//   - a computed jump; a RET that is not an epilogue's;
+//   - POP BP/SP, d going negative, a non-integer or negative SP adjustment,
+//     any other write of SP (CALL excepted: net zero);
+//   - an SP value escape ("MOV R1, SP", "LEA R1, [SP+2]");
+//   - a directive.
+// A fresh save added later (entry_end moves onto it) sees the same walk: the
+// earlier fresh PUSH sits above it, among the saves, not in d.
+// -------------------------------------------------------------------
+static bool sp_operands_clear_of_saves(const FrameInfo *fi, AsmNode *limit) {
+    long d = 0, d0 = -1;                 // d0: the depth every label and jump sees (-1: none yet)
+    bool lost = false;                   // after JMP/HLT/epilogue: only a label resumes the walk
+    for (AsmNode *n = fi->entry_end->next; n && n != limit; n = n->next) {
+        if (n->type == OP_OTHER) {
+            if (is_directive_node(n)) return false;
+            continue;
+        }
+        if (n->type == OP_LABEL) {
+            if (lost) {
+                if (d0 < 0) return false;
+                d = d0;
+                lost = false;
+            }
+            if (d0 < 0) d0 = d;
+            else if (d != d0) return false;
+            continue;
+        }
+        if (lost) continue;              // unreachable except through a label
+        int e;
+        for (e = 0; e < fi->n_epi; e++) if (n == fi->epi_first[e]) break;
+        if (e < fi->n_epi) {
+            if (d != 0) return false;
+            while (n && n != limit && n->type != OP_RET) n = n->next;
+            if (!n || n == limit) return false;
+            lost = true;
+            continue;
+        }
+        if (n->type == OP_RET) return false;
+        if (sp_value_escapes(n)) return false;
+        if (is_jump(n)) {
+            char target[128];
+            branch_target(n, target, sizeof(target));
+            if (!target[0] || get_reg_index(target) >= 0 || strchr(target, '[')) return false;   // computed
+            if (d0 < 0) d0 = d;
+            else if (d != d0) return false;
+            if (n->type == OP_JMP) { lost = true; continue; }
+        }
+        if (n->type == OP_HLT) { lost = true; continue; }
+        const Operand *imm = n->has_src ? &n->src_op : NULL;
+        bool sp_dst = n->has_dst && n->dst_op.mode == MODE_REG && str_case_eq(n->dst_op.reg, "SP");
+        if (n->type == OP_PUSH) {
+            d++;
+        } else if (n->type == OP_POP) {
+            if (sp_dst || (n->has_dst && n->dst_op.mode == MODE_REG && str_case_eq(n->dst_op.reg, "BP"))) return false;
+            if (--d < 0) return false;
+        } else if ((n->type == OP_ISUB || n->type == OP_IADD) && sp_dst) {
+            if (!imm || imm->mode != MODE_IMMEDIATE || imm->is_float || !is_numeric_immediate(imm) ||
+                imm->immediate < 0) return false;
+            d += (n->type == OP_ISUB) ? imm->immediate : -(long)imm->immediate;
+            if (d < 0) return false;
+        } else if (n->type != OP_CALL && modifies_register(n, "SP")) {
+            return false;
+        }
+        const Operand *ops[2] = { n->has_dst ? &n->dst_op : NULL, n->has_src ? &n->src_op : NULL };
+        for (int i = 0; i < 2; i++) {
+            if (!ops[i] || ops[i]->mode != MODE_INDIRECT || !str_case_eq(ops[i]->reg, "SP")) continue;
+            if (ops[i]->offset < 0 || ops[i]->offset >= d) return false;
+        }
+    }
+    return true;
 }
 
 static void frame_info(FrameInfo *fi, AsmNode *anchor, AsmNode *first, AsmNode *limit) {
@@ -685,6 +768,7 @@ static void frame_info(FrameInfo *fi, AsmNode *anchor, AsmNode *first, AsmNode *
         if (fi->n_epi == MAX_EPILOGUES) { fi->can_save = false; break; }
         fi->epi_first[fi->n_epi++] = ins;
     }
+    if (fi->can_save && !sp_operands_clear_of_saves(fi, limit)) fi->can_save = false;
 }
 
 // Make sure the function saves and restores Rr; false if it can't.
@@ -1542,3 +1626,43 @@ bool promote_frame_unaliased(AsmNode *n) {
 // -------------------------------------------------------------------
 bool promote_function_entry(const AsmNode *n) { return is_function_entry(n); }
 AsmNode *promote_function_last(AsmNode *entry) { return function_last(entry); }
+bool promote_bp_value_escapes(AsmNode *n) { return bp_value_escapes(n); }
+
+// ---- for loop-strength (src/peephole/loop_strength.c): the register rules of promote-loops ----
+
+// The frame of the function `n` sits in, as promote-loops sees it. False when no register may
+// be used there at all (no recognisable prologue outside -L lua).
+bool promote_loop_frame(FrameInfo *fi, AsmNode *n) {
+    AsmNode *entry = n;
+    while (entry && !is_function_entry(entry)) entry = entry->prev;
+    AsmNode *an = NULL, *last = NULL;
+    if (entry) {
+        last = function_last(entry);
+        an = prologue_anchor(entry->next, last->next);
+    }
+    if (an) {
+        frame_info(fi, an, entry->next, last->next);
+        return true;
+    }
+    memset(fi, 0, sizeof(*fi));
+    fi->lua = (config.lang_mode == LANG_LUA);
+    return fi->lua;
+}
+
+bool promote_frame_save_reg(FrameInfo *fi, int r, OptType t) { return frame_save_reg(fi, r, t); }
+
+// pick_register() for the region [from, last]: a register R1..R10 not mentioned there (PUSH/POP
+// included) nor in `exclude` (bit n = Rn), dead at `from`, saved by the function already or (with
+// *fresh set) one that frame_save_reg() can still add. -1 if none.
+int promote_pick_loop_register(AsmNode *from, AsmNode *last, const FrameInfo *fi, unsigned exclude, bool *fresh) {
+    RegionInfo ri;
+    scan_region(from, last->next, NULL, &ri);
+    for (AsmNode *n = from; n && n != last->next; n = n->next) {
+        if (n->type != OP_PUSH && n->type != OP_POP) continue;
+        if (n->has_dst) note_reg(&ri, &n->dst_op);
+        if (n->has_src) note_reg(&ri, &n->src_op);
+    }
+    for (int r = 0; r < 16; r++) if (exclude & (1u << r)) ri.reg_used[r] = true;
+    return pick_register(from, &ri, fi, true, fresh);
+}
+bool promote_sp_value_escapes(AsmNode *n) { return sp_value_escapes(n); }

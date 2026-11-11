@@ -246,6 +246,98 @@ static int propagate_copy(AsmNode *copy) {
     return rewritten;
 }
 
+
+// -------------------------------------------------------------------
+// Immediate propagation:   MOV Rt, imm / OP Rd, Rt   ->  OP Rd, imm
+//                          MOV Rt, imm / MOV [Rt], Rs ->  MOV [imm], Rs
+//                          MOV Rt, imm / MOV Rd, [Rt] ->  MOV Rd, [imm]
+// when every read of Rt before the end of the straight-line window is one
+// of those forms (at most two: each costs a word) and Rt is dead after the
+// last one, so the MOV goes too: one cycle and at least one word less. Full
+// unrolling leaves "MOV R1, 19 / MOV [R1], R0" in every copy. Integer
+// literals and plain symbols only (no floats: an immediate float operand is
+// not the same as a register holding its bits for every instruction).
+// -------------------------------------------------------------------
+static bool imm_alu_takes_imm(OpType t) {
+    switch (t) {
+        case OP_MOV: case OP_IADD: case OP_ISUB: case OP_IMUL: case OP_AND: case OP_OR: case OP_XOR:
+        case OP_SHL: case OP_IMIN: case OP_IMAX:
+        case OP_IEQ: case OP_INE: case OP_IGT: case OP_IGE: case OP_ILT: case OP_ILE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool plain_imm(const Operand *op) {
+    if (op->mode != MODE_IMMEDIATE || op->is_float) return false;
+    const char *s = op->raw;
+    if (!*s) return false;
+    if (*s == '-') s++;
+    if (isdigit((unsigned char)*s)) {
+        for (; *s; s++) if (!isalnum((unsigned char)*s)) return false;      // 19, 0x13
+        return true;
+    }
+    if (!(isalpha((unsigned char)*s) || *s == '_')) return false;
+    if (op->raw[0] == '-') return false;
+    for (; *s; s++) if (!(isalnum((unsigned char)*s) || *s == '_')) return false;  // global_arr
+    return get_reg_index(op->raw) < 0;
+}
+
+static int propagate_imm(AsmNode *mov) {
+    if (mov->type != OP_MOV || !mov->has_dst || !mov->has_src || node_is_volatile(mov)) return 0;
+    if (mov->dst_op.mode != MODE_REG || reg_number(mov->dst_op.reg) < 0 || !plain_imm(&mov->src_op)) return 0;
+    const char *rt = mov->dst_op.reg;
+
+    enum { U_SRC, U_LOAD, U_STORE };
+    AsmNode *use[2];
+    int kind[2], nuse = 0, dist = 0;
+    for (AsmNode *n = mov->next; n; n = n->next) {
+        if (n->type == OP_OTHER && !is_directive_node(n)) continue;
+        if (window_breaker(n) || ++dist > PEEPHOLE_MAX_SCAN_DISTANCE) break;
+        if (!loop_mentions_reg(n, rt)) {
+            if (modifies_register(n, rt)) return 0;          // (CALL: covered by window_breaker)
+            continue;
+        }
+        // a pure overwrite ends the window
+        if (n->type == OP_MOV && n->dst_op.mode == MODE_REG && str_case_eq(n->dst_op.reg, rt) &&
+            !(n->has_src && op_mentions(&n->src_op, rt))) break;
+        if (nuse == 2 || node_is_volatile(n)) return 0;
+        int k = -1;
+        if (n->has_dst && n->has_src && n->dst_op.mode == MODE_REG && !str_case_eq(n->dst_op.reg, rt) &&
+            n->src_op.mode == MODE_REG && str_case_eq(n->src_op.reg, rt) && imm_alu_takes_imm(n->type))
+            k = U_SRC;
+        else if (n->type == OP_MOV && n->has_dst && n->has_src && n->dst_op.mode == MODE_REG &&
+                 !str_case_eq(n->dst_op.reg, rt) && n->src_op.mode == MODE_INDIRECT &&
+                 str_case_eq(n->src_op.reg, rt) && n->src_op.offset == 0)
+            k = U_LOAD;
+        else if (n->type == OP_MOV && n->has_dst && n->has_src && n->dst_op.mode == MODE_INDIRECT &&
+                 str_case_eq(n->dst_op.reg, rt) && n->dst_op.offset == 0 &&
+                 n->src_op.mode == MODE_REG && !str_case_eq(n->src_op.reg, rt))
+            k = U_STORE;
+        if (k < 0) return 0;
+        use[nuse] = n;
+        kind[nuse++] = k;
+        if (modifies_register(n, rt)) return 0;              // (none of the forms writes Rt)
+    }
+    if (nuse == 0 || !use[nuse - 1]->next || !reg_dead_from(use[nuse - 1]->next, rt)) return 0;
+    if (!trigger_allowed()) return 0;
+
+    char addr[160];
+    snprintf(addr, sizeof(addr), "[%s]", mov->src_op.raw);
+    for (int i = 0; i < nuse; i++) {
+        AsmNode *n = use[i];
+        insert_debug_comment(n->prev, OPT_PEEPHOLE_COPIES, n->raw);
+        if (kind[i] == U_SRC)       n->src_op = mov->src_op;
+        else if (kind[i] == U_LOAD) n->src_op = parse_operand(addr);
+        else                        n->dst_op = parse_operand(addr);
+        refresh_raw(n);
+    }
+    insert_debug_comment(mov->prev, OPT_PEEPHOLE_COPIES, mov->raw);
+    remove_node(mov);
+    return nuse + 1;
+}
+
 int peephole_copies(AsmNode *head) {
     int optimizations = 0;
     liveness_begin(head);
@@ -254,7 +346,10 @@ int peephole_copies(AsmNode *head) {
     while (curr) {
         AsmNode *n = curr;
         curr = curr->next;
-        if (!is_reg_copy(n)) continue;
+        if (!is_reg_copy(n)) {
+            optimizations += propagate_imm(n);     // (n is freed when it fires; curr is past it)
+            continue;
+        }
 
         AsmNode *resume = NULL;
         if (try_coalesce(n, &resume)) { optimizations++; curr = resume; continue; }

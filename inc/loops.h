@@ -18,6 +18,9 @@ extern LoopLabel *g_loop_labels;
 extern int        g_loop_labels_n;
 
 void        loop_labels_build   (AsmNode *head);
+void        loop_labels_build_all (AsmNode *head);   // refs also from directives, '~' in names, not in strings
+bool        loop_label_unreferenced (const AsmNode *label);   // refs == 0 in that table, defined once
+void        loop_label_tokens_all (const AsmNode *n, void (*fn)(LoopLabel *, const char *, void *), void *arg);
 void        loop_labels_free    (void);
 LoopLabel  *loop_label_find     (const char *name);
 bool        loop_ident_char     (int c);

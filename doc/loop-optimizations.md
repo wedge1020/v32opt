@@ -1,8 +1,14 @@
 # Where the cycles are: notes on the loop passes
 
-Status: dead-register/copy cleanup (-O1), loop inversion and full
-unrolling of constant-trip loops (-O3) are implemented. Pointer strength
-reduction and partial unrolling below are still proposals.
+Status: implemented. -O1: dead-register write elimination and copy cleanup
+(`peephole-dead-regs`, `peephole-copies`, which also propagates immediates).
+-O2: the frame shrinking that follows promotion and unrolling
+(`omit-frame-pointers` removes register saves nothing uses and an unused
+`ISUB SP,N`). -O3: loop inversion, full unrolling of constant-trip loops,
+partial unrolling with a remainder loop, pointer strength reduction
+(`loop-strength`, design in [pointer-strength-reduction.md](pointer-strength-reduction.md))
+and `peephole-repeat-imm`, which removes the constants every unrolled copy
+sets again. Still a proposal: promoting read-only parameters (`[BP+N]`).
 
 Measured on the simulator (`v32sim`), where every instruction is one cycle,
 so cycles = instructions executed. Two loops, each hand-optimized one step at
@@ -11,7 +17,9 @@ a time from what `v32opt -O2` (with the promote passes) emits for `v32cc
 original result (`testing/differential/` has the harness; the variants
 below were applied to the emitted `.asm` by hand). Cycle figures are per call
 of the function, including about 40 cycles (sum) / 14 cycles (clear) of
-call, prologue and calling-loop overhead.
+call, prologue and calling-loop overhead. The figures are those of the
+hand-applied variants; the passes that now produce each step are named in
+"What each step is" and in the README. They have not been re-measured.
 
 ## 1. `int sum(int n)`: `for (i = 0; i < n; i++) s += arr[i];`, n = 40
 
@@ -61,7 +69,9 @@ With this in place, promoting parameters (read-only `[BP+N]`) starts to pay
 too -- the loop bound `n` becomes `ilt R0,R6` -- and, if no `[BP-N]` is left,
 the `ISUB SP,N` can go, which lets `omit-frame-pointers` take the 5
 instructions of the frame (push/mov/isub/mov/pop) off every call of small
-leaf functions.
+leaf functions. (The `ISUB SP,N` and the register saves nothing uses are now
+removed by `omit-frame-pointers` itself, which is what leaves `clear16` with
+no frame at all after full unrolling. Promoting parameters is not done.)
 
 **Loop inversion.** The compilers emit a top-tested loop:
 
@@ -78,7 +88,8 @@ does) and the test is straight-line register code. -1 cycle per iteration.
 **Strength reduction of array indexing.** `mov R1,global_arr / iadd R1,R4 /
 mov R1,[R1]` per element becomes one pointer register stepped by the
 element size, once the index is a promoted register that is only used as
-`base + i`. -2 cycles per iteration here.
+`base + i`. -2 cycles per iteration here. Implemented as `loop-strength`
+(see [pointer-strength-reduction.md](pointer-strength-reduction.md)).
 
 **Unrolling.** Per iteration the loop overhead (test, step, branch) is 5 of
 the 9 instructions that are left after the cleanup. Two cases:
@@ -89,7 +100,8 @@ the 9 instructions that are left after the cleanup. Two cases:
   absolute addresses and `imul i,3` into constants. This is the -83% above.
 * unknown count: unroll by 2 or 4 with a remainder loop (as in the table).
   Needs the induction variable (`i += c`, compared with a loop-invariant
-  bound, not otherwise written in the body).
+  bound, not otherwise written in the body). Implemented as
+  `loop-unroll-partial`; the complete unrolling as `loop-unroll`.
 
 Start with bodies that are straight-line (no inner labels, so no label
 cloning), at most ~8 instructions, factor limited so the loop stays under
@@ -103,8 +115,10 @@ cloning), at most ~8 instructions, factor limited so the loop stays under
 2. loop inversion (simple, local, -1/iteration);
 3. full unrolling of constant-trip loops (biggest single win, needs 1 and
    the constant folder);
-4. pointer strength reduction, partial unrolling, parameter promotion and
-   frame shrinking.
+4. pointer strength reduction, partial unrolling and frame shrinking (all
+   implemented; the loop passes run in the order `loop-index`,
+   `loop-strength`, `loop-unroll-partial`, `loop-invert`); parameter promotion
+   is still open.
 
 ## A note on the compiler's labels
 

@@ -19,8 +19,9 @@
 //                         is dead; if some path returns with it
 //                         untouched, analysis continues after the CALL
 //   - RET              -> live iff the ABI says the register is returned
-//                         (is_live_out_register) or some caller of the
-//                         function reads it after the call (see "outputs")
+//                         (is_live_out_register), or the function the RET
+//                         belongs to is "open", or some direct caller of it
+//                         reads the register after the call (see "outputs")
 //   - HLT              -> dead
 //
 // It is a "may be read" analysis and every unknown answers LIVE:
@@ -33,18 +34,66 @@
 // read by MOVS/SETS/CMPS), R14/R15 are BP/SP; aliases make textual
 // operand matching unreliable for those, so they always answer LIVE.
 //
+// ENTRIES. A label is a function entry if it is the target of a direct
+// CALL, or a compiler "__function_" label (not one ending in "_return"),
+// or it ESCAPES: its name appears in an operand of an instruction other
+// than CALL/JMP/JT/JF, or in a directive (data, %define). An escaped
+// label may be called or jumped to through a register from anywhere.
+//
+// CLASSES. Every node belongs to the region that starts at the nearest
+// entry label above it (region 0 is the code before the first entry).
+// Regions that control can pass between without a CALL are merged into
+// one class: a JMP/JT/JF whose target label lies in another region, or
+// falling through into an entry label (the previous instruction is not a
+// JMP, RET, HLT or data directive). So a tail jump, a shared epilogue or
+// code that skips over a nested function puts both sides in one class,
+// and a RET belongs to every function that can reach it. A passage into
+// code from which no RET can be reached (an error handler that halts, an
+// exit through a computed JMP) does not merge: no RET there returns to
+// the source's callers (reaches_ret). node->lv_fn is 1 + the class; a
+// node made after liveness_begin() has lv_fn 0.
+//
+// OPEN CLASSES. A class is open when control can come into it from an
+// unknown place and reach a RET: from the program start (region 0), through
+// an escaped entry, or through entries none of which is the target of a
+// direct CALL. Its callers are not all known, so at its RETs every register
+// R0..R10 is live; also at a RET with lv_fn 0. Compiler-ABI exemption: with
+// LV_TRUST_COMPILER_ABI set, an open class whose every unknown way in is a
+// "__function_" entry keeps the ABI (plus outputs) instead, since compiled
+// functions follow the compiler's convention for indirect callers too
+// (class_trusts_abi). It is off: measured, it buys under 0.05%.
+//
 // OUTPUTS. Which registers a function returns is a convention, and not every
 // callee follows the compiler's: v32cc's unsigned-divide helper returns the
 // quotient in R0 and the remainder in R1, and a write to R1 just before its
-// RET is not dead. For every function that is the target of a direct CALL,
-// liveness_begin() finds the registers it writes without saving (no PUSH)
-// and asks, at each call site, whether the caller reads them after the call;
-// those become live at the function's RET, to a fixed point. Functions that
-// are only called indirectly keep the ABI default.
+// RET is not dead. For every class, liveness_begin() finds the registers it
+// writes outside a save (below), itself or through a direct callee, and asks
+// at each direct call site whether the caller reads them after the call;
+// those become live at the class's RETs, to a fixed point.
+//
+// THE SAVE RULE. "PUSH Rn ... POP Rn" with the stack balanced in between
+// (is_register_save, the compiler's prologue / epilogue) gives the caller's
+// Rn back, so inside a callee the PUSH is not a read of Rn and the register
+// passes through to the RET; the walk still follows the code between the
+// PUSH and the POP, where a read of the incoming Rn makes it live. It is not
+// a save when the pushed word can be a stack argument: a CALL made while the
+// word is within the reach of the callee's stack arguments, or to an unknown
+// callee. The reach of a call target is that of all the code it runs on its
+// frame, jumps followed (reach_walk): [BP+k] reads word k-2 from the top,
+// a read through SP or a computed JMP may read any. Writes between a save's
+// PUSH and POP are not outputs, if no jump leaves that range and no entry
+// label lies inside it.
 //
 // The label index is built once by liveness_begin() and must be rebuilt
 // if labels are added or removed. Removing or rewriting ordinary
 // instructions between queries is fine: every query walks the live list.
+// The class summaries are computed once per session; they stay valid as
+// long as a pass removes a register write in a callee only when
+// reg_dead_from() proved it dead, and adds no read of a register value a
+// function receives from its callers. (A pass that ADDS a write of a
+// register to a function relies on the ABI: only registers a class writes
+// at liveness_begin() are output candidates, so one a caller keeps across
+// the call is not seen as live at the RET.)
 // ===================================================================
 
 #define LV_LIVE      1   // may be read before being written
@@ -52,6 +101,14 @@
 
 #define LV_MAX_STEPS 20000
 #define LV_MAX_DEPTH 8
+
+// Compiler-ABI exemption for open classes (see OPEN CLASSES above):
+// 1 = trust "__function_" entries to follow the ABI, 0 = all-live.
+#ifndef LV_TRUST_COMPILER_ABI
+#define LV_TRUST_COMPILER_ABI 0
+#endif
+
+#define LV_REACH_ALL 0x7fffffff  // code that may read any word of its caller's stack
 
 typedef struct {
     char     name[128];
@@ -64,8 +121,14 @@ static int        *g_stamp       = NULL;   // per-label visit stamp
 static int         g_stamp_id    = 0;
 static signed char (*g_callee)[11] = NULL; // per-label, per-reg cache (-1 = unknown)
 static int         g_steps       = 0;
-static unsigned short *g_extra   = NULL;   // per-label: registers (bit n = Rn) a direct caller reads after the call
-static signed char *g_is_fn      = NULL;   // per-label: target of a direct CALL
+static signed char *g_is_entry   = NULL;   // per-label: function entry (see ENTRIES)
+static int        *g_lbl_cls     = NULL;   // per-label: class of the region the label sits in
+static int         g_ncls        = 0;      // number of regions; a class is named by its representative region
+static unsigned short *g_extra   = NULL;   // per-class: registers (bit n = Rn) a direct caller reads after the call
+static signed char *g_open       = NULL;   // per-class: callers not all known (see OPEN CLASSES)
+static signed char *g_trust      = NULL;   // per-class: every way in from an unknown place is a "__function_" entry
+static int        *g_reach       = NULL;   // per-label (call targets): words of the caller's stack (from the top, at the CALL)
+                                           // it may read as arguments; LV_REACH_ALL if unbounded
 static unsigned short *g_in      = NULL;   // per-label: registers (bit n = Rn) the function at that label may READ before writing
                                            // (only valid where g_in_ok[label]; computed by compute_inputs, a fixed point
                                            // that, unlike the depth-limited walk, copes with recursion)
@@ -77,11 +140,15 @@ static int cmp_label(const void *a, const void *b) {
 }
 
 void liveness_end(void) {
-    free(g_labels); free(g_stamp); free(g_callee); free(g_extra); free(g_is_fn); free(g_in); free(g_in_ok);
-    g_labels = NULL; g_stamp = NULL; g_callee = NULL; g_extra = NULL; g_is_fn = NULL; g_in = NULL; g_in_ok = NULL;
-    g_label_count = 0;
+    free(g_labels); free(g_stamp); free(g_callee); free(g_extra); free(g_is_entry); free(g_lbl_cls);
+    free(g_open); free(g_trust); free(g_reach); free(g_in); free(g_in_ok);
+    g_labels = NULL; g_stamp = NULL; g_callee = NULL; g_extra = NULL; g_is_entry = NULL; g_lbl_cls = NULL;
+    g_open = NULL; g_trust = NULL; g_reach = NULL; g_in = NULL; g_in_ok = NULL;
+    g_label_count = 0; g_ncls = 0;
 }
 
+static bool find_entries(AsmNode *head);
+static bool build_classes(AsmNode *head);
 static void compute_outputs(AsmNode *head);
 static void compute_inputs(void);
 
@@ -110,9 +177,8 @@ void liveness_begin(AsmNode *head) {
             g_labels[i].node = g_labels[i + 1].node = NULL;
     g_stamp_id = 0;
 
-    g_extra = calloc((size_t)g_label_count + 1, sizeof(unsigned short));
-    g_is_fn = calloc((size_t)g_label_count + 1, 1);
-    if (!g_extra || !g_is_fn) { liveness_end(); return; }
+    // Any failure below drops the whole session (g_labels NULL): every query then answers LIVE.
+    if (!find_entries(head) || !build_classes(head)) { liveness_end(); return; }
     compute_outputs(head);
     compute_inputs();
 }
@@ -141,13 +207,37 @@ static const char *branch_target(const AsmNode *n) {
     return n->has_dst ? n->dst_op.raw : (n->has_src ? n->src_op.raw : NULL);
 }
 
+// Label index of a JMP/JT/JF/CALL's target, or -1 (register, unknown or ambiguous label).
+static int target_label(const AsmNode *n) {
+    const char *t = branch_target(n);
+    return (t && !is_register_operand(t)) ? find_label(t) : -1;
+}
+
+static bool is_function_label_name(const char *nm) {
+    size_t ln = strlen(nm);
+    return strncmp(nm, "__function_", 11) == 0 && !(ln > 7 && strcmp(nm + ln - 7, "_return") == 0);
+}
+
+// The compiler-ABI exemption: may an open class keep "ABI + outputs" at its RETs instead of all-live?
+static bool class_trusts_abi(int cls) {
+#if LV_TRUST_COMPILER_ABI
+    return g_trust && g_trust[cls];
+#else
+    (void)cls;
+    return false;
+#endif
+}
+
 static int flow(AsmNode *node, const char *reg, int ridx, int depth, int stamp);
 
-// Is Rridx live when `ret` executes: returned by the ABI, or read after a
-// call by some direct caller of the function `ret` belongs to?
+// Is Rridx live when `ret` executes: returned by the ABI, an open class's RET,
+// or read after a call by some direct caller of the class `ret` belongs to?
 static bool ret_live_out(const AsmNode *ret, const char *reg, int ridx) {
     if (is_live_out_register(reg)) return true;
-    return g_extra && ret->lv_fn > 0 && ((g_extra[ret->lv_fn - 1] >> ridx) & 1u);
+    if (!g_extra || ret->lv_fn <= 0 || ret->lv_fn > g_ncls) return true;   // made after liveness_begin(): unknown
+    int c = ret->lv_fn - 1;
+    if (g_open[c] && !class_trusts_abi(c)) return true;
+    return (g_extra[c] >> ridx) & 1u;
 }
 
 // Callee summary for (label, reg): LV_LIVE and/or LV_PASSTHRU bits.
@@ -166,10 +256,13 @@ static int callee_summary(int lbl, const char *reg, int ridx, int depth) {
 }
 
 // Is `push` (a PUSH of `reg`) the first half of a register SAVE: the stack stays balanced from here up to a
-// POP of the same register, which gives it back? Then a callee that starts with it neither reads the caller's value
-// nor loses it, and the register reaches the callee's RET as it came in. Only the straight-line text is followed
+// POP of the same register, which gives it back? Then a callee that starts with it does not lose the caller's
+// value, and the register reaches the callee's RET as it came in. Only the straight-line text is followed
 // (the compiler's prologue / epilogue); any other use of SP, or a PUSH never popped back, is not a save.
-static bool is_register_save(const AsmNode *push, const char *reg) {
+// Nor is it one when the pushed word may be read as a stack argument: a CALL made while the word lies within
+// the callee's reach (g_reach), or to a callee that is not a known label. On success *pop_out (if given) is
+// the matching POP.
+static bool is_register_save(const AsmNode *push, const char *reg, const AsmNode **pop_out) {
     if (!push->has_dst || push->dst_op.mode != MODE_REG || !str_case_eq(push->dst_op.reg, reg)) return false;
 
     // Where the pushed word sits, in words below BP: count back to the frame setup "MOV BP, SP" (the prologue's
@@ -201,9 +294,23 @@ static bool is_register_save(const AsmNode *push, const char *reg) {
         if (q->type == OP_OTHER || q->type == OP_LABEL) continue;
         if (q->type == OP_PUSH) { depth++; continue; }
         if (q->type == OP_POP) {
-            if (depth == mine) return q->has_dst && q->dst_op.mode == MODE_REG && str_case_eq(q->dst_op.reg, reg);
+            if (depth == mine) {
+                bool ok = q->has_dst && q->dst_op.mode == MODE_REG && str_case_eq(q->dst_op.reg, reg);
+                if (ok && pop_out) *pop_out = q;
+                return ok;
+            }
             depth--;
             if (depth < mine) return false;
+            continue;
+        }
+        if (q->type == OP_CALL) {
+            // The callee sees the word (depth - mine) words below the top of the stack: [BP + 2 + (depth - mine)]
+            // after its "PUSH BP / MOV BP, SP".
+            if (depth >= mine) {
+                int li = target_label(q);
+                if (li < 0 || !g_reach) return false;
+                if (depth - mine < (long)g_reach[li]) return false;
+            }
             continue;
         }
         bool sp_dst = q->has_dst && q->dst_op.mode == MODE_REG && str_case_eq(q->dst_op.reg, "SP");
@@ -253,8 +360,7 @@ static int flow(AsmNode *node, const char *reg, int ridx, int depth, int stamp) 
         }
 
         if (n->type == OP_CALL) {
-            const char *t = branch_target(n);
-            int li = (t && !is_register_operand(t)) ? find_label(t) : -1;
+            int li = target_label(n);
             if (li < 0) return result | LV_LIVE;
             if (g_summary_mode) {                        // g_in so far: a bit once set stays set
                 if (g_in && ((g_in[li] >> ridx) & 1u)) return result | LV_LIVE;
@@ -266,8 +372,12 @@ static int flow(AsmNode *node, const char *reg, int ridx, int depth, int stamp) 
             continue;                                    // may survive the call
         }
 
-        // inside a callee: "PUSH Rn ... POP Rn" saves and restores the caller's register
-        if (depth > 0 && n->type == OP_PUSH && is_register_save(n, reg)) return result | LV_PASSTHRU;
+        // inside a callee: "PUSH Rn ... POP Rn" saves and restores the caller's register, so the register
+        // passes through; but the code up to the POP may still read the caller's value (a register argument)
+        if (depth > 0 && n->type == OP_PUSH && is_register_save(n, reg, NULL)) {
+            int sub = flow(n->next, reg, ridx, depth, stamp);
+            return result | (sub & LV_LIVE) | LV_PASSTHRU;
+        }
 
         // POP Rd / IN Rd, port overwrite Rd without reading it.
         // (is_register_read() conservatively reports any non-MOV register
@@ -281,8 +391,7 @@ static int flow(AsmNode *node, const char *reg, int ridx, int depth, int stamp) 
         if (is_register_read(n, reg)) return result | LV_LIVE;
 
         if (n->type == OP_JMP) {
-            const char *t = branch_target(n);
-            int li = (t && !is_register_operand(t)) ? find_label(t) : -1;
+            int li = target_label(n);
             if (li < 0) return result | LV_LIVE;
             if (g_stamp[li] == stamp) return result;
             n = g_labels[li].node;                       // loop's n->next steps past it
@@ -324,30 +433,312 @@ bool reg_dead_at_label(const char *label, const char *reg) {
     return reg_dead_from(g_labels[li].node, reg);
 }
 
+// ===================================================================
+// ENTRIES AND CLASSES
+// ===================================================================
 
-// Fixed point of g_in over the functions (call targets and compiler "__function_" entries): a register is in g_in[f] when
-// some path from f's entry may read it before writing it. A call reads what its callee reads (nothing is assumed killed).
-// A register save (PUSH Rn ... POP Rn) is not a read (see is_register_save).
+// Mark every label named in `s` (an operand or a directive line) as escaped. String literals and the
+// comment are skipped; a token that starts with a digit is a number.
+static void escape_tokens(const char *s, signed char *escaped) {
+    char tok[128];
+    while (*s) {
+        if (*s == ';') return;
+        if (*s == '"') {
+            s++;
+            while (*s && *s != '"') { if (*s == '\\' && s[1]) s++; s++; }
+            if (*s) s++;
+            continue;
+        }
+        if (isalpha((unsigned char)*s) || *s == '_') {
+            size_t k = 0;
+            while (isalnum((unsigned char)*s) || *s == '_') { if (k + 1 < sizeof(tok)) tok[k++] = *s; s++; }
+            tok[k] = '\0';
+            int li = find_label(tok);
+            if (li >= 0) escaped[li] = 1;
+            continue;
+        }
+        if (isdigit((unsigned char)*s)) {
+            while (isalnum((unsigned char)*s) || *s == '_' || *s == '.') s++;
+            continue;
+        }
+        s++;
+    }
+}
+
+// g_is_entry[label]: nonzero for a function entry, as flags: 1 = escaped, 2 = direct CALL target,
+// 4 = "__function_" label (a label that is only 4 is an entry too; build_classes reads the flags).
+static bool find_entries(AsmNode *head) {
+    int nl = g_label_count;
+    g_is_entry = calloc((size_t)nl + 1, 1);
+    if (!g_is_entry) return false;
+    signed char *esc = calloc((size_t)nl + 1, 1);
+    if (!esc) return false;
+    for (AsmNode *n = head; n; n = n->next) {
+        if (n->type == OP_LABEL) continue;
+        if (n->type == OP_OTHER) {
+            if (is_directive_node(n)) escape_tokens(n->raw, esc);
+            continue;
+        }
+        if (n->type == OP_CALL) {
+            int li = target_label(n);
+            if (li >= 0) g_is_entry[li] |= 2;
+            continue;
+        }
+        if (n->type == OP_JMP || n->type == OP_JT || n->type == OP_JF) continue;
+        if (n->has_dst) escape_tokens(n->dst_op.raw, esc);
+        if (n->has_src) escape_tokens(n->src_op.raw, esc);
+    }
+    for (int i = 0; i < nl; i++) {
+        if (!g_labels[i].node) continue;
+        if (esc[i]) g_is_entry[i] |= 1;
+        if (is_function_label_name(g_labels[i].name)) g_is_entry[i] |= 4;
+    }
+    free(esc);
+    return true;
+}
+
+static int uf_find(int *parent, int x) {
+    while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+}
+
+static void uf_union(int *parent, int a, int b) {
+    a = uf_find(parent, a); b = uf_find(parent, b);
+    if (a == b) return;
+    if (a < b) parent[b] = a; else parent[a] = b;            // region 0 stays its class's name
+}
+
+// A line that emits data words: control cannot meaningfully fall through it.
+static bool is_data_line(const AsmNode *n) {
+    if (!is_data_directive_node(n)) return false;
+    const char *p = n->raw;
+    while (*p == ' ' || *p == '\t') p++;
+    static const char *const kw[] = { "integer", "float", "string", "pointer", "datafile" };
+    for (size_t i = 0; i < sizeof(kw) / sizeof(kw[0]); i++) {
+        size_t l = strlen(kw[i]);
+        if (strncasecmp(p, kw[i], l) == 0 && (p[l] == '\0' || isspace((unsigned char)p[l]))) return true;
+    }
+    return false;
+}
+
+// Can control reach the label `lab` by falling through from the code above it?
+static bool falls_into(const AsmNode *lab) {
+    for (const AsmNode *q = lab->prev; q; q = q->prev) {
+        if (q->type == OP_LABEL) return true;            // a label above may be jumped to
+        if (q->type == OP_OTHER) {
+            if (!is_directive_node(q) || is_preprocessor_node(q)) continue;
+            return !is_data_line(q);                     // an unknown instruction falls through
+        }
+        return q->type != OP_JMP && q->type != OP_RET && q->type != OP_HLT;
+    }
+    return false;
+}
+
+// Can control entering at `node` reach a RET without returning through a CALL it makes? (Followed: fall-through,
+// JMP/JT/JF to labels, over CALLs. A computed JMP leaves for a label that escapes, and is checked on its own, or
+// for a return address, which is a return to a known caller; both end the path. Unknowns answer true.)
+// Stack words above the return address (counted from the top at the CALL) that `n` may read as arguments:
+// [BP+k] reads word k-2 (after the usual "PUSH BP / MOV BP, SP"); a read through SP may read any, and so may
+// the unknown code a computed JMP goes to (it runs on the same stack: a Lua trampoline jumps to the function).
+static int node_reach(const AsmNode *n) {
+    int reach = 0;
+    if (n->type == OP_OTHER || n->type == OP_LABEL) return 0;
+    if (n->type == OP_JMP) {
+        const char *t = branch_target(n);
+        return (!t || is_register_operand(t)) ? LV_REACH_ALL : 0;
+    }
+    for (int side = 0; side < 2; side++) {
+        const Operand *op = side ? &n->src_op : &n->dst_op;
+        if (!(side ? n->has_src : n->has_dst) || op->mode != MODE_INDIRECT) continue;
+        int r = get_reg_index(op->reg);
+        if (r == 14 && op->offset >= 2 && op->offset - 1 > reach) reach = op->offset - 1;
+        if (r == 15 && (side == 1 || n->type != OP_MOV)) return LV_REACH_ALL;
+    }
+    return reach;
+}
+
+// Walk state of reaches_ret / reach_walk: step budget, and the largest node_reach() of the code reach_walk went through.
+static int g_rr_steps;
+static int g_rr_reach;
+static bool reaches_ret(AsmNode *node, int stamp) {
+    for (AsmNode *n = node; ; n = n->next) {
+        if (!n || ++g_rr_steps > LV_MAX_STEPS) return true;
+        switch (n->type) {
+        case OP_LABEL: {
+            int li = label_index_of(n);
+            if (li < 0) return true;
+            if (g_stamp[li] == stamp) return false;
+            g_stamp[li] = stamp;
+            continue;
+        }
+        case OP_OTHER: if (is_data_directive_node(n)) return true; continue;
+        case OP_RET:   return true;
+        case OP_HLT:   return false;
+        case OP_JMP: {
+            const char *t = branch_target(n);
+            if (!t || is_register_operand(t)) return false;
+            int li = find_label(t);
+            if (li < 0) return true;
+            if (g_stamp[li] == stamp) return false;
+            g_stamp[li] = stamp;
+            n = g_labels[li].node;
+            continue;
+        }
+        case OP_JT: case OP_JF: {
+            int li = target_label(n);
+            if (li < 0) return true;
+            if (g_stamp[li] != stamp) {
+                g_stamp[li] = stamp;
+                if (reaches_ret(g_labels[li].node->next, stamp)) return true;
+            }
+            continue;
+        }
+        default: continue;
+        }
+    }
+}
+
+// The stack reach (node_reach) of all the code that runs from `node` on the same stack frame: fall-through,
+// JMP/JT/JF, over CALLs, up to RET / HLT. Unknowns (data, the end of the file, the step budget) reach all.
+static void reach_walk(AsmNode *node, int stamp) {
+    for (AsmNode *n = node; g_rr_reach < LV_REACH_ALL; n = n->next) {
+        if (!n || ++g_rr_steps > LV_MAX_STEPS) { g_rr_reach = LV_REACH_ALL; return; }
+        int r = node_reach(n);
+        if (r > g_rr_reach) g_rr_reach = r;
+        switch (n->type) {
+        case OP_LABEL: {
+            int li = label_index_of(n);
+            if (li < 0) { g_rr_reach = LV_REACH_ALL; return; }
+            if (g_stamp[li] == stamp) return;
+            g_stamp[li] = stamp;
+            continue;
+        }
+        case OP_OTHER: if (is_data_directive_node(n)) { g_rr_reach = LV_REACH_ALL; return; } continue;
+        case OP_RET: case OP_HLT: return;
+        case OP_JMP: case OP_JT: case OP_JF: {
+            const char *t = branch_target(n);
+            if (n->type == OP_JMP && (!t || is_register_operand(t))) return;   // node_reach said all
+            int li = t ? find_label(t) : -1;
+            if (li < 0) { g_rr_reach = LV_REACH_ALL; return; }
+            if (g_stamp[li] == stamp) { if (n->type == OP_JMP) return; continue; }
+            g_stamp[li] = stamp;
+            if (n->type == OP_JMP) { n = g_labels[li].node; continue; }
+            reach_walk(g_labels[li].node->next, stamp);
+            continue;
+        }
+        default: continue;
+        }
+    }
+}
+
+// Regions, classes (lv_fn, g_lbl_cls), the per-class facts g_open, g_trust, and g_reach; allocates g_extra.
+static bool build_classes(AsmNode *head) {
+    int nl = g_label_count;
+    int nreg = 1;
+    for (AsmNode *n = head; n; n = n->next)
+        if (n->type == OP_LABEL) { int li = label_index_of(n); if (li >= 0 && g_is_entry[li]) nreg++; }
+    int *parent  = malloc((size_t)nreg * sizeof(int));
+    g_lbl_cls    = malloc(((size_t)nl + 1) * sizeof(int));
+    g_extra      = calloc((size_t)nreg, sizeof(unsigned short));
+    g_open       = calloc((size_t)nreg, 1);
+    g_trust      = calloc((size_t)nreg, 1);
+    g_reach      = calloc((size_t)nl + 1, sizeof(int));
+    signed char *bad = calloc((size_t)nreg, 1);        // has an entry that is not a "__function_" label
+    signed char *called = calloc((size_t)nreg, 1);     // has an entry with a direct CALL site
+    signed char *has = calloc((size_t)nreg, 1);        // has an entry
+    if (!parent || !g_lbl_cls || !g_extra || !g_open || !g_trust || !g_reach || !bad || !called || !has) {
+        free(parent); free(bad); free(called); free(has);
+        return false;
+    }
+    g_ncls = nreg;
+    for (int i = 0; i < nreg; i++) parent[i] = i;
+    for (int i = 0; i <= nl; i++) g_lbl_cls[i] = 0;
+
+    // 1. regions (lv_fn holds 1 + region for now)
+    int cur = 0;
+    for (AsmNode *n = head; n; n = n->next) {
+        if (n->type == OP_LABEL) {
+            int li = label_index_of(n);
+            if (li >= 0 && g_is_entry[li]) cur++;
+            if (li >= 0) g_lbl_cls[li] = cur;
+        }
+        n->lv_fn = cur + 1;
+    }
+
+    // 2. merge regions that control passes between without a CALL. A passage into code that cannot reach a RET
+    // (an error handler that halts, a shared exit through a computed JMP) does not merge: no RET of the target
+    // returns to the source's callers. (Its stack reads still count for g_reach: reach_walk follows jumps.)
+    signed char *rr = malloc((size_t)nl + 1);           // per-label memo of reaches_ret (-1 unknown)
+    if (!rr) {
+        free(parent); free(bad); free(called); free(has);
+        return false;
+    }
+    memset(rr, -1, (size_t)nl + 1);
+    for (AsmNode *n = head; n; n = n->next) {
+        int from = -1, to = -1, li = -1;
+        if (n->type == OP_JMP || n->type == OP_JT || n->type == OP_JF) {
+            li = target_label(n);
+            if (li >= 0) { from = n->lv_fn - 1; to = g_lbl_cls[li]; }
+        } else if (n->type == OP_LABEL && n->prev) {
+            li = label_index_of(n);
+            if (li >= 0 && g_is_entry[li] && falls_into(n)) { from = n->prev->lv_fn - 1; to = n->lv_fn - 1; }
+        }
+        if (from < 0 || from == to) continue;
+        if (rr[li] < 0) { g_rr_steps = 0; rr[li] = reaches_ret(g_labels[li].node, ++g_stamp_id); }
+        if (rr[li]) uf_union(parent, from, to);
+    }
+    free(rr);
+    for (AsmNode *n = head; n; n = n->next) n->lv_fn = uf_find(parent, n->lv_fn - 1) + 1;
+    for (int i = 0; i < nl; i++) g_lbl_cls[i] = uf_find(parent, g_lbl_cls[i]);
+
+    // 3. per-class facts. A class is open when control can enter it from an unknown place and reach a RET:
+    // from the program start (region 0), through an escaped entry, or through entries none of which has a
+    // direct CALL site. g_trust: every such way in is a "__function_" entry (see class_trusts_abi).
+    for (int c = 0; c < nreg; c++) g_trust[c] = 1;
+    g_rr_steps = 0;
+    if (reaches_ret(head, ++g_stamp_id)) { int c0 = uf_find(parent, 0); g_open[c0] = 1; g_trust[c0] = 0; }
+    for (int i = 0; i < nl; i++) {
+        if (!g_labels[i].node || !g_is_entry[i]) continue;
+        int c = g_lbl_cls[i];
+        bool fn = (g_is_entry[i] & 4) != 0;
+        if (g_is_entry[i] & 2) called[c] = 1;
+        if (!fn) bad[c] = 1;
+        has[c] = 1;
+        if (g_is_entry[i] & 1) {                       // escaped: opens its class if it leads to a RET
+            g_rr_steps = 0;
+            if (reaches_ret(g_labels[i].node, ++g_stamp_id)) { g_open[c] = 1; if (!fn) g_trust[c] = 0; }
+        }
+    }
+    for (int c = 0; c < nreg; c++) {
+        if (parent[c] != c || called[c]) continue;
+        g_open[c] = 1;
+        if (bad[c] || !has[c]) g_trust[c] = 0;
+    }
+    // stack arguments of each call target: what the code it runs on its frame may read (see is_register_save)
+    for (int i = 0; i < nl; i++) {
+        if (!g_labels[i].node || !(g_is_entry[i] & 2)) continue;
+        g_rr_steps = 0; g_rr_reach = 0;
+        reach_walk(g_labels[i].node, ++g_stamp_id);
+        g_reach[i] = g_rr_reach;
+    }
+    free(parent); free(bad); free(called); free(has);
+    return true;
+}
+
+// Fixed point of g_in over the function entries: a register is in g_in[f] when some path from f's entry may
+// read it before writing it. A call reads what its callee reads (nothing is assumed killed). A register save
+// (PUSH Rn ... POP Rn) is not a read (see is_register_save), but what lies between them is walked.
 static void compute_inputs(void) {
     int nl = g_label_count;
     g_in    = calloc((size_t)nl + 1, sizeof(unsigned short));
     g_in_ok = calloc((size_t)nl + 1, 1);
     if (!g_in || !g_in_ok) { free(g_in); free(g_in_ok); g_in = NULL; g_in_ok = NULL; return; }
-    bool *is_entry = calloc((size_t)nl + 1, 1);
-    if (!is_entry) { free(g_in); free(g_in_ok); g_in = NULL; g_in_ok = NULL; return; }
-    for (int i = 0; i < nl; i++) {
-        if (!g_labels[i].node) continue;
-        size_t ln = strlen(g_labels[i].name);
-        bool fn = g_is_fn[i] || (strncmp(g_labels[i].name, "__function_", 11) == 0 &&
-                                 !(ln > 7 && strcmp(g_labels[i].name + ln - 7, "_return") == 0));
-        is_entry[i] = fn;
-        g_in_ok[i] = fn;
-    }
+    for (int i = 0; i < nl; i++) g_in_ok[i] = g_labels[i].node && g_is_entry[i];
     g_summary_mode = true;
     for (int iter = 0; iter < 30; iter++) {
         bool changed = false;
         for (int i = 0; i < nl; i++) {
-            if (!is_entry[i]) continue;
+            if (!g_in_ok[i]) continue;
             for (int r = 0; r <= 10; r++) {
                 if ((g_in[i] >> r) & 1u) continue;
                 char nm[8];
@@ -361,57 +752,87 @@ static void compute_inputs(void) {
         if (iter == 29) for (int i = 0; i < nl; i++) g_in_ok[i] = 0;        // did not settle: trust nothing
     }
     g_summary_mode = false;
-    free(is_entry);
 }
 
 // ===================================================================
-// OUTPUTS: registers a function leaves for its direct callers to read
+// OUTPUTS: registers a class leaves for its direct callers to read
 // ===================================================================
-typedef struct { AsmNode *call; int target; } CallSite;
+typedef struct { AsmNode *call; int target; int from; unsigned short covered; } CallSite;
 
 #define LV_MAX_OUTPUT_QUERIES 400000
+#define LV_MAX_SAVE_LABELS    64
+
+// Does a save's PUSH..POP range keep its writes in: no entry label inside, and every jump in it
+// lands on a label inside it?
+static bool save_range_closed(const AsmNode *push, const AsmNode *pop) {
+    int labels[LV_MAX_SAVE_LABELS];
+    int nlab = 0;
+    for (const AsmNode *q = push->next; q != pop; q = q->next) {
+        if (!q) return false;
+        if (q->type != OP_LABEL) continue;
+        int li = label_index_of((AsmNode *)q);
+        if (li < 0 || g_is_entry[li] || nlab == LV_MAX_SAVE_LABELS) return false;
+        labels[nlab++] = li;
+    }
+    for (const AsmNode *q = push->next; q != pop; q = q->next) {
+        if (q->type != OP_JMP && q->type != OP_JT && q->type != OP_JF) continue;
+        int li = target_label(q);
+        if (li < 0) return false;
+        bool inside = false;
+        for (int k = 0; k < nlab && !inside; k++) inside = labels[k] == li;
+        if (!inside) return false;
+    }
+    return true;
+}
 
 static void compute_outputs(AsmNode *head) {
-    int nl = g_label_count;
+    int nc = g_ncls;
     int ncalls = 0;
     for (AsmNode *n = head; n; n = n->next) if (n->type == OP_CALL) ncalls++;
 
     CallSite *sites = malloc((size_t)(ncalls ? ncalls : 1) * sizeof(CallSite));
-    unsigned short *written = calloc((size_t)nl + 1, sizeof(unsigned short));
-    unsigned short *pushed  = calloc((size_t)nl + 1, sizeof(unsigned short));
-    if (!sites || !written || !pushed) {
-        free(sites); free(written); free(pushed);
-        for (AsmNode *n = head; n; n = n->next) n->lv_fn = 0;
+    unsigned short *written = calloc((size_t)nc + 1, sizeof(unsigned short));
+    if (!sites || !written) {
+        free(sites); free(written);
+        for (int c = 0; c < nc; c++) g_open[c] = 1, g_trust[c] = 0;   // no outputs known: every RET all-live
         return;
     }
 
-    // 1. direct CALL targets
+    // 1. direct call sites, and the registers each class writes itself outside a save
     int ns = 0;
+    const AsmNode *cover[11] = { 0 };                   // cover[r]: the POP that ends the save of Rr we are in
     for (AsmNode *n = head; n; n = n->next) {
-        if (n->type != OP_CALL) continue;
-        const char *t = branch_target(n);
-        int li = (t && !is_register_operand(t)) ? find_label(t) : -1;
-        if (li < 0) continue;
-        g_is_fn[li] = 1;
-        sites[ns].call = n; sites[ns].target = li; ns++;
-    }
-
-    // 2. which function each node belongs to (from one call-target label to the
-    // next), and which registers each function writes / pushes
-    int cur = 0;
-    for (AsmNode *n = head; n; n = n->next) {
-        if (n->type == OP_LABEL) {
-            int li = label_index_of(n);
-            if (li >= 0 && g_is_fn[li]) cur = li + 1;
+        if (n->type == OP_OTHER || n->type == OP_LABEL) continue;
+        int c = n->lv_fn - 1;
+        unsigned short covered = 0;
+        for (int r = 1; r <= 10; r++) if (cover[r]) covered |= (unsigned short)(1u << r);
+        if (n->type == OP_CALL) {
+            int li = target_label(n);
+            if (li < 0) continue;
+            sites[ns].call = n; sites[ns].target = g_lbl_cls[li]; sites[ns].from = c; sites[ns].covered = covered; ns++;
+            continue;
         }
-        n->lv_fn = cur;
-        if (cur == 0 || !n->has_dst || n->dst_op.mode != MODE_REG) continue;
+        if (!n->has_dst || n->dst_op.mode != MODE_REG) continue;
         const char *rn = n->dst_op.reg;
         int r = get_reg_index(rn);
         if (r < 1 || r > 10 || (rn[0] != 'R' && rn[0] != 'r')) continue;
-        if (n->type == OP_PUSH) pushed[cur - 1] |= (unsigned short)(1u << r);
-        else if (n->type != OP_JMP && n->type != OP_JT && n->type != OP_JF && n->type != OP_CALL)
-            written[cur - 1] |= (unsigned short)(1u << r);
+        if (n->type == OP_PUSH) {
+            const AsmNode *pop = NULL;
+            if (!cover[r] && is_register_save(n, rn, &pop) && save_range_closed(n, pop)) cover[r] = pop;
+            continue;
+        }
+        if (n == cover[r]) { cover[r] = NULL; continue; }   // the POP that gives the caller's value back
+        if (n->type == OP_JMP || n->type == OP_JT || n->type == OP_JF) continue;
+        if (!cover[r]) written[c] |= (unsigned short)(1u << r);
+    }
+
+    // 2. a class also writes what its direct callees write (outside a save around the call)
+    for (bool changed = true; changed; ) {
+        changed = false;
+        for (int i = 0; i < ns; i++) {
+            unsigned short w = (unsigned short)(written[sites[i].from] | (written[sites[i].target] & ~sites[i].covered));
+            if (w != written[sites[i].from]) { written[sites[i].from] = w; changed = true; }
+        }
     }
 
     // registers the ABI already returns need no help
@@ -421,16 +842,15 @@ static void compute_outputs(AsmNode *head) {
         if (is_live_out_register(nm)) abi |= (unsigned short)(1u << r);
     }
 
-    // 3. fixed point: a register a function writes without saving is an output
-    // if some direct caller reads it after the call
+    // 3. fixed point: a register a class writes is an output if some direct caller reads it after the call
     long queries = 0;
     bool changed = true, gave_up = false;
     for (int round = 0; changed && round < 8; round++) {
         changed = false;
-        memset(g_callee, -1, (size_t)nl * sizeof(*g_callee));
+        memset(g_callee, -1, (size_t)g_label_count * sizeof(*g_callee));
         for (int i = 0; i < ns && !gave_up; i++) {
             int t = sites[i].target;
-            unsigned short cand = (unsigned short)(written[t] & ~pushed[t] & ~abi & ~g_extra[t]);
+            unsigned short cand = (unsigned short)(written[t] & ~abi & ~g_extra[t]);
             for (int r = 1; r <= 10 && cand; r++) {
                 if (!((cand >> r) & 1u)) continue;
                 char nm[8]; snprintf(nm, sizeof(nm), "R%d", r);
@@ -444,8 +864,8 @@ static void compute_outputs(AsmNode *head) {
         if (gave_up) break;
     }
     if (gave_up || changed) {                      // no fixed point: assume the worst
-        for (int t = 0; t < nl; t++) g_extra[t] |= (unsigned short)(written[t] & ~pushed[t] & ~abi);
+        for (int t = 0; t < nc; t++) g_extra[t] |= (unsigned short)(written[t] & ~abi);
     }
-    memset(g_callee, -1, (size_t)nl * sizeof(*g_callee));
-    free(sites); free(written); free(pushed);
+    memset(g_callee, -1, (size_t)g_label_count * sizeof(*g_callee));
+    free(sites); free(written);
 }

@@ -65,7 +65,7 @@ If your compiler is `v32lua`, add `-L lua`. If you use `v32cc`, give it
 | `-O0` | nothing (the default) | | none |
 | `-O1` | tidies the compiler's output | 3% fewer cycles, 4-6% smaller | very low |
 | `-O2` | + keeps variables in registers, removes dead code and unused functions | 5-7% fewer cycles, 6-14% smaller | low |
-| `-O3` | + inlines small functions, turns loops inside out, unrolls loops | 9-11% fewer cycles (much more on loop-heavy code); size anywhere from 13% smaller to 25% bigger than `-O0`, depending on how many loops it copies | moderate |
+| `-O3` | + inlines small functions, turns loops inside out, unrolls loops, steps a pointer through arrays instead of recomputing each address, drops constants that are set again | 9-11% fewer cycles (much more on loop-heavy code); size anywhere from 13% smaller to 25% bigger than `-O0`, depending on how many loops it copies | moderate |
 | `-Os` | `-O3` without the loop copying | like `-O2` plus inlining | moderate |
 
 (Measured on a few hundred generated programs; your game will differ. Loop-heavy
@@ -76,7 +76,8 @@ Rules of thumb:
 * Start with `-O2`. Always safe to try.
 * Use `-O3` when speed matters (a frame that does not fit in 250,000 cycles).
   It makes some code bigger because it **copies** loop bodies; that is the trade.
-* Use `-Os` when the cartridge is too big.
+* Use `-Os` when the cartridge is too big. It is `-O3` without the loop passes (`loop-strength` included) and
+  without `peephole-repeat-imm`.
 * You can mix: `-O3 -fno-inline` is `-O3` without inlining; `-O2 -floop-unroll` adds
   one extra pass. Names are in `v32opt --help` and the README.
 
@@ -116,6 +117,7 @@ level where the bug appears tells you which family of passes to suspect.
 ```bash
 v32opt game.asm -O3 -fno-inline                   # still broken?
 v32opt game.asm -O3 -fno-loop-unroll -fno-loop-unroll-partial
+v32opt game.asm -O3 -fno-loop-strength -fno-peephole-repeat-imm
 v32opt game.asm -O3 -fno-promote-regs -fno-promote-leaf -fno-promote-loops
 ```
 

@@ -110,6 +110,8 @@ BasicBlock* find_block_by_label(ControlFlowGraph *cfg, const char *label) {
 //
 // FIX: Uses str_case_eq for mnemonic matching (Vircon32 emits lowercase)
 // ===================================================================
+static void pin_blocks(ControlFlowGraph *cfg, AsmNode *head);
+
 ControlFlowGraph* build_cfg(AsmNode *head) {
     ControlFlowGraph *cfg = calloc(1, sizeof(ControlFlowGraph));
     if (!head) return cfg;
@@ -234,7 +236,59 @@ ControlFlowGraph* build_cfg(AsmNode *head) {
         }
     }
 
+    pin_blocks(cfg, (head->type == OP_OTHER && head->raw[0] == '\0') ? head : NULL);
     return cfg;
+}
+
+// -------------------------------------------------------------------
+// Entries the edges above do not describe. The CFG only has jump and
+// fall-through edges, so a block that control also reaches some other way
+// must not take its entry state from its CFG predecessors alone:
+//   - a label that is the target of a direct CALL (a function entry: the
+//     caller's registers arrive with it -- and code above it may also fall
+//     into it, as in "f0: MOV R6,5 / f1: MOV R2,R6" with "CALL f1" elsewhere);
+//   - a label whose name appears anywhere except as the target of a
+//     JMP/JT/JF/CALL ("MOV R0, L", "pointer L", "%define X L"): its address
+//     is taken, so a computed JMP/CALL can reach it;
+//   - the first block of the program (where the boot starts it);
+//   - a block with no predecessor at all (nothing in the CFG explains how it
+//     runs; if it is dead, being pessimistic costs nothing).
+// Such a block is "pinned": every register is VAL_BOTTOM on entry, whatever
+// its predecessors say (propagate_constants_cfg).
+// -------------------------------------------------------------------
+typedef struct { AsmNode *n; const char *target; bool *pin; } PinScan;
+
+static void pin_token(LoopLabel *l, const char *tok, void *arg) {
+    PinScan *ps = arg;
+    bool plain_jump = ps->target && strcmp(tok, ps->target) == 0 &&
+                      (ps->n->type == OP_JMP || ps->n->type == OP_JT || ps->n->type == OP_JF);
+    if (!plain_jump) ps->pin[l - g_loop_labels] = true;   // CALL target, or address taken
+}
+
+static void pin_blocks(ControlFlowGraph *cfg, AsmNode *head) {
+    if (!head) {                       // not the parser's dummy head: no label table, pin everything
+        for (int i = 0; i < cfg->num_blocks; i++) cfg->blocks[i]->pinned = true;
+        return;
+    }
+    loop_labels_build(head);
+    bool *pin = calloc((size_t)g_loop_labels_n + 1, sizeof(bool));
+    for (AsmNode *n = head->next; n; n = n->next) {
+        if (n->type == OP_LABEL || n->debug_note) continue;
+        char buf[128];
+        PinScan ps = { n, NULL, pin };
+        if (n->type == OP_JMP || n->type == OP_JT || n->type == OP_JF) ps.target = loop_jump_target(n, buf, sizeof(buf));
+        loop_label_tokens_all(n, pin_token, &ps);
+    }
+    for (int i = 0; i < cfg->num_blocks; i++) {
+        BasicBlock *b = cfg->blocks[i];
+        b->pinned = (i == 0) || b->num_preds == 0;
+        for (int k = 0; k < b->num_labels && !b->pinned; k++) {
+            LoopLabel *l = loop_label_find(b->labels[k]);
+            if (!l || l->duplicate || pin[l - g_loop_labels]) b->pinned = true;
+        }
+    }
+    free(pin);
+    loop_labels_free();
 }
 
 // ===================================================================
@@ -461,9 +515,10 @@ void propagate_constants_cfg(ControlFlowGraph *cfg) {
 
         // Compute in-state: merge all predecessor out-states
         BlockState new_in;
-        for (int r = 0; r < 16; r++) new_in.regs[r] = (RegState){VAL_TOP, 0};
+        for (int r = 0; r < 16; r++)
+            new_in.regs[r] = block->pinned ? (RegState){VAL_BOTTOM, 0} : (RegState){VAL_TOP, 0};
 
-        for (int p = 0; p < block->num_preds; p++) {
+        for (int p = 0; p < block->num_preds && !block->pinned; p++) {
             BasicBlock *pred = block->preds[p];
             for (int r = 0; r < 16; r++) {
                 new_in.regs[r] = merge_reg(new_in.regs[r], pred->out_state.regs[r]);

@@ -32,8 +32,10 @@ static void set_opt_level(OptConfig *cfg, int level) {
     cfg -> opt_loop_invert               = false;
     cfg -> opt_loop_unroll               = false;
     cfg -> opt_loop_index                = false;
+    cfg -> opt_loop_strength             = false;
     cfg -> opt_loop_unroll_partial       = false;
     cfg -> opt_peephole_lua_checks       = false;
+    cfg -> opt_peephole_repeat_imm       = false;
 
     if (level                           == 0) return; // -O0: all off
 
@@ -78,13 +80,17 @@ static void set_opt_level(OptConfig *cfg, int level) {
     cfg -> opt_loop_invert               = true;
     cfg -> opt_loop_unroll               = true;
     cfg -> opt_loop_index                = true;
+    cfg -> opt_loop_strength             = true;
     cfg -> opt_loop_unroll_partial       = true;
+    cfg -> opt_peephole_repeat_imm       = true;   // cleans up after loop-unroll
 
     if (level                           == 3) return;
     cfg -> opt_loop_invert               = false;
     cfg -> opt_loop_unroll               = false;
     cfg -> opt_loop_index                = false;
+    cfg -> opt_loop_strength             = false;
     cfg -> opt_loop_unroll_partial       = false;
+    cfg -> opt_peephole_repeat_imm       = false;
     //cfg->opt_inline = false;
     //cfg->opt_peephole_immediate_prop = false;
 }
@@ -111,6 +117,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
         else if (strcmp(name, "peephole-zero-test") == 0) cfg->opt_peephole_zero_test = false;
         else if (strcmp(name, "peephole-dead-regs") == 0) cfg->opt_peephole_dead_regs = false;
         else if (strcmp(name, "peephole-copies") == 0) cfg->opt_peephole_copies = false;
+        else if (strcmp(name, "peephole-repeat-imm") == 0) cfg->opt_peephole_repeat_imm = false;
         else if (strcmp(name, "cse") == 0) cfg->opt_cse = false;
         else if (strcmp(name, "dce") == 0) cfg->opt_dce = false;
         else if (strcmp(name, "constant-folding") == 0) cfg->opt_constant_folding = false;
@@ -122,6 +129,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
         else if (strcmp(name, "loop-invert") == 0) cfg->opt_loop_invert = false;
         else if (strcmp(name, "loop-unroll") == 0) cfg->opt_loop_unroll = false;
         else if (strcmp(name, "loop-index") == 0) cfg->opt_loop_index = false;
+        else if (strcmp(name, "loop-strength") == 0) cfg->opt_loop_strength = false;
         else if (strcmp(name, "loop-unroll-partial") == 0) cfg->opt_loop_unroll_partial = false;
         else if (strcmp(name, "resolve-defines") == 0) cfg->opt_resolve_defines = false;
         else return false;
@@ -165,6 +173,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
     else if (strcmp(arg, "peephole-zero-test") == 0) cfg->opt_peephole_zero_test = true;
     else if (strcmp(arg, "peephole-dead-regs") == 0) cfg->opt_peephole_dead_regs = true;
     else if (strcmp(arg, "peephole-copies") == 0) cfg->opt_peephole_copies = true;
+    else if (strcmp(arg, "peephole-repeat-imm") == 0) cfg->opt_peephole_repeat_imm = true;
     else if (strcmp(arg, "cse") == 0) cfg->opt_cse = true;
     else if (strcmp(arg, "dce") == 0) cfg->opt_dce = true;
     else if (strcmp(arg, "constant-folding") == 0) cfg->opt_constant_folding = true;
@@ -176,6 +185,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
     else if (strcmp(arg, "loop-invert") == 0) cfg->opt_loop_invert = true;
     else if (strcmp(arg, "loop-unroll") == 0) cfg->opt_loop_unroll = true;
     else if (strcmp(arg, "loop-index") == 0) cfg->opt_loop_index = true;
+    else if (strcmp(arg, "loop-strength") == 0) cfg->opt_loop_strength = true;
     else if (strcmp(arg, "loop-unroll-partial") == 0) cfg->opt_loop_unroll_partial = true;
     else return false;
 
@@ -223,7 +233,7 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "  -O2                      -O1 + cse, dce, constant-folding,\n");
     fprintf(stdout, "                           omit-frame-pointers, promote-regs,\n");
     fprintf(stdout, "                           promote-leaf, promote-loops\n");
-    fprintf(stdout, "  -O3                      -O2 + inline, loop-invert, loop-unroll, loop-index (aggressive; could break)\n");
+    fprintf(stdout, "  -O3                      -O2 + inline, loop-invert, loop-unroll, loop-index,\n                           loop-strength, loop-unroll-partial, peephole-repeat-imm (aggressive; could break)\n");
     fprintf(stdout, "  -Os                      -O3 without the loop passes\n\n");
     fprintf(stdout, "Individual Optimization Toggles:\n");
     fprintf(stdout, "  -f<name>                 Enable specific pass (e.g., -fpeephole-algebra)\n");
@@ -235,8 +245,8 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "  peephole-loads, peephole-immediate-prop, peephole-jmp-chain,\n");
     fprintf(stdout, "  inline, cse, dce, constant-folding, promote-regs, promote-leaf,\n");
     fprintf(stdout, "  promote-loops, omit-frame-pointers, peephole-compiler-myopia,\n");
-    fprintf(stdout, "  peephole-zero-test, peephole-dead-regs, peephole-copies,\n");
-    fprintf(stdout, "  loop-invert, loop-unroll, loop-index,\n  loop-unroll-partial\n\n");
+    fprintf(stdout, "  peephole-zero-test, peephole-dead-regs, peephole-copies,\n  peephole-repeat-imm,\n");
+    fprintf(stdout, "  loop-invert, loop-unroll, loop-index, loop-strength,\n  loop-unroll-partial\n\n");
     fprintf(stdout, "Loop tuning (-f<name>=N):\n");
     fprintf(stdout, "  loop-unroll-max-trips=N          Most iterations unrolled completely (16)\n");
     fprintf(stdout, "  loop-unroll-max-size=N           Most instructions in a fully unrolled loop (96)\n");

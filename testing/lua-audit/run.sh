@@ -2,8 +2,9 @@
 # lua-audit: differential test of v32opt -L lua on REAL v32lua output.
 #   usage: run.sh V32LUA_DIR  [levels]     V32LUA_DIR holds bin/v32lua and tests/audit/*.lua
 # For each audit program: compile with `v32lua -g`, run the unoptimized assembly and the -O1/-O2/-O3 results in v32sim,
-# and compare every global variable (the %define var_NAME lines are the RAM words 0..max). Needs V32TOOLS/V32SIM like
-# testing/lua-cold/runcart.sh.
+# and compare every global variable (the %define var_NAME lines are the RAM words 0..max). Uses testing/lua-cold/runcart.sh
+# (V32SIM, V32AS; V32TOOLS is optional there). The audit programs that never halt (pico8/ game loops) are reported as
+# "skip ... rc=2"; the summary counts only the optimized runs that matched.
 HERE=$(cd "$(dirname "$0")" && pwd)
 LUA=${1:?usage: run.sh V32LUA_DIR [levels]}; LEVELS=${2:-"-O1 -O2 -O3"}
 B=${V32OPT:-$HERE/../../bin/v32opt}; RUN=$HERE/../lua-cold/runcart.sh

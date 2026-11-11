@@ -31,7 +31,9 @@ const char *opt_type_names[]       = {
     [OPT_LOOP_UNROLL]              = "loop-unroll",
     [OPT_LOOP_INDEX]               = "loop-index",
     [OPT_LOOP_UNROLL_PARTIAL]      = "loop-unroll-partial",
-    [OPT_PEEPHOLE_LUA_CHECKS]      = "peephole-lua-checks"
+    [OPT_PEEPHOLE_LUA_CHECKS]      = "peephole-lua-checks",
+    [OPT_PEEPHOLE_REPEAT_IMM]      = "peephole-repeat-imm",
+    [OPT_LOOP_STRENGTH]            = "loop-strength"
 };
 
 bool is_lua_mode(void) {

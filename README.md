@@ -442,8 +442,8 @@ v32opt <input.asm> [-o output.asm] [options]
 | `-O0` | **No Optimization** | Disables all optimization passes (default). |
 | `-O1` | **Local Peephole** | Enables all 16 local peephole optimizations (14 window passes, plus the liveness-driven **dead register write** and **copy cleanup**). |
 | `-O2` | **Global Analysis** | Enables all `-O1` passes + **CSE**, **Dead Code Elimination (DCE)**, **Global Constant Folding**, **Frame Pointer Elimination** & **Memory-to-Register Promotion** (`promote-regs`, `promote-leaf`, `promote-loops`). |
-| `-O3` | **Aggressive** | Enables all `-O2` passes + **Function Inlining** + **Loop Inversion** + **Loop Unrolling** (full and partial) + **Loop Index Folding**. |
-| `-Os` | **Space Saving** | `-O3` without loop inversion and unrolling (which duplicate code); a placeholder for a dedicated size-focused tier. |
+| `-O3` | **Aggressive** | Enables all `-O2` passes + **Function Inlining** + **Loop Inversion** + **Loop Unrolling** (full and partial) + **Loop Index Folding** + **Pointer Strength Reduction** (`loop-strength`) + **Repeated Immediates** (`peephole-repeat-imm`). |
+| `-Os` | **Space Saving** | `-O3` without the loop passes (which duplicate code, or spend a register) and without `peephole-repeat-imm` (which only cleans up after them); a placeholder for a dedicated size-focused tier. |
 | `-o <file>` | **Output File** | Where to write the optimized assembly (default: `<input>Opt.asm`). |
 | `-v`, `--verbose` | **Verbose Mode** | Displays detailed pass statistics and optimization counts per iteration. |
 | `-t` | **Testing Mode** | Prints a machine-readable `pass:count` summary (plus a `total:N` line). |
@@ -488,7 +488,8 @@ sliding-window peepholes).
 * **`-O3` (Aggressive Transformations):** Makes sweeping modifications
 that trade binary size for execution velocity: function inlining, which
 completely erases function boundaries, and the loop passes (inversion,
-full and partial unrolling, index folding), which copy code. Their limits
+full and partial unrolling, index folding, pointer strength reduction), which
+copy code or spend a register. Their limits
 can be tuned per program and steered by a measured profile (see
 [USAGE.md](USAGE.md)).
 
@@ -766,6 +767,30 @@ up to the next write of either register read `Rs`; the copy then goes if
 register promotion pay: promotion turns `[BP-2]` into `R4` but leaves a
 copy for each use, and these two passes cancel them.
 
+*Immediate propagation:* after `MOV Rt, imm` the reads of `Rt` become the
+immediate, when there are at most two of them, every one has a form that
+takes it, and `Rt` is dead after the last (so the `MOV` goes):
+
+```vircon32
+; BEFORE                             ; AFTER
+MOV  R1, 5                           IADD R0, 5
+IADD R0, R1
+
+MOV  R1, global_arr                  MOV  R0, [global_arr]
+MOV  R0, [R1]
+
+MOV  R1, 19                          MOV  [19], R0
+MOV  [R1], R0
+```
+
+The forms are `OP Rd, Rt` (the integer ALU operations and compares),
+`MOV Rd, [Rt]` and `MOV [Rt], Rs` with no offset. Integer literals and plain
+symbols only (not a float: an immediate float operand is not the same as a
+register holding its bits for every instruction), nothing volatile, no
+label, jump or `CALL` between the `MOV` and the uses. Full unrolling leaves
+`MOV R1, 19 / MOV [R1], R0` in every copy of a body; this makes it one
+instruction.
+
 ### Dead Store Elimination (`peephole-dead-stores`)
 
 Removes memory  stores that are  immediately overwritten by  a subsequent
@@ -957,6 +982,15 @@ Note this trades words for immediates (`MOV R2, 10` takes two words where
 `MOV R2, R1` took one), so on its own it can *grow* the assembled binary;
 its payoff is in the immediate-based peepholes it enables afterwards.
 
+The graph has only jump and fall-through edges, so a block that control also
+reaches some other way starts with **every register unknown**, whatever its
+predecessors say: a block whose label is the target of a `CALL` (a function
+entry: in `f0: MOV R6, 5` / `f1: MOV R2, R6` with a `CALL f1` elsewhere, `R6`
+is not 5 at `f1`), a block whose label is mentioned in any way other than as
+the target of a `JMP`/`JT`/`JF`/`CALL` (`MOV R0, f1`, `pointer f1`: the
+address is taken, so a computed `JMP` or `CALL` can arrive there), the first
+block of the program, and a block with no predecessor.
+
 ### Frame Pointer Elimination (`omit-frame-pointers`)
 
 Scans  entire function  bodies to  verify  if the  Base Pointer  register
@@ -984,6 +1018,34 @@ __function_add:          __function_add:
     POP BP                   ;
     RET                      RET
 ```
+
+A label that nothing references (the copies' labels of an unrolled loop)
+does not count as a use of the frame; a body that jumps out of the function
+(to another function's epilogue) keeps it, since that epilogue pops `BP`.
+
+*Frame cleanup.* Before it looks at `BP`, the pass shrinks the frame of a
+function whose locals have moved to registers, or disappeared in full
+unrolling. In a function laid out as `PUSH BP / MOV BP, SP / [ISUB SP, N] /
+[PUSH Ra / PUSH Rb ...] / body / (at every RET) [POP Rb / POP Ra] / MOV SP, BP /
+POP BP / RET`:
+
+* A **register save** that nothing uses (`PUSH Rn` ... `POP Rn`, `R1`-`R10`)
+  goes with all its `POP`s, unless `Rn` appears in the body, the function has
+  a `CALL` (the stock compiler is not consistently callee-save: the save may
+  be protecting the caller from a callee), or an `[SP+k]` or `[BP-k]` operand
+  can reach the saved word.
+* An **`ISUB SP, N`** goes when no `[BP-k]` is left, unless an `[SP+k]` reaches
+  into the space it reserves (a call's arguments staged with `MOV [SP+k], x`).
+* When both are gone, a small leaf function has only `PUSH BP / MOV BP, SP ...
+  MOV SP, BP / POP BP`, which the pass above then removes: the unrolled
+  `clear16` (`for (i = 0; i < 16; i++) arr[i] = 0`) is left as sixteen stores
+  and a `RET`.
+
+The function must have exactly that shape, no computed jump, no jump out of
+it, no directive, no escape of `BP` or `SP` (`MOV R1, SP`, `LEA R1, [BP-2]`),
+no other write of `SP` than `PUSH`/`POP` and `ISUB`/`IADD SP, <integer>`, and
+its pushes balanced at every label and jump; otherwise it is left alone.
+`--trigger-max` counts one slot per removed save and one per removed `ISUB`.
 
 ---
 
@@ -1166,6 +1228,98 @@ after `loop-unroll` and `loop-index`, before `loop-invert`; part of `-O3`,
 enabled alone with `-floop-unroll-partial`.
 
 
+### Pointer Strength Reduction (`loop-strength`)
+
+`loop-index` folds one constant base into the counter, but gives up when the
+bound is not an immediate or the counter is also used as a value. This pass
+takes those loops (and any other counted loop that recomputes `base + K*i` in
+every iteration) with a second register, a pointer that is set once before the
+loop and stepped with the counter:
+
+```vircon32
+; BEFORE                          ; AFTER
+__for_1_start:                        MOV  R6, global_arr        ; once
+    MOV R0, R4                        IADD R6, R4
+    MOV R1, [BP+2]                __for_1_start:
+    ILT R0, R1                        MOV R0, R4
+    JF  R0, __for_1_end               MOV R1, [BP+2]
+    MOV R1, global_arr                ILT R0, R1
+    IADD R1, R4                       JF  R0, __for_1_end
+    MOV R1, [R1]                      MOV R1, [R6]               ; the address
+    IADD R5, R1                       IADD R5, R1
+    IADD R5, R4                       IADD R5, R4                ; (the value use)
+    IADD R4, 1                        IADD R6, 1                 ; the pointer step
+    JMP __for_1_start                 IADD R4, 1
+__for_1_end:                          JMP __for_1_start
+                                  __for_1_end:
+```
+
+Everywhere in the loop except between the two steps, `R6 == global_arr + R4`
+(32-bit wrap-around arithmetic: exact). The address groups it replaces:
+
+| form | instructions | replaced by |
+| --- | --- | --- |
+| unit | `MOV Rt, BASE / IADD Rt, Ri` | `MOV Rt, Rp` |
+| scaled | `MOV Rt, BASE / MOV Ru, Ri / IMUL Ru, K` (or `SHL`) `/ IADD Rt, Ru` | `MOV Rt, Rp` (pointer step `K` per iteration) |
+| frame | `LEA Rt, [BP+off] / IADD Rt, Ri` | `MOV Rt, Rp` |
+| offset | `MOV Rt, BASE / MOV Ru, Ri / IADD Ru, c / IADD Rt, Ru` (`arr[i + c]`) | `MOV Rt, Rp`, `c` folded into the use |
+
+`BASE` is an immediate (a number, a label, a `%define`) or a register the loop
+never writes. When the next instruction only uses `Rt` as the base of a memory
+operand and `Rt` dies there, the group is folded into it (`MOV R1, [R6]`).
+A pointer is taken when the instructions it saves per iteration, less its own
+step, are at least one; at most two pointers per loop.
+
+The loop is left alone when it is not a counted loop of the shape `loop-index`
+and `loop-unroll-partial` accept; has a `CALL`, a computed jump or a directive
+in the body, or a volatile (`;@v`) instruction in a group; writes the counter
+anywhere but its step (or writes `BP`, for the frame form); has a label that
+is jumped to from outside; is cold in the profile; or has a group whose
+scratch register `Ru` is read later, whose `K` is zero or too big for a
+literal, or whose base register is the counter or is written in the loop. The
+frame form needs the `;@fn ... escapes=` lines of `v32cc --emit-hints`.
+
+The pointer register is chosen as `promote-loops` chooses one (`R1`-`R10`, not
+mentioned in the loop, dead at its start; under the callee-save ABI one the
+function already saves, else a fresh `PUSH`/`POP` of `R4`-`R10`). The pointer
+step goes right before the counter's step, so `loop-unroll-partial` and
+`loop-invert`, which run after this pass, still recognize the loop: a
+strength-reduced loop is unrolled and inverted as before, with the pointer
+step in every copy. It runs once, after `loop-index`, part of `-O3` (not `-Os`),
+enabled alone with `-floop-strength`; `--trigger-max` counts one slot per
+rewritten loop. The design is in
+[doc/pointer-strength-reduction.md](doc/pointer-strength-reduction.md).
+
+
+### Repeated Immediates (`peephole-repeat-imm`)
+
+Full unrolling leaves the same `MOV Rd, imm` at the top of every copy of the
+body, with only the copies' (now unreferenced) labels in between. A `MOV Rd,
+imm` is deleted when `Rd` provably holds that immediate already:
+
+```vircon32
+; BEFORE                          ; AFTER
+    MOV  R0, 0                        MOV  R0, 0
+    MOV  [19], R0                     MOV  [19], R0
+__for_3_continue_u1:              __for_3_continue_u1:
+    MOV  R0, 0                        MOV  [20], R0
+    MOV  [20], R0
+```
+
+A forward walk over the program keeps, for each of `R0`-`R13`, the text of
+the immediate it was last set to by a `MOV`. A fact survives straight-line
+code and labels that nothing references (any mention counts as a reference:
+a jump, a `CALL`, `MOV R0, label`, a data directive). It dies at a write of
+the register, at a `CALL`, at `MOVS`/`SETS`/`CMPS` (they write `R11`-`R13`
+without naming them), at a referenced label, a `JMP` or `RET`, a directive,
+and at a volatile instruction, which is never deleted. Immediates compare by
+their text (`0` and `0x0` are different), floats and symbols included. It
+runs with the other local passes and again in the cleanup after the loop
+passes, is part of `-O3` only (it cleans up after `loop-unroll`; `-Os` leaves
+it out) and `-fpeephole-repeat-imm` enables it on its own; `--trigger-max`
+counts one slot per deleted `MOV`.
+
+
 ### Tuning the loop passes
 
 The limits of the loop passes are command-line settings (`-f<name>=N`), so a
@@ -1310,7 +1464,14 @@ programs). So outside `-L lua`:
   before the existing pops of **every** exit -- if every exit is a
   recognizable `MOV SP, BP / POP BP / RET` epilogue and nothing jumps out
   of the function; and only when the references justify the 2 extra
-  instructions per call (`R4`-`R10`; `R2`/`R3` stay out);
+  instructions per call (`R4`-`R10`; `R2`/`R3` stay out); the new save is
+  refused when an `[SP+k]` operand of the function can reach it: a fresh
+  `PUSH` takes the word at the top of the stack, where the function's own
+  `MOV [SP+k], x` argument stores land when one `ISUB SP, N` reserves locals
+  and outgoing arguments together (v32cc output read as callee-save,
+  hand-written code), and the epilogue's `POP` would hand the caller the
+  argument. The stock compiler's second `ISUB` for the argument area is not
+  affected;
 * if neither works the local stays in memory.
 
 `-L lua` is **caller-save** (v32lua spills around calls and its callees

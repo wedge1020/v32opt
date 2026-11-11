@@ -79,6 +79,11 @@ static void apply_plan(IndexPlan *pl)
 {
     // IADD Ri, BASE in front of the loop
     char raw[200];
+    if (config.debug) {
+        char dbg[200];
+        snprintf(dbg, sizeof(dbg), "LOOP-INDEX: %s carries %s through the loop below", pl->ri, pl->base_text);
+        insert_debug_comment(pl->start->prev, OPT_LOOP_INDEX, dbg);
+    }
     snprintf(raw, sizeof(raw), "    IADD %s, %s", pl->ri, pl->base_text);
     loop_link_before(pl->start, create_node(raw, OP_IADD, "IADD", pl->ri, pl->base_text));
 
@@ -186,6 +191,7 @@ int peephole_loop_index(AsmNode *head)
         safe_str_copy(pl.ri, ri, sizeof(pl.ri));
         pl.new_bound = L.bound + base;
 
+        if (!trigger_allowed()) continue;      // --trigger-max: one slot per rewritten loop
         if (nplans == cap) {
             cap = cap ? cap * 2 : 16;
             plans = realloc(plans, (size_t)cap * sizeof(IndexPlan));

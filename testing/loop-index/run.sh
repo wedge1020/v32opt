@@ -4,7 +4,8 @@
 ##
 ## fold_* functions get "IADD R4, global_a" before the loop, their bound moved
 ## by the base (64 -> 164) and no "IADD Rt, R4" pair left; keep_* functions
-## must be untouched. Needs no Vircon32 toolchain.
+## must be untouched. --trigger-max=N caps the loops folded (one slot per loop) and -d marks
+## each with a LOOP-INDEX comment. Needs no Vircon32 toolchain.
 ## Usage: ./run.sh [path/to/v32opt]
 ##
 #########################################################################
@@ -32,5 +33,19 @@ for f in keep_value_use keep_two_bases keep_live_after keep_call keep_register_b
     b="$(fn "${TMP}/o.asm" "${f}" | grep -v '^;')"
     [ "${a}" = "${b}" ] || fail "${f} was changed"
 done
+
+# --trigger-max: one slot per rewritten loop (-d marks each with a LOOP-INDEX comment)
+"${OPT}" "${HERE}/loop-index.asm" -floop-index -d -o "${TMP}/d.asm" >/dev/null || fail "v32opt -d failed"
+[ "$(grep -c 'DEBUG loop-index.*LOOP-INDEX:' "${TMP}/d.asm")" = 3 ] || fail "-d: expected one LOOP-INDEX comment per folded loop (3)"
+for f in fold_one fold_two_uses fold_early_exit_dead; do
+    fn "${TMP}/d.asm" "${f}" | grep -q 'LOOP-INDEX:' || fail "${f}: no LOOP-INDEX comment in -d output"
+done
+"${OPT}" "${HERE}/loop-index.asm" -floop-index --trigger-max=0 -d -o "${TMP}/t0.asm" >/dev/null || fail "v32opt --trigger-max=0 failed"
+cmp -s <(grep -v '^[[:space:]]*;' "${HERE}/loop-index.asm") <(grep -v '^[[:space:]]*;' "${TMP}/t0.asm") ||
+    fail "--trigger-max=0: a loop was changed"
+grep -q 'LOOP-INDEX:' "${TMP}/t0.asm" && fail "--trigger-max=0: a LOOP-INDEX comment was written"
+"${OPT}" "${HERE}/loop-index.asm" -floop-index --trigger-max=1 -d -o "${TMP}/t1.asm" >/dev/null || fail "v32opt --trigger-max=1 failed"
+[ "$(grep -c '^ *IADD R4, global_a$' "${TMP}/t1.asm")" = 1 ] || fail "--trigger-max=1: expected exactly one loop folded"
+[ "$(grep -c 'LOOP-INDEX:' "${TMP}/t1.asm")" = 1 ] || fail "--trigger-max=1: expected exactly one LOOP-INDEX comment"
 [ "${status}" = 0 ] && echo "PASS: loop-index"
 exit "${status}"

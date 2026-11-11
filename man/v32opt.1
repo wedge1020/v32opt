@@ -140,14 +140,22 @@ and the memory-to-register promotion passes
 .TP
 .B \-O3
 .B \-O2
-plus trivial leaf-function inlining, loop inversion, full and partial unrolling of counted loops and folding of array bases into loop counters. The most aggressive tier:
+plus trivial leaf-function inlining, loop inversion, full and partial unrolling of counted loops, folding of array bases into loop counters, pointer strength reduction
+.RI ( loop\-strength )
+and removal of repeated immediate loads
+.RI ( peephole\-repeat\-imm ).
+The most aggressive tier:
 sweeping structural changes, with the highest chance of breaking a
 program.
 .TP
 .B \-Os
 Identical to
 .B \-O3
-but without loop inversion and unrolling (a placeholder for a dedicated size-focused tier).
+but without the loop passes (inversion, unrolling, index folding,
+.IR loop\-strength )
+and without
+.I peephole\-repeat\-imm
+(a placeholder for a dedicated size-focused tier).
 .RE
 .TP
 .BR \-v ", " \-\-verbose
@@ -239,7 +247,7 @@ peephole\-jmp\-chain, peephole\-zero\-test,
 peephole\-dead\-regs, peephole\-copies, cse, dce,
 constant\-folding, omit\-frame\-pointers, inline, promote\-regs,
 promote\-leaf, promote\-loops, loop\-invert, loop\-unroll, loop\-index,
-loop\-unroll\-partial
+loop\-strength, loop\-unroll\-partial, peephole\-repeat\-imm
 .fi
 .RE
 .IP
@@ -440,7 +448,13 @@ instructions with side effects.
 .I peephole\-copies
 Cancels register copies: renames a copy\-in / operate / copy\-out window
 onto the original register, and propagates a copy into the reads that
-follow it.
+follow it. An immediate that a
+.B MOV Rd, imm
+loaded into a register is also propagated into the reads that
+follow it (as the second operand of a compare or ALU instruction, or
+as a load or store address) when the register is dead afterwards;
+floating-point instructions, volatile instructions, labels and
+jumps in between stop it.
 .TP
 .I peephole\-dead\-stores
 Removes stores to registers or memory that are overwritten before
@@ -508,7 +522,12 @@ functions are swept away.
 .I constant\-folding
 Lattice-based constant propagation over the control-flow graph,
 folding known constants across jumps and invalidating
-conservatively around calls. Note this trades words for immediates
+conservatively around calls. Blocks whose entry state is not known
+from their predecessors are pinned and start with nothing known: one
+entered by a
+.BR CALL ,
+one whose label has its address taken, the first block, and one with
+no predecessor. Note this trades words for immediates
 (a folded
 .B "MOV Rd, const"
 occupies two words where the register form took one), so it can
@@ -526,6 +545,20 @@ at all \(em directly
 .I or
 through
 .BR [BP\[+-]N] .
+It first cleans up the frame: a register save
+.RB ( "PUSH Rn" / "POP Rn" )
+that nothing in the body uses or can reach through
+.B [SP+k]
+or
+.B [BP\-k]
+is removed, and so is an
+.B "ISUB SP, N"
+whose
+.B [BP\-k]
+locals are gone. A function with a
+.B CALL
+in it keeps its saves, and a body that jumps out of the function
+keeps its frame. Labels that nothing references are seen through.
 Deliberately a
 .B \-O2
 (not
@@ -555,6 +588,43 @@ would have left it. Control its aggressiveness with
 .BR \-finline\-call\-limit ,
 and
 .BR \-finline\-exclude .
+.TP
+.I loop\-invert, loop\-unroll, loop\-unroll\-partial, loop\-index
+Loop inversion, complete and partial unrolling of counted loops, and
+folding of an array base into the loop counter; tuned with the
+.B \-floop\-\fI...\fR
+limits described under
+.BR OPTIONS .
+.TP
+.I loop\-strength
+Pointer strength reduction: an array element addressed from the loop
+counter, such as
+.BR "IMUL Rt, 3 / IADD Rt, base / MOV Rd, [Rt]" ,
+is read through a pointer register stepped by the element size
+instead. It needs a free register, refuses a loop with a
+.BR CALL ,
+a directive, a volatile access, or a write of the base or of
+.BR BP ,
+and with the frame form
+.RB ( "LEA R, [BP\-N]" )
+only if the compiler's
+.B escapes=
+hints say the slot's address is not taken elsewhere. One
+.B \-\-trigger\-max
+slot is used per rewritten loop.
+.TP
+.I peephole\-repeat\-imm
+Removes a
+.B "MOV Rd, imm"
+when
+.B Rd
+provably holds the same value already, across labels that nothing
+references (what full unrolling leaves behind). A label that is a
+jump or call target, or whose address is taken, stops the search, as
+do writes of
+.BR Rd ,
+calls, directives, volatile instructions and
+.BR MOVS / SETS / CMPS .
 .SS "Memory-to-register promotion"
 The three promotion passes
 .RI ( promote\-regs ,
@@ -594,7 +664,11 @@ Outside
 the stock compiler's callee-save convention applies: a promoted local
 goes into a register the function already saves, or a PUSH/POP pair is
 added at the entry and at every exit; if that is not possible the slot
-stays in memory.
+stays in memory. No fresh save is added to a function in which an
+.B [SP+k]
+operand can reach it (for example the argument area a compiler stages
+with
+.BR "MOV [SP+1], R1" ).
 .PP
 All three passes are part of
 .BR \-O2 .

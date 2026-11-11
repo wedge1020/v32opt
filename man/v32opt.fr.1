@@ -151,14 +151,22 @@ et les passes de promotion de la mémoire en registres
 .TP
 .B \-O3
 .B \-O2
-plus l'intégration des fonctions feuilles triviales , l'inversion de boucles, le déroulage complet et partiel des boucles comptées et le repliement des bases de tableaux dans les compteurs. Le niveau le plus
+plus l'intégration des fonctions feuilles triviales , l'inversion de boucles, le déroulage complet et partiel des boucles comptées et le repliement des bases de tableaux dans les compteurs, la réduction de force des pointeurs
+.RI ( loop\-strength )
+et la suppression des chargements répétés d'immédiats
+.RI ( peephole\-repeat\-imm ).
+Le niveau le plus
 agressif : des changements structurels profonds, avec le plus de risques
 de casser un programme.
 .TP
 .B \-Os
 Identique à
 .B \-O3
-mais sans inversion ni déroulage de boucles (un emplacement réservé pour un niveau dédié à la taille).
+mais sans les passes de boucle (inversion, déroulage, repliement d'indice,
+.IR loop\-strength )
+et sans
+.I peephole\-repeat\-imm
+(un emplacement réservé pour un niveau dédié à la taille).
 .RE
 .TP
 .BR \-v ", " \-\-verbose
@@ -233,7 +241,7 @@ peephole\-jmp\-chain, peephole\-zero\-test,
 peephole\-dead\-regs, peephole\-copies, cse, dce,
 constant\-folding, omit\-frame\-pointers, inline, promote\-regs,
 promote\-leaf, promote\-loops, loop\-invert, loop\-unroll, loop\-index,
-loop\-unroll\-partial
+loop\-strength, loop\-unroll\-partial, peephole\-repeat\-imm
 .fi
 .RE
 .IP
@@ -441,7 +449,13 @@ jamais à IN, POP, aux divisions ni aux instructions à effets de bord.
 .I peephole\-copies
 Annule les copies de registres : renomme une fenêtre copie\-entrée /
 opération / copie\-sortie sur le registre d'origine et propage une copie
-dans les lectures qui la suivent.
+dans les lectures qui la suivent. Un immédiat chargé par
+.B MOV Rd, imm
+est aussi propagé dans les lectures suivantes (second opérande d'une
+comparaison ou d'une instruction ALU, ou adresse d'un chargement ou d'une
+écriture) lorsque le registre est mort ensuite ; les instructions à virgule
+flottante, les instructions volatiles, les étiquettes et les sauts intermédiaires
+l'arrêtent.
 .TP
 .I peephole\-dead\-stores
 Supprime les écritures dans des registres ou en mémoire écrasées avant
@@ -515,7 +529,12 @@ jamais atteintes sont supprimées.
 .I constant\-folding
 Propagation de constantes fondée sur un treillis, sur le graphe de flot
 de contrôle, qui replie les constantes connues au travers des sauts et
-les invalide prudemment autour des appels. Notez que cela échange des
+les invalide prudemment autour des appels. Les blocs dont l'état d'entrée ne se déduit pas
+de leurs prédécesseurs sont épinglés et démarrent sans rien savoir : celui
+appelé par un
+.BR CALL ,
+celui d'une étiquette dont l'adresse est prise, le premier bloc et celui qui n'a
+aucun prédécesseur. Notez que cela échange des
 mots contre des immédiats (un
 .B "MOV Rd, constante"
 replié occupe deux mots là où la forme avec registre en occupait un) :
@@ -541,7 +560,21 @@ C'est délibérément une passe de
 elle efface la chaîne de cadres que parcourent les émulateurs et les
 débogueurs pour produire des traces d'appels, de sorte que
 .B \-O1
-reste sûr pour le débogage.
+reste sûr pour le débogage. Elle nettoie d'abord le cadre : une sauvegarde de
+registre
+.RB ( "PUSH Rn" / "POP Rn" )
+que rien dans le corps n'utilise ni n'atteint par
+.B [SP+k]
+ou
+.B [BP\-k]
+est supprimée, de même qu'un
+.B "ISUB SP, N"
+dont les locaux
+.B [BP\-k]
+ont disparu. Une fonction contenant un
+.B CALL
+garde ses sauvegardes, et un corps qui saute hors de la fonction garde son
+cadre. Les étiquettes que rien ne référence sont traversées.
 .SS "\-O3 : interprocédural"
 .B \-O2
 plus :
@@ -563,6 +596,45 @@ Réglez son agressivité avec
 .B \-finline\-call\-limit
 et
 .BR \-finline\-exclude .
+.TP
+.I loop\-invert, loop\-unroll, loop\-unroll\-partial, loop\-index
+Inversion de boucles, déroulage complet et partiel des boucles comptées et
+repliement de la base d'un tableau dans le compteur de la boucle ; réglés par
+les limites
+.B \-floop\-\fI...\fR
+décrites dans
+.BR OPTIONS .
+.TP
+.I loop\-strength
+Réduction de force des pointeurs : un élément de tableau adressé depuis le
+compteur de la boucle, comme dans
+.BR "IMUL Rt, 3 / IADD Rt, base / MOV Rd, [Rt]" ,
+est lu par un registre pointeur qui avance de la taille de l'élément. Elle exige
+un registre libre, refuse une boucle contenant un
+.BR CALL ,
+une directive, un accès volatil ou une écriture de la base ou de
+.BR BP ,
+et la forme à cadre
+.RB ( "LEA R, [BP\-N]" )
+seulement si les indications
+.B escapes=
+du compilateur disent que l'adresse de l'emplacement n'est pas prise ailleurs.
+Elle consomme un emplacement de
+.B \-\-trigger\-max
+par boucle réécrite.
+.TP
+.I peephole\-repeat\-imm
+Supprime un
+.B "MOV Rd, imm"
+lorsque
+.B Rd
+contient manifestement déjà cette valeur, au travers d'étiquettes que rien ne
+référence (ce que laisse le déroulage complet). Une étiquette cible de saut ou
+d'appel, ou dont l'adresse est prise, arrête la recherche, de même que les
+écritures de
+.BR Rd ,
+les appels, les directives, les instructions volatiles et
+.BR MOVS / SETS / CMPS .
 .SS "Promotion de la mémoire en registres"
 Les trois passes de promotion
 .RI ( promote\-regs ,
@@ -603,7 +675,12 @@ utilisés. Hors
 la convention callee-save du compilateur standard s'applique : un local
 promu va dans un registre que la fonction sauvegarde déjà, ou une paire
 PUSH/POP est ajoutée à l'entrée et à chaque sortie ; sinon
-l'emplacement reste en mémoire.
+l'emplacement reste en mémoire. Aucune sauvegarde nouvelle n'est ajoutée à une
+fonction où un opérande
+.B [SP+k]
+peut l'atteindre (par exemple la zone d'arguments que le compilateur prépare
+avec
+.BR "MOV [SP+1], R1" ).
 .PP
 Les trois passes font partie de
 .BR \-O2 .

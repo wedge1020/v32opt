@@ -457,8 +457,8 @@ v32opt <entrada.asm> [-o salida.asm] [opciones]
 | `-O0` | **Sin Optimización** | Desactiva todas las pasadas de optimización (por defecto). |
 | `-O1` | **Mirilla Local** | Activa las 16 optimizaciones locales (14 de mirilla sobre ventana, más la **escritura muerta de registro** y la **limpieza de copias**, guiadas por vida de registros). |
 | `-O2` | **Análisis Global** | Activa todas las pasadas de `-O1` + **CSE**, **Eliminación de Código Muerto (DCE)**, **Plegado Global de Constantes**, **Eliminación del Puntero de Marco** y **Promoción de Memoria a Registros** (`promote-regs`, `promote-leaf`, `promote-loops`). |
-| `-O3` | **Agresivo** | Activa todas las pasadas de `-O2` + **Inserción de Funciones en Línea** + **Inversión de Bucles** + **Desenrollado de Bucles** (completo y parcial) + **Plegado del Índice**. |
-| `-Os` | **Ahorro de Espacio** | `-O3` sin inversión de bucles (que duplica la prueba de cada bucle); marcador de posición para un nivel dedicado al tamaño. |
+| `-O3` | **Agresivo** | Activa todas las pasadas de `-O2` + **Inserción de Funciones en Línea** + **Inversión de Bucles** + **Desenrollado de Bucles** (completo y parcial) + **Plegado del Índice** + **Reducción de Fuerza de Punteros** (`loop-strength`) + **Cargas Repetidas de Inmediatos** (`peephole-repeat-imm`). |
+| `-Os` | **Ahorro de Espacio** | `-O3` sin las pasadas de bucle (que duplican código o gastan un registro) y sin `peephole-repeat-imm` (que solo limpia tras ellas); marcador de posición para un nivel dedicado al tamaño. |
 | `-o <archivo>` | **Archivo de Salida** | Dónde escribir el ensamblador optimizado (por defecto: `<entrada>Opt.asm`). |
 | `-v`, `--verbose` | **Modo Detallado** | Muestra estadísticas detalladas de las pasadas y el número de optimizaciones de cada iteración. |
 | `-t` | **Modo de Pruebas** | Imprime un resumen `pasada:recuento` legible por máquina (más una línea `total:N`). |
@@ -506,7 +506,7 @@ mirilla).
 que cambian tamaño del binario por velocidad de ejecución: la inserción de
 funciones en línea, que borra por completo los límites entre funciones, y las
 pasadas de bucles (inversión, desenrollado completo y parcial, plegado del
-índice), que copian código. Sus límites se pueden ajustar por programa y guiar
+índice, reducción de fuerza de punteros), que copian código o gastan un registro. Sus límites se pueden ajustar por programa y guiar
 con un perfil medido (véase [USAGE.md](USAGE.md)).
 
 #### Por qué la Eliminación del Puntero de Marco está en `-O2`
@@ -787,6 +787,29 @@ que no menciona `Rs`, con `Rt` muerto después, renombra la ventana a `Rs`.
 escritura de cualquiera de los dos leen `Rs`; la copia se va si `Rt` queda
 muerto. Junto con `peephole-dead-regs` esto hace rentable la promoción.
 
+*Propagación de inmediatos:* tras `MOV Rt, imm`, las lecturas de `Rt` pasan a
+ser el inmediato, cuando son como máximo dos, cada una tiene una forma que lo
+admite y `Rt` queda muerto tras la última (así el `MOV` se va):
+
+```vircon32
+; ANTES                              ; DESPUÉS
+MOV  R1, 5                           IADD R0, 5
+IADD R0, R1
+
+MOV  R1, global_arr                  MOV  R0, [global_arr]
+MOV  R0, [R1]
+
+MOV  R1, 19                          MOV  [19], R0
+MOV  [R1], R0
+```
+
+Las formas son `OP Rd, Rt` (las operaciones enteras de la ALU y las
+comparaciones), `MOV Rd, [Rt]` y `MOV [Rt], Rs` sin desplazamiento. Solo
+literales enteros y símbolos simples (no un float), nada volátil, y ninguna
+etiqueta, salto ni `CALL` entre el `MOV` y los usos. El desenrollado completo
+deja `MOV R1, 19 / MOV [R1], R0` en cada copia del cuerpo; esto lo deja en una
+instrucción.
+
 ### Eliminación de Almacenamientos Muertos (`peephole-dead-stores`)
 
 Elimina los almacenamientos en memoria que se sobrescriben inmediatamente
@@ -991,6 +1014,16 @@ dos palabras, mientras que `MOV R2, R1` ocupaba una), así que por sí solo
 puede *aumentar* el binario ensamblado; su beneficio está en las
 optimizaciones de mirilla basadas en inmediatos que habilita después.
 
+El grafo solo tiene aristas de salto y de continuación, así que un bloque al
+que el control llega también de otra forma empieza con **todos los registros
+desconocidos**, digan lo que digan sus predecesores: un bloque cuya etiqueta es
+destino de un `CALL` (entrada de función: con `f0: MOV R6, 5` / `f1: MOV R2, R6`
+y un `CALL f1` en otro sitio, `R6` no vale 5 en `f1`), uno cuya etiqueta se
+menciona de cualquier otra forma que como destino de `JMP`/`JT`/`JF`/`CALL`
+(`MOV R0, f1`, `pointer f1`: se toma la dirección, así que un `JMP` o `CALL`
+calculado puede llegar ahí), el primer bloque del programa y uno sin
+predecesores.
+
 ### Eliminación del Puntero de Marco (`omit-frame-pointers`)
 
 Examina cuerpos de función completos para comprobar si el registro
@@ -1019,6 +1052,36 @@ __function_add:          __function_add:
     POP BP                   ;
     RET                      RET
 ```
+
+Una etiqueta que nada referencia (las etiquetas de las copias de un bucle
+desenrollado) no cuenta como uso del marco; un cuerpo que salta fuera de la
+función (al epílogo de otra) lo conserva, porque ese epílogo hace `POP BP`.
+
+*Limpieza del marco.* Antes de mirar `BP`, la pasada reduce el marco de una
+función cuyos locales han pasado a registros o han desaparecido con el
+desenrollado completo. En una función con la forma `PUSH BP / MOV BP, SP /
+[ISUB SP, N] / [PUSH Ra / PUSH Rb ...] / cuerpo / (en cada RET) [POP Rb / POP Ra]
+/ MOV SP, BP / POP BP / RET`:
+
+* Un **guardado de registro** que nada usa (`PUSH Rn` ... `POP Rn`,
+  `R1`-`R10`) se va con todos sus `POP`, salvo que `Rn` aparezca en el cuerpo,
+  la función tenga un `CALL` (el compilador estándar no es siempre callee-save:
+  el guardado puede proteger al llamador de un llamado), o un operando `[SP+k]`
+  o `[BP-k]` pueda alcanzar la palabra guardada.
+* Un **`ISUB SP, N`** se va cuando no queda ningún `[BP-k]`, salvo que un
+  `[SP+k]` llegue al espacio que reserva (argumentos de una llamada preparados
+  con `MOV [SP+k], x`).
+* Cuando ambos han desaparecido, una función hoja pequeña solo tiene
+  `PUSH BP / MOV BP, SP ... MOV SP, BP / POP BP`, que la pasada anterior
+  elimina: `clear16` (`for (i = 0; i < 16; i++) arr[i] = 0`) desenrollada
+  queda en dieciséis almacenamientos y un `RET`.
+
+La función debe tener exactamente esa forma, sin salto calculado, sin salto
+hacia fuera, sin directivas, sin escape de `BP` ni `SP` (`MOV R1, SP`,
+`LEA R1, [BP-2]`), sin otra escritura de `SP` que `PUSH`/`POP` e
+`ISUB`/`IADD SP, <entero>`, y con las pilas equilibradas en cada etiqueta y
+salto; si no, se deja como está. `--trigger-max` cuenta una posición por
+guardado eliminado y una por `ISUB` eliminado.
 
 ---
 
@@ -1167,6 +1230,101 @@ recibe nombres nuevos. Se ejecuta tras `loop-unroll` y `loop-index`, antes de
 separado.
 
 
+### Reducción de Fuerza de Punteros (`loop-strength`)
+
+`loop-index` pliega una base constante en el contador, pero se rinde cuando el
+límite no es un inmediato o el contador se usa también como valor. Esta pasada
+toma esos bucles (y cualquier otro bucle contado que recalcule `base + K*i` en
+cada iteración) con un segundo registro, un puntero que se fija una vez antes
+del bucle y avanza con el contador:
+
+```vircon32
+; ANTES                           ; DESPUÉS
+__for_1_start:                        MOV  R6, global_arr        ; una vez
+    MOV R0, R4                        IADD R6, R4
+    MOV R1, [BP+2]                __for_1_start:
+    ILT R0, R1                        MOV R0, R4
+    JF  R0, __for_1_end               MOV R1, [BP+2]
+    MOV R1, global_arr                ILT R0, R1
+    IADD R1, R4                       JF  R0, __for_1_end
+    MOV R1, [R1]                      MOV R1, [R6]               ; la dirección
+    IADD R5, R1                       IADD R5, R1
+    IADD R5, R4                       IADD R5, R4                ; (el uso como valor)
+    IADD R4, 1                        IADD R6, 1                 ; el paso del puntero
+    JMP __for_1_start                 IADD R4, 1
+__for_1_end:                          JMP __for_1_start
+                                  __for_1_end:
+```
+
+En todo el bucle salvo entre los dos pasos, `R6 == global_arr + R4` (aritmética
+de 32 bits con desbordamiento: exacta). Los grupos de dirección que sustituye:
+
+| forma | instrucciones | sustituida por |
+| --- | --- | --- |
+| unitaria | `MOV Rt, BASE / IADD Rt, Ri` | `MOV Rt, Rp` |
+| escalada | `MOV Rt, BASE / MOV Ru, Ri / IMUL Ru, K` (o `SHL`) `/ IADD Rt, Ru` | `MOV Rt, Rp` (el puntero avanza `K` por iteración) |
+| de marco | `LEA Rt, [BP+off] / IADD Rt, Ri` | `MOV Rt, Rp` |
+| con desplazamiento | `MOV Rt, BASE / MOV Ru, Ri / IADD Ru, c / IADD Rt, Ru` (`arr[i + c]`) | `MOV Rt, Rp`, con `c` plegado en el uso |
+
+`BASE` es un inmediato (número, etiqueta, `%define`) o un registro que el bucle
+nunca escribe. Cuando la instrucción siguiente solo usa `Rt` como base de un
+operando de memoria y `Rt` muere ahí, el grupo se pliega en ella
+(`MOV R1, [R6]`). Se toma un puntero cuando las instrucciones que ahorra por
+iteración, menos su propio paso, son al menos una; como máximo dos punteros por
+bucle.
+
+El bucle se deja como está si no es un bucle contado de la forma que aceptan
+`loop-index` y `loop-unroll-partial`; si tiene un `CALL`, un salto calculado o
+una directiva en el cuerpo, o una instrucción volátil (`;@v`) en un grupo; si
+escribe el contador fuera de su paso (o escribe `BP`, en la forma de marco); si
+tiene una etiqueta a la que se salta desde fuera; si es frío en el perfil; o si
+tiene un grupo cuyo registro temporal `Ru` se lee después, cuyo `K` es cero o
+demasiado grande para un literal, o cuyo registro base es el contador o se
+escribe en el bucle. La forma de marco necesita las líneas `;@fn ... escapes=`
+de `v32cc --emit-hints`.
+
+El registro puntero se elige como lo hace `promote-loops` (`R1`-`R10`, no
+mencionado en el bucle, muerto a su inicio; bajo la ABI callee-save uno que la
+función ya guarda, si no un `PUSH`/`POP` nuevo de `R4`-`R10`). El paso del
+puntero va justo antes del paso del contador, de modo que `loop-unroll-partial`
+y `loop-invert`, que se ejecutan después, siguen reconociendo el bucle: un
+bucle con fuerza reducida se desenrolla e invierte como antes, con el paso del
+puntero en cada copia. Se ejecuta una vez, tras `loop-index`; forma parte de
+`-O3` (no de `-Os`), y `-floop-strength` la activa por separado;
+`--trigger-max` cuenta una posición por bucle reescrito. El diseño está en
+[doc/pointer-strength-reduction.md](doc/pointer-strength-reduction.md).
+
+
+### Cargas Repetidas de Inmediatos (`peephole-repeat-imm`)
+
+El desenrollado completo deja el mismo `MOV Rd, imm` al principio de cada copia
+del cuerpo, con solo las etiquetas de las copias (ya sin referencias) en medio.
+Un `MOV Rd, imm` se elimina cuando `Rd` contiene demostrablemente ese
+inmediato:
+
+```vircon32
+; ANTES                           ; DESPUÉS
+    MOV  R0, 0                        MOV  R0, 0
+    MOV  [19], R0                     MOV  [19], R0
+__for_3_continue_u1:              __for_3_continue_u1:
+    MOV  R0, 0                        MOV  [20], R0
+    MOV  [20], R0
+```
+
+Un recorrido hacia delante guarda, para cada `R0`-`R13`, el texto del inmediato
+con que lo fijó por última vez un `MOV`. Un dato sobrevive al código lineal y a
+las etiquetas que nada referencia (cualquier mención cuenta como referencia: un
+salto, un `CALL`, `MOV R0, etiqueta`, una directiva de datos). Muere al escribir
+el registro, en un `CALL`, en `MOVS`/`SETS`/`CMPS` (escriben `R11`-`R13` sin
+nombrarlos), en una etiqueta referenciada, un `JMP` o `RET`, una directiva, y en
+una instrucción volátil, que nunca se elimina. Los inmediatos se comparan por su
+texto (`0` y `0x0` son distintos), flotantes y símbolos incluidos. Se ejecuta
+con las demás pasadas locales y otra vez en la limpieza tras las pasadas de
+bucles; forma parte solo de `-O3` (limpia tras `loop-unroll`; `-Os` la omite) y
+`-fpeephole-repeat-imm` la activa por separado; `--trigger-max` cuenta una
+posición por `MOV` eliminado.
+
+
 ### Ajuste de las pasadas de bucles
 
 Los límites de las pasadas de bucles son opciones de línea de órdenes
@@ -1251,7 +1409,13 @@ destruiría el valor del llamador. Por tanto, fuera de `-L lua`:
 * si no, se añade un `PUSH` tras los existentes y un `POP` antes de los
   existentes en **cada** salida (solo si todas las salidas son epílogos
   reconocibles y las referencias justifican las 2 instrucciones extra;
-  `R4`-`R10`);
+  `R4`-`R10`); el guardado nuevo se rechaza cuando un operando `[SP+k]` de la
+  función puede alcanzarlo: un `PUSH` nuevo toma la palabra de la cima de la
+  pila, donde caen los `MOV [SP+k], x` de la propia función cuando un solo
+  `ISUB SP, N` reserva locales y argumentos de salida (salida de v32cc leída
+  como callee-save, código escrito a mano), y el `POP` del epílogo devolvería
+  el argumento al llamador. El segundo `ISUB` del compilador estándar para el
+  área de argumentos no se ve afectado;
 * si no es posible, el local se queda en memoria.
 
 `-L lua` es **caller-save** (v32lua guarda alrededor de las llamadas), así

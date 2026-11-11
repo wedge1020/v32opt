@@ -95,6 +95,69 @@ void loop_labels_build(AsmNode *head)
     }
 }
 
+// The same table, with every possible use of a label counted: tokens in
+// data and preprocessor directives too ("pointer L", "%define X L"), '~' as
+// part of a name (v32cc's static functions are "F~name"), and nothing inside
+// a string literal. A label with refs == 0 here (and not duplicate) can only
+// be reached by falling into it. Debug notes made by -d are not counted.
+static bool label_tok_char(int c) { return isalnum(c) || c == '_' || c == '.' || c == '$' || c == '~'; }
+
+// Calls fn(label) for every token of the line that names a label, the way
+// loop_labels_build_all() counts them (data and preprocessor directives
+// included, '~' in names, nothing inside a string literal or the comment).
+void loop_label_tokens_all(const AsmNode *n, void (*fn)(LoopLabel *, const char *, void *), void *arg)
+{
+    const char *s = n->raw;
+    bool in_str = false;
+    while (*s) {
+        if (in_str) {
+            if (*s == '\\' && s[1]) s++;
+            else if (*s == '"') in_str = false;
+            s++;
+            continue;
+        }
+        if (*s == ';') break;
+        if (*s == '"') { in_str = true; s++; continue; }
+        if (label_tok_char((unsigned char)*s) && !isdigit((unsigned char)*s)) {
+            const char *b = s;
+            while (label_tok_char((unsigned char)*s)) s++;
+            size_t len = (size_t)(s - b);
+            if (len < 128) {
+                char tok[128];
+                memcpy(tok, b, len);
+                tok[len] = '\0';
+                LoopLabel *l = loop_label_find(tok);
+                if (l) fn(l, tok, arg);
+            }
+            continue;
+        }
+        s++;
+    }
+}
+
+static void count_all_ref(LoopLabel *l, const char *tok, void *arg) { (void)tok; (void)arg; l->refs++; }
+
+void loop_labels_build_all(AsmNode *head)
+{
+    loop_labels_build(head);
+    for (int i = 0; i < g_loop_labels_n; i++) g_loop_labels[i].refs = 0;
+    for (AsmNode *p = head->next; p; p = p->next) {
+        if (p->type == OP_LABEL || p->debug_note) continue;
+        loop_label_tokens_all(p, count_all_ref, NULL);
+    }
+}
+
+// A label nothing refers to (loop_labels_build_all() must be current).
+bool loop_label_unreferenced(const AsmNode *n)
+{
+    if (!n || n->type != OP_LABEL) return false;
+    char nm[128];
+    get_label_name(n, nm, sizeof(nm));
+    if (!nm[0]) return false;
+    LoopLabel *l = loop_label_find(nm);
+    return l && !l->duplicate && l->refs == 0;
+}
+
 bool loop_is_comment(const AsmNode *n)
 {
     return n->type == OP_OTHER && !is_directive_node(n);

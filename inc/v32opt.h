@@ -30,7 +30,7 @@
 // shape. To release: edit the string and run `make version`, or run
 // `make version VERSION=YYYYMMDD-release` to have make edit it for you.
 // ---------------------------------------------------------------------------
-#define  VERSION                      "20261109-dev"
+#define  VERSION                      "20261111-dev"
 #define  AUTHOR                       "Matthew Haas"
 #define  URL                          "https://github.com/wedge1020/v32opt"
 
@@ -71,7 +71,9 @@ typedef enum
     OPT_LOOP_UNROLL,
     OPT_LOOP_INDEX,
     OPT_LOOP_UNROLL_PARTIAL,
-    OPT_PEEPHOLE_LUA_CHECKS
+    OPT_PEEPHOLE_LUA_CHECKS,
+    OPT_PEEPHOLE_REPEAT_IMM,
+    OPT_LOOP_STRENGTH
 } OptType;
 
 // ---------------------------------------------------------------------------
@@ -140,7 +142,9 @@ typedef struct {
     bool     opt_loop_unroll;
     bool     opt_loop_index;
     bool     opt_loop_unroll_partial;
+    bool     opt_loop_strength;         // pointer strength reduction (loop_strength.c)
     bool     opt_peephole_lua_checks;   // -L lua: drop type checks the code proves (lua_checks.c)
+    bool     opt_peephole_repeat_imm;   // MOV Rd, imm when Rd already holds imm (repeat_imm.c)
     bool     opt_resolve_defines;   // let passes see numeric %define values
     LangMode lang_mode;
     AbiMode  abi;           // calling convention: auto (from hints), stock callee-save, caller-save

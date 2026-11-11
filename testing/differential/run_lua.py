@@ -31,17 +31,30 @@ CYC    = 3000                               # RAM words 3000/3001 receive the cy
 def sh(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=600, **kw)
 
+def _hdr(sig, ntex, nsnd, prog, vid, aud):
+    """The 128-byte header of a .v32 file: signature, version 1.0, then the section table."""
+    w = [0] * 32
+    w[2], w[3] = 1, 0
+    w[22], w[23] = ntex, nsnd
+    w[24], w[25] = 128, prog
+    w[26], w[27] = 128 + prog, vid
+    w[28], w[29] = 128 + prog + vid, aud
+    return sig + struct.pack('<32I', *w)[8:]
+
 def v32_file(vbin, out):
-    """Wrap a VBIN (3-word header) in a minimal .v32 (35-word header)."""
-    d = open(vbin, 'rb').read()[12:]
-    hdr = [0] * 0x23
-    hdr[0x22] = len(d) // 4
-    open(out, 'wb').write(struct.pack('<35I', *hdr) + d)
+    """Wrap a VBIN (what v32as writes) in a minimal cartridge: no textures, no sounds."""
+    d = open(vbin, 'rb').read()
+    open(out, 'wb').write(_hdr(b'V32-CART', 0, 0, len(d), 0, 0) + d)
 
 def bios_stub():
+    """A BIOS the simulator accepts (one word of code, a 1x1 texture, a 1-sample sound); it is
+    never run (-E starts at the cartridge)."""
     path = os.path.join(WORK, 'bios.v32')
     if not os.path.exists(path):
-        open(path, 'wb').write(struct.pack('<36I', *([0] * 0x22 + [1, 0])))   # header + one word: never run (-E)
+        prog = b'V32-VBIN' + struct.pack('<2I', 1, 0)
+        tex  = b'V32-VTEX' + struct.pack('<3I', 1, 1, 0)
+        snd  = b'V32-VSND' + struct.pack('<2I', 1, 0)
+        open(path, 'wb').write(_hdr(b'V32-BIOS', 1, 1, len(prog), len(tex), len(snd)) + prog + tex + snd)
     return path
 
 _BASE = {}      # source -> (asm, error): each program is compiled once, before the pool starts
@@ -82,7 +95,7 @@ def run_one(src, flags, tag):
     r = sh([V32AS, '--standard', final, '-o', base + '.vbin'])
     if r.returncode: return dict(err='v32as: ' + (r.stdout + r.stderr)[:300])
     v32_file(base + '.vbin', base + '.v32')
-    r = sh([V32SIM, '-r', '-x', '-n', '-B', bios_stub(), '-E', '0x20000000', '--frame-us=0',
+    r = sh([V32SIM, '-r', '-x', '-n', '-B', bios_stub(), '-E', '0x20000000', '--frame-us=0', '--fixed-clock', '--seed=1',
             '--max-frames=' + MAXF, '--dump=%d' % NDUMP, base + '.v32'], stdin=subprocess.DEVNULL)
     if r.returncode == 2: return dict(err='TIMEOUT')
     if r.returncode != 0: return dict(err='v32sim rc=%d: %s' % (r.returncode, (r.stdout + r.stderr)[-300:]))
@@ -92,7 +105,7 @@ def run_one(src, flags, tag):
     # A string literal is a pointer into the ROM, which moves when the code
     # changes size: compare what it points at.
     if any((v & 0xFFC00000) == 0x7FC00000 for v in results):
-        rom = sh([V32SIM, '-r', '-x', '-n', '-B', bios_stub(), '-E', '0x20000000', '--frame-us=0',
+        rom = sh([V32SIM, '-r', '-x', '-n', '-B', bios_stub(), '-E', '0x20000000', '--frame-us=0', '--fixed-clock', '--seed=1',
                   '--max-frames=1', '--dump=%d@0x20000000' % (os.path.getsize(base + '.vbin') // 4 + 8), base + '.v32'],
                  stdin=subprocess.DEVNULL)
         words = [int(l) for l in rom.stdout.split('\n') if re.fullmatch(r'-?\d+', l.strip())]
@@ -133,6 +146,9 @@ def main():
         for fl in allsets:
             r = res[k]; k += 1
             name, label = os.path.basename(f), fl or '-O0 (baseline)'
+            if r.get('err') == 'TIMEOUT' and base.get('err') != 'TIMEOUT' and 'err' not in base:
+                # the unoptimized program finished and this variant did not: a miscompile, not a slow program
+                print('FAIL  %-14s %-52s runs past the frame limit, the baseline does not' % (name, label)); problems += 1; rows = None; continue
             if r.get('err') == 'TIMEOUT' or base.get('err') == 'TIMEOUT':
                 print('SKIP  %-14s %-52s timeout' % (name, label)); rows = None; continue
             if 'err' in r:

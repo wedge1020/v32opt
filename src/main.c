@@ -85,7 +85,9 @@ OptConfig config = {
     .opt_loop_unroll              = false,
     .opt_loop_index               = false,
     .opt_loop_unroll_partial      = false,
-    .opt_peephole_lua_checks      = false
+    .opt_peephole_lua_checks      = false,
+    .opt_peephole_repeat_imm      = false,
+    .opt_loop_strength            = false
 };
 
 // Helper macro for aligned optimization output
@@ -157,7 +159,9 @@ int main(int argc, char **argv) {
             [OPT_LOOP_INVERT]              = config.opt_loop_invert,
             [OPT_LOOP_UNROLL]              = config.opt_loop_unroll,
             [OPT_LOOP_INDEX]               = config.opt_loop_index,
-            [OPT_LOOP_UNROLL_PARTIAL]      = config.opt_loop_unroll_partial
+            [OPT_LOOP_UNROLL_PARTIAL]      = config.opt_loop_unroll_partial,
+            [OPT_PEEPHOLE_REPEAT_IMM]      = config.opt_peephole_repeat_imm,
+            [OPT_LOOP_STRENGTH]            = config.opt_loop_strength
         };
 
         for (OptType t = 0; t < MAX_OPTIMIZATION_ALGORITHMS; t++) {
@@ -286,6 +290,9 @@ int main(int argc, char **argv) {
         if (config.opt_peephole_immediate_prop) {
             opts[OPT_PEEPHOLE_IMMEDIATE_PROP] = peephole_immediate_prop(program_ast);
         }
+        if (config.opt_peephole_repeat_imm) {
+            opts[OPT_PEEPHOLE_REPEAT_IMM] = peephole_repeat_imm(program_ast);
+        }
         if (config.opt_peephole_jmp_chain) {
             opts[OPT_PEEPHOLE_JMP_CHAIN] = peephole_jmp_chain(program_ast);
         }
@@ -382,6 +389,19 @@ int main(int argc, char **argv) {
     }
 
     // ===================================================================
+    // Pointer strength reduction: "base + K*i" addresses become a pointer
+    // stepped with the counter (after loop-index, before the passes below)
+    // ===================================================================
+    if (config.opt_loop_strength) {
+        int reduced = peephole_loop_strength(program_ast);
+        total_opts += reduced;
+        tally[OPT_LOOP_STRENGTH] += reduced;
+        if (config.verbose && reduced > 0) {
+            printf("  - Loop pointers strength-reduced: %d\n", reduced);
+        }
+    }
+
+    // ===================================================================
     // Partial unrolling with a remainder loop (unknown trip counts)
     // ===================================================================
     if (config.opt_loop_unroll_partial) {
@@ -444,6 +464,9 @@ int main(int argc, char **argv) {
         }
         if (config.opt_peephole_immediate_prop) {
             opts[OPT_PEEPHOLE_IMMEDIATE_PROP] = peephole_immediate_prop(program_ast);
+        }
+        if (config.opt_peephole_repeat_imm) {
+            opts[OPT_PEEPHOLE_REPEAT_IMM] = peephole_repeat_imm(program_ast);
         }
         if (config.opt_peephole_jmp_chain) {
             opts[OPT_PEEPHOLE_JMP_CHAIN] = peephole_jmp_chain(program_ast);

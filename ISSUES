@@ -16,15 +16,55 @@ PASSES
   left alone (primes.asm: -O3 gains 12% where compiled C gains 62%).
 
 [limit] The loop passes (loop-invert, loop-unroll, loop-unroll-partial,
-  loop-index) match the loop shape the C compilers emit. v32lua's loops have
-  a different shape and are not touched: Lua gains from -O1/-O2 only.
+  loop-index, loop-strength) match the loop shape the C compilers emit.
+  v32lua's loops have a different shape and are not touched: Lua gains from
+  -O1/-O2 only.
   A "while"/"for" with several exits, a test longer than 8 instructions (a
   setting), labels that are referenced from outside the loop, or a CALL in the
-  body (loop-unroll, loop-unroll-partial, loop-index) are skipped.
+  body (loop-unroll, loop-unroll-partial, loop-index, loop-strength) are
+  skipped.
 
 [limit] loop-index folds one constant base into the counter, needs an
   immediate bound, and gives up when the counter is used for anything else
-  (a value, two bases, a CALL, live after the loop).
+  (a value, two bases, a CALL, live after the loop). Some of those loops are
+  taken by loop-strength instead (next entry).
+
+[limit] loop-strength (-O3) rewrites the address groups "base + K*i" that the
+  compilers emit (unit, scaled by IMUL/SHL, frame LEA, "arr[i + c]") in
+  counted loops into a stepped pointer register. It does not handle:
+  - a base reloaded from memory in every iteration (a pointer parameter:
+    "MOV Rt, [BP+2] / IADD Rt, Ri"); the base must be an immediate or a
+    register nothing in the loop writes;
+  - an address built from two counters (the inner loop of a two-dimensional
+    array);
+  - a loop with a CALL in the body (the pointer register would have to
+    survive the callee);
+  - the frame form ("LEA Rt, [BP+off]") unless the input has the "escapes="
+    lines of v32cc --emit-hints; a scaled frame base at all;
+  - removing the counter when the pointer makes it redundant (that needs an
+    end pointer for a runtime bound).
+  It makes at most two pointers per loop, and only when each saves at least
+  one instruction per iteration net of its step. Spec:
+  doc/pointer-strength-reduction.md.
+
+[limit] promote-regs, promote-leaf and promote-loops add no fresh register
+  save (PUSH/POP) to a function in which an "[SP+k]" operand can reach the
+  saved word: a single "ISUB SP,N" that reserves locals and outgoing
+  arguments together, with the arguments stored by "MOV [SP+k], x", would let
+  the save overwrite an argument. That is every v32cc function that passes
+  stack arguments when the input has no ";@hints" header and so is read as
+  callee-save (with "abi=caller-save" nothing needs saving), and hand-written
+  code of the same layout. The stock compiler's separate "ISUB SP,argwords"
+  is not affected. Such a function can only promote into registers it already
+  saves.
+
+[limit] In caller-save mode (--abi caller-save, or a ";@hints" header with
+  abi=caller-save) the promote passes use registers without saving them. liveness.c only
+  treats as outputs of a function the registers it wrote when the session
+  began, so a register written by a promote pass is not live at the RET: a
+  caller that keeps a value in that register across the call, against the
+  convention, is not protected. Compiler output (v32cc, v32lua) never does;
+  hand-written assembly declared caller-save must follow the convention.
 
 [limit] loop-unroll-partial: a runtime bound within (K-1)*|step| of the 32-bit
   limit would wrap in the guard. No real bound is; there is no check.
@@ -34,22 +74,32 @@ PASSES
   left alone.
 
 [limit] liveness.c (peephole-zero-test, peephole-dead-regs, promote-*, the loop
-  passes) answers for R0..R10 only. Functions that are not the target of a
-  CALL are merged with the preceding call-target function's region, and a
-  function nothing calls is assumed to be called from anywhere (all registers
-  live at its RET). Its callee summaries are not refreshed when a pass removes
-  instructions (stale answers are more conservative, never less).
+  passes) answers for R0..R10 only. Functions are grouped into classes: code
+  that control can enter from another function without a CALL (a JMP/JT/JF
+  into it, or fall-through into its label) belongs to the same class as the
+  function that jumps or falls into it, and a RET is charged to the callers of
+  its whole class. A class that is only reached indirectly (no direct CALL),
+  or whose address is taken (its label is an operand other than a CALL/JMP
+  target, or in a data directive), has all registers live at its RET. The
+  callee summaries are computed once per session and are not refreshed when a
+  pass removes instructions: they stay sound only because the passes remove
+  nothing but writes proven dead (stale answers are more conservative, never
+  less). Two limits remain: a save slot overwritten or read through [SP+k] or
+  [BP-k] aliasing is not detected, and a CALL/JMP to a numeric address is
+  "unknown" at the call site (all live) but cannot make a function "address
+  taken".
 
 [limit] Disassembled CARTs: ROM data is referenced by absolute address, which
   v32opt does not relocate, so any size-changing pass breaks them.
 
-[gap] Pointer strength reduction with a stepped pointer register (for loops
-  that use the counter both as an index and as a value) is not implemented; it
-  needs a free register chosen with the callee-save rules of the promote passes.
-
-[gap] After full unrolling a loop, the "PUSH Rn / POP Rn" that promotion added
-  for the counter can be left behind unused, and constants set in every copy
-  (e.g. "MOV R0, 0") are repeated rather than hoisted.
+[gap] After full unrolling a loop, omit-frame-pointers removes the orphaned
+  "PUSH Rn / POP Rn" and an unused "ISUB SP,N", and peephole-repeat-imm and
+  peephole-copies the repeated "MOV Rd, imm". What is left: an "ISUB SP,N"
+  is removed whole or not at all (a frame that could shrink is not shrunk);
+  the unreferenced labels of the copies stay in the output text (they cost
+  no word in the assembled program); a memory reload repeated in every copy
+  ("MOV R0, [BP+2]" in each copy of a body that stores a parameter) is not
+  removed.
 
 [gap] constant-folding trades register operands for immediates ("MOV Rd, Rs"
   -> "MOV Rd, const" is 2 words instead of 1), so the assembled program can
@@ -61,6 +111,34 @@ PASSES
 
 [bug] peephole-zero-test: the rewritten jump loses its trailing source comment.
 
+[bug] A ";@v" hint on an instruction without a memory operand ("MOV R1, 5
+  ;@v") makes v32opt print "a volatile access was optimized away or
+  rewritten ... please report this" at every optimization level including
+  -O0, although nothing was changed: hints_verify() (src/hints.c) requires
+  every marked instruction to have an indirect operand. doc/hints.md says to
+  mark only the load or store, so the input is wrong, but the message blames
+  v32opt.
+
+[bug] omit-frame-pointers (frame cleanup): function A jumps into the
+  epilogue of function B (a shared tail: "jt R0, __b_tail"), both with
+  "PUSH R4 ... POP R4", A uses R4 and B does not. B's save looks orphaned
+  and is removed with its POP, so A's jump no longer restores R4. Compiler
+  output has no such jump; hand-written code and genasm can.
+  Reproducer: testing/frame-cleanup/shared_tail.asm (not in run.sh).
+
+[bug] peephole-movs deletes a repeated "MOV R12, imm" (R11/R13 too) after a
+  MOVS, SETS or CMPS, which write R11-R13 without naming them
+  (modifies_register() does not know). Present before the 20261109 changes.
+  Reproducer: testing/peephole-repeat-imm/known_peephole_movs.asm
+  (not in run.sh). peephole-repeat-imm itself handles them.
+
+[bug] dce drops a "__function_*" label that is only fallen into from the
+  function above it (the preceding function then runs on into the next one),
+  and a function that is only entered by a jump to a label inside it (the jump
+  target becomes undefined). Present before the 20261109 changes.
+  "__function_a: mov R0,1 / __function_b: iadd R0,2 / ret" with
+  "call __function_a" elsewhere loses __function_b at -fdce.
+
 [bug] The stock Vircon32 compiler is not consistently callee-save (a function
   only ever called at statement level may write R1 without saving it).
   v32opt never adds such a write itself (testing/lint checks that against
@@ -70,8 +148,10 @@ PASSES
 TOOLING AND TESTS
 
 [limit] --trigger-max counts one slot per deleted node in most passes, one per
-  4-node group in omit-frame-pointers, one per swept function in dce, one per
-  promoted slot in promote-*, one per rewritten loop in the loop passes.
+  4-node group, per removed register save and per removed ISUB in
+  omit-frame-pointers, one per swept function in dce, one per promoted slot
+  in promote-*, one per rewritten loop in the loop passes (loop-index and
+  loop-strength included), one per deleted MOV in peephole-repeat-imm.
   Bisection is consistent within a pass, not across passes.
 
 [limit] scripts/v32prof.py profiles what the program does on its own. A game
@@ -98,8 +178,12 @@ TOOLING AND TESTS
 
 [limit] testing/differential and testing/bench need the sibling projects built
   (v32as, v32sim; v32cc, the stock "compile", v32c++, v32lua for their
-  languages) and are not part of "make tests". "make tests" itself needs the
-  Vircon32 DevTools for its unit fixtures (testing/primes also needs v32lua).
+  languages) and are not part of "make tests". Seven suites of "make tests"
+  (peephole-dead-regs, loop-strength, frame-cleanup, peephole-repeat-imm,
+  peephole-copies-imm, constant-folding-entries, promote-save) run programs
+  of testing/differential through its run.py and need v32as and v32sim, but
+  no compiler. "make tests" itself needs the Vircon32 DevTools for its unit
+  fixtures (testing/primes also needs v32lua).
 
 [bug] A few small memory leaks (nodes made by passes) are reported by
   LeakSanitizer at exit; no memory errors under AddressSanitizer/UBSan.

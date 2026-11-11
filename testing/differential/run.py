@@ -112,7 +112,7 @@ def run_one(src, flags, tag):
     r = sh([V32AS, '--standard', final, '-o', base + '.vbin'])
     if r.returncode: return dict(err='v32as: ' + (r.stdout + r.stderr)[:300])
     v32_file(base + '.vbin', base + '.v32')
-    r = sh([V32SIM, '-r', '-x', '-n', '-B', bios_stub(), '-E', '0x20000000', '--frame-us=0',
+    r = sh([V32SIM, '-r', '-x', '-n', '-B', bios_stub(), '-E', '0x20000000', '--frame-us=0', '--fixed-clock', '--seed=1',
             '--max-frames=' + MAXF, '--dump=%d' % NDUMP, base + '.v32'], stdin=subprocess.DEVNULL)
     if r.returncode == 2: return dict(err='TIMEOUT')
     if r.returncode != 0: return dict(err='v32sim rc=%d: %s' % (r.returncode, (r.stdout + r.stderr)[-300:]))
@@ -131,8 +131,10 @@ def main():
     files = args
     if not files:
         print(__doc__); sys.exit(2)
-    missing = [(n, p) for n, p in (('V32CC', V32STOCK if STOCK else V32CC), ('V32AS', V32AS), ('V32SIM', V32SIM), ('V32OPT', V32OPT))
-               if not (os.access(p, os.X_OK) or shutil.which(p))]
+    need = [('V32AS', V32AS), ('V32SIM', V32SIM), ('V32OPT', V32OPT)]
+    if any(not f.endswith('.asm') for f in files):      # hand-written assembly needs no compiler
+        need.insert(0, ('V32CC', V32STOCK if STOCK else V32CC))
+    missing = [(n, p) for n, p in need if not (os.access(p, os.X_OK) or shutil.which(p))]
     if missing:
         for n, p in missing: print('%s: %s is not an executable (build it, or point %s at it)' % (n, p, n))
         sys.exit(2)
@@ -150,6 +152,9 @@ def main():
         for fl in allsets:
             r = res[k]; k += 1
             name, label = os.path.basename(f), fl or '-O0 (baseline)'
+            if r.get('err') == 'TIMEOUT' and base.get('err') != 'TIMEOUT' and 'err' not in base:
+                # the unoptimized program finished and this variant did not: a miscompile, not a slow program
+                print('FAIL  %-14s %-52s runs past the frame limit, the baseline does not' % (name, label)); problems += 1; rows = None; continue
             if r.get('err') == 'TIMEOUT' or base.get('err') == 'TIMEOUT':
                 print('SKIP  %-14s %-52s timeout' % (name, label)); rows = None; continue
             if 'err' in r:

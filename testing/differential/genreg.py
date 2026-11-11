@@ -10,9 +10,15 @@ promote passes want registers for them) and calls them from deeply nested
 expressions, where up to a dozen partial results are alive in registers at
 the time of each call. A callee that clobbers a register it did not save
 shows up as a different result.
+
+GENREG_LIVE=1 adds, to each function, a loop whose body calls the callee (mid functions) or
+does arithmetic (leaf functions), carries a value from the end of one iteration to the top
+of the next, and leaves through a break and through a return from inside the loop that read
+different locals. The default output for a seed is unchanged without it.
 """
-import random, sys
+import os, random, sys
 R = random.Random(int(sys.argv[1]))
+LIVE = bool(os.environ.get('GENREG_LIVE'))
 NL = R.randint(2, 4)          # leaf functions
 NM = R.randint(1, 2)          # functions that call a leaf
 
@@ -30,6 +36,13 @@ def body(name, nloc, callee):
         if R.random() < 0.5:
             s += '        for (j = 0; j < 2; j++) %s += %s + j;\n' % (R.choice(loc), R.choice(loc))
         s += '    }\n'
+    if LIVE:
+        c, t, x, y = [R.choice(loc) for _ in range(4)]
+        s += '    %s = %s;\n    for (i = 0; i < 3; i++) {\n        %s = %s + %s;\n' % (c, R.choice(loc), t, c, R.choice(loc))
+        if callee: s += '        %s = %s(%s, %s);\n' % (R.choice(loc), callee, t, R.choice(loc))
+        else: s += '        %s = %s * 3 + i;\n' % (R.choice(loc), t)
+        s += '        if (%s > %d) break;\n        if (%s == %d) return %s + %s;\n        %s = %s ^ %s;\n    }\n' % (
+            x, R.choice([20, 50, 200]), y, R.choice([3, 7, 11]), R.choice(loc), R.choice(loc), c, t, R.choice(loc))
     if callee:
         s += '    %s = %s(%s, %s);\n' % (R.choice(loc), callee, R.choice(loc), R.choice(loc))
         for _ in range(2):

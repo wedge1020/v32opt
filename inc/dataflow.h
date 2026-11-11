@@ -30,6 +30,8 @@ struct BasicBlock {
 
     AsmNode *first_ins;
     AsmNode *last_ins;
+    bool     pinned;       // entered in a way the CFG has no edge for (CALL target, address-taken label,
+                           // program start, no predecessor): every register unknown on entry
 
     BasicBlock **preds;
     int num_preds;
