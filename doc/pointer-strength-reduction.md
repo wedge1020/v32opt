@@ -1,7 +1,6 @@
 # Pointer strength reduction (`-floop-strength`): design
 
-Status: specification. Closes the ISSUES gap "Pointer strength reduction with a
-stepped pointer register".
+Status: implemented as `-floop-strength` (src/peephole/loop_strength.c). The pointer step is placed immediately before the counter step, and an offset form (`arr[i+c]`) was added; otherwise as specified here.
 
 ## What it does
 

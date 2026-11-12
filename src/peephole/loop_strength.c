@@ -450,6 +450,7 @@ int peephole_loop_strength(AsmNode *head)
     if (!head) return 0;
     loop_labels_build_all(head);
     liveness_begin(head);
+    promote_bounds_begin(head);
     int optimizations = 0;
     for (AsmNode *jmp = head->next; jmp; jmp = jmp->next) {
         if (jmp->type != OP_JMP) continue;

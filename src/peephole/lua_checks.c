@@ -661,7 +661,9 @@ static int process_function(AsmNode *entry) {
     int total = 0;
     if (!f.in || !f.seen || !f.guard) goto out;
 
-    f.frame_ok = promote_frame_unaliased(entry->next);
+    // The frame words of THIS function only: a range the next function cuts short while its own
+    // frame goes on (a nested definition) cannot say whether a word is read elsewhere.
+    f.frame_ok = promote_function_complete(entry) && promote_frame_unaliased(entry->next);
 
     // loops with facts
     if (f.frame_ok) {
@@ -715,6 +717,7 @@ int peephole_lua_checks(AsmNode *head)
     if (!is_lua_mode() || !head) return 0;
     int total = 0;
     liveness_begin(head);
+    promote_bounds_begin(head);
     for (AsmNode *n = head->next; n; n = n->next) {
         if (!promote_function_entry(n)) continue;
         total += process_function(n);

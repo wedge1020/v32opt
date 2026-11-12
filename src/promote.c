@@ -291,23 +291,251 @@ static bool is_function_entry(const AsmNode *n) {
     return strncmp(lbl, "__function_", 11) == 0 && !is_fn_return_label(n);
 }
 
+// -------------------------------------------------------------------
+// Where a function ends. BUG FIX (peephole-lua-checks miscompile on v32lua output, and the same
+// mistake in every promote pass): a function used to run from its entry label to the next
+// "__function_" / "__literal_" / "__global_" label, with "__global_scope_initialization" itself
+// NOT a boundary. v32lua output broke that in three ways:
+//   - every top-level control-flow label is "__global_<something>" ("__global_for_start_0",
+//     "__global_num_3", ...; see is_global_scope_internal_label in dce.c), so the top-level
+//     code's function stopped at its first loop or coercion guard;
+//   - the function placed right before "__global_scope_initialization" (main, defined at the
+//     top) ran on into it, up to that first "__global_" label: main's frame and the top-level
+//     frame were one "function" -- both number their slots [BP-1], [BP-2], ... -- and
+//     peephole-lua-checks deleted the top-level loop's step and counter stores because main's
+//     loop no longer read those offsets;
+//   - a function does not end at its own "__<stem>_skip:" label, where the code that defined it
+//     (v32lua's skip-around layout, dce.c) resumes in the ENCLOSING frame.
+// Now a function ends before: another function entry (including "__global_scope_initialization"),
+// a "__literal_" label, its own "__<stem>_skip" label, or a label that some CALL targets (a
+// subroutine with its own return, such as v32lua's runtime library after the top-level code).
+// "__global_*" labels other than the scope initialization are ordinary labels of their function.
+//
+// A range that stops while the frame goes on is INCOMPLETE (function_complete): a nested function
+// definition inside it ("JMP __inner_skip / __function_inner: ..."), or code falling into the next
+// label. The passes that reason about a whole frame (promotion, the slot analyses of
+// peephole-lua-checks, frame cleanup, loop-strength's register choice) leave such a function alone.
+// -------------------------------------------------------------------
+static char    **g_call_tgt   = NULL;      // sorted names of direct CALL targets
+static int       g_call_tgt_n = 0;
+static AsmNode  *g_bounds_head = NULL;     // the list they were collected from
+
+static int cmp_cstr(const void *a, const void *b) { return strcmp(*(char * const *)a, *(char * const *)b); }
+
+// Every label with the number of times its name is mentioned anywhere (instructions, data and
+// preprocessor directives; not inside a string, not in a comment): see promote_inner_labels_private().
+static void bounds_for(const AsmNode *n);
+
+typedef struct { char *name; int refs; int inside; } LabelCount;
+static LabelCount *g_lc   = NULL;
+static int         g_lc_n = 0;
+
+static int cmp_lc(const void *a, const void *b) { return strcmp(((const LabelCount *)a)->name, ((const LabelCount *)b)->name); }
+
+static LabelCount *lc_find(const char *name) {
+    if (!g_lc) return NULL;
+    LabelCount key = { (char *)name, 0, 0 };
+    return bsearch(&key, g_lc, (size_t)g_lc_n, sizeof(LabelCount), cmp_lc);
+}
+
+static bool lc_char(int c) { return isalnum(c) || c == '_' || c == '.' || c == '$' || c == '~'; }
+
+// Adds `delta` to field (0: refs, 1: inside) of every label named in n's text.
+static void lc_count(const AsmNode *n, int field) {
+    const char *p = n->raw;
+    bool in_str = false;
+    while (*p) {
+        if (in_str) { if (*p == '\\' && p[1]) p++; else if (*p == '"') in_str = false; p++; continue; }
+        if (*p == ';') break;
+        if (*p == '"') { in_str = true; p++; continue; }
+        if (lc_char((unsigned char)*p) && !isdigit((unsigned char)*p)) {
+            const char *b = p;
+            while (lc_char((unsigned char)*p)) p++;
+            size_t len = (size_t)(p - b);
+            if (len < 128) {
+                char tok[128];
+                memcpy(tok, b, len);
+                tok[len] = '\0';
+                LabelCount *l = lc_find(tok);
+                if (l) { if (field) l->inside++; else l->refs++; }
+            }
+            continue;
+        }
+        p++;
+    }
+}
+
+void promote_bounds_end(void) {
+    for (int i = 0; i < g_call_tgt_n; i++) free(g_call_tgt[i]);
+    free(g_call_tgt);
+    g_call_tgt = NULL;
+    g_call_tgt_n = 0;
+    for (int i = 0; i < g_lc_n; i++) free(g_lc[i].name);
+    free(g_lc);
+    g_lc = NULL;
+    g_lc_n = 0;
+    g_bounds_head = NULL;
+}
+
+void promote_bounds_begin(AsmNode *head) {
+    promote_bounds_end();
+    int cap = 0;
+    for (AsmNode *n = head; n; n = n->next) if (n->type == OP_CALL) cap++;
+    g_call_tgt = malloc((size_t)(cap + 1) * sizeof(char *));
+    for (AsmNode *n = head; n && g_call_tgt; n = n->next) {
+        if (n->type != OP_CALL || !n->has_dst || n->dst_op.mode != MODE_IMMEDIATE) continue;
+        char buf[128];
+        safe_str_copy(buf, n->dst_op.raw, sizeof(buf));
+        g_call_tgt[g_call_tgt_n++] = strdup(trim(buf));
+    }
+    if (g_call_tgt) qsort(g_call_tgt, (size_t)g_call_tgt_n, sizeof(char *), cmp_cstr);
+    int nl = 0;
+    for (AsmNode *n = head; n; n = n->next) if (n->type == OP_LABEL) nl++;
+    g_lc = calloc((size_t)nl + 1, sizeof(LabelCount));
+    for (AsmNode *n = head; n && g_lc; n = n->next) {
+        if (n->type != OP_LABEL) continue;
+        char nm[128];
+        get_label_name(n, nm, sizeof(nm));
+        if (nm[0]) g_lc[g_lc_n++].name = strdup(nm);
+    }
+    if (g_lc) qsort(g_lc, (size_t)g_lc_n, sizeof(LabelCount), cmp_lc);
+    for (AsmNode *n = head; n && g_lc; n = n->next)
+        if (n->type != OP_LABEL && !n->debug_note) lc_count(n, 0);
+    g_bounds_head = head;
+}
+
+// Is every label of [first, last] other than `except` referenced only from inside [first, last]?
+// A label that code elsewhere jumps to (a shared epilogue: "JT R0, __b_tail" from function a), calls,
+// or names in data is a second way into the range, with a stack the range's own prologue did not
+// build: whatever assumes the prologue ran (a removed or added save, a removed frame) breaks it.
+// The counts are those of promote_bounds_begin() (references are not edited by the passes that ask).
+bool promote_labels_private(AsmNode *first, AsmNode *last, const AsmNode *except) {
+    bounds_for(first);
+    if (!g_lc) return false;
+    for (int i = 0; i < g_lc_n; i++) g_lc[i].inside = 0;
+    for (AsmNode *n = first; n; n = n->next) {
+        if (n->type != OP_LABEL && !n->debug_note) lc_count(n, 1);
+        if (n == last) break;
+    }
+    for (AsmNode *n = first; n; n = n->next) {
+        if (n->type == OP_LABEL && n != except) {
+            char nm[128];
+            get_label_name(n, nm, sizeof(nm));
+            LabelCount *l = lc_find(nm);
+            if (!l || l->inside != l->refs) return false;
+        }
+        if (n == last) break;
+    }
+    return true;
+}
+
+// The table must describe the list `n` is in: a caller that did not call promote_bounds_begin()
+// for it gets it built here (slow -- a walk to the head -- but never wrong).
+static void bounds_for(const AsmNode *n) {
+    const AsmNode *h = n;
+    if (g_bounds_head) {
+        // cheap check: the caller's begin() normally covers it
+        return;
+    }
+    while (h->prev) h = h->prev;
+    promote_bounds_begin((AsmNode *)h);
+}
+
+static bool is_call_target(const char *lbl) {
+    if (!g_call_tgt || g_call_tgt_n == 0) return false;
+    const char *key = lbl;
+    return bsearch(&key, g_call_tgt, (size_t)g_call_tgt_n, sizeof(char *), cmp_cstr) != NULL;
+}
+
 // The last node belonging to the function whose entry label is `entry`.
 static AsmNode *function_last(AsmNode *entry) {
+    bounds_for(entry);
+    char ename[128], skip[160];
+    get_label_name(entry, ename, sizeof(ename));
+    skip[0] = '\0';
+    if (strncmp(ename, "__function_", 11) == 0) snprintf(skip, sizeof(skip), "__%s_skip", ename + 11);
     AsmNode *last = entry;
     for (AsmNode *s = entry->next; s; s = s->next) {
         if (s->type == OP_LABEL) {
             char lbl[128];
             get_label_name(s, lbl, sizeof(lbl));
-            if ((strncmp(lbl, "__function_", 11) == 0 && !is_fn_return_label(s)) ||
-                strncmp(lbl, "__literal_", 10) == 0 ||
-                (strncmp(lbl, "__global_", 9) == 0 &&
-                 !str_case_eq(lbl, "__global_scope_initialization"))) {
+            if (is_function_entry(s) || strncmp(lbl, "__literal_", 10) == 0 ||
+                (skip[0] && strcmp(lbl, skip) == 0) || is_call_target(lbl)) {
                 break;
             }
         }
         last = s;
     }
     return last;
+}
+
+// Does the frame of the function [entry, last] end there? (See above.) The last instruction must
+// be a RET or HLT, or a JMP back into the range; and no jump may leave the range for a label
+// further on in the same code (a nested definition's "JMP __inner_skip" does).
+static bool function_complete(AsmNode *entry, AsmNode *last) {
+    AsmNode *lastins = NULL;
+    for (AsmNode *n = entry->next; n; n = n->next) {
+        if (n->type != OP_LABEL && n->type != OP_OTHER) lastins = n;
+        if (n == last) break;
+    }
+    if (!lastins) return true;
+    for (AsmNode *n = entry->next; n; n = n->next) {
+        if (n->type == OP_JMP || n->type == OP_JT || n->type == OP_JF) {
+            const Operand *op = (n->type == OP_JMP) ? &n->dst_op : &n->src_op;
+            if (op->mode == MODE_IMMEDIATE) {
+                char t[128];
+                safe_str_copy(t, op->raw, sizeof(t));
+                bool inside = false;
+                for (AsmNode *q = entry->next; q; q = q->next) {
+                    if (q->type == OP_LABEL) {
+                        char l[128];
+                        get_label_name(q, l, sizeof(l));
+                        if (name_eq(l, trim(t))) { inside = true; break; }
+                    }
+                    if (q == last) break;
+                }
+                if (!inside) {
+                    // a jump to a label AFTER the range: the frame continues there
+                    for (AsmNode *q = last->next; q; q = q->next) {
+                        if (q->type == OP_LABEL) {
+                            char l[128];
+                            get_label_name(q, l, sizeof(l));
+                            if (name_eq(l, t)) return false;
+                        }
+                        if (is_function_entry(q) && q != last->next) break;   // the next function on is someone else's
+                    }
+                }
+            }
+        }
+        if (n == last) break;
+    }
+    return lastins->type == OP_RET || lastins->type == OP_HLT || lastins->type == OP_JMP;
+}
+
+// The function a node belongs to: walk back to the nearest entry, stepping over the body of a
+// nested function whose "__<stem>_skip" label is passed on the way (the code after it is the
+// enclosing function's). NULL when there is none.
+static AsmNode *enclosing_entry(AsmNode *n) {
+    for (AsmNode *p = n; p; p = p->prev) {
+        if (is_function_entry(p)) return p;
+        if (p->type != OP_LABEL) continue;
+        char lbl[128];
+        get_label_name(p, lbl, sizeof(lbl));
+        size_t len = strlen(lbl);
+        if (len > 7 && strncmp(lbl, "__", 2) == 0 && strcmp(lbl + len - 5, "_skip") == 0) {
+            char want[160];
+            snprintf(want, sizeof(want), "__function_%.*s", (int)(len - 7), lbl + 2);
+            AsmNode *q = p->prev;
+            for (; q; q = q->prev) {
+                if (q->type != OP_LABEL) continue;
+                char l2[128];
+                get_label_name(q, l2, sizeof(l2));
+                if (strcmp(l2, want) == 0) break;
+            }
+            if (q) p = q;                      // continue before the nested function's entry
+        }
+    }
+    return NULL;
 }
 
 // -------------------------------------------------------------------
@@ -769,6 +997,14 @@ static void frame_info(FrameInfo *fi, AsmNode *anchor, AsmNode *first, AsmNode *
         fi->epi_first[fi->n_epi++] = ins;
     }
     if (fi->can_save && !sp_operands_clear_of_saves(fi, limit)) fi->can_save = false;
+    // BUG FIX (same kind as the frame-cleanup shared-tail one): a label of the function that is
+    // reached from elsewhere -- another function jumping into this one's epilogue -- would run the
+    // added POP on a stack that never got the PUSH.
+    if (fi->can_save) {
+        AsmNode *last = first;
+        while (last->next && last->next != limit) last = last->next;
+        if (!promote_labels_private(first, last, NULL)) fi->can_save = false;
+    }
 }
 
 // Make sure the function saves and restores Rr; false if it can't.
@@ -987,6 +1223,7 @@ int pass_promote_stack_slots(AsmNode *head) {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;
     liveness_begin(head);
+    if (head) promote_bounds_begin(head);
 
     while (curr) {
         if (!is_function_entry(curr)) { curr = curr->next; continue; }
@@ -994,6 +1231,7 @@ int pass_promote_stack_slots(AsmNode *head) {
         AsmNode *end_of_func = function_last(curr);
         AsmNode *first = curr->next;
         AsmNode *limit = end_of_func->next;
+        if (!function_complete(curr, end_of_func)) { curr = limit; continue; }
         set_fn_hints(first);
 
         // Phase A: Analyze Function Safety & Register Liveness
@@ -1099,6 +1337,7 @@ int pass_promote_regs(AsmNode *head) {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;
     liveness_begin(head);
+    if (head) promote_bounds_begin(head);
 
     while (curr) {
         if (!is_function_entry(curr)) { curr = curr->next; continue; }
@@ -1106,6 +1345,7 @@ int pass_promote_regs(AsmNode *head) {
         AsmNode *end_of_func = function_last(curr);
         AsmNode *func_first = curr->next;
         AsmNode *func_limit = end_of_func->next;
+        if (!function_complete(curr, end_of_func)) { curr = func_limit; continue; }
         set_fn_hints(func_first);
 
         // GUARD: function-wide frame-escape check -- see the file header.
@@ -1348,6 +1588,7 @@ int pass_promote_loop_registers(AsmNode *head) {
     int optimizations = 0;
     AsmNode *curr = head ? head->next : NULL;
     liveness_begin(head);
+    if (head) promote_bounds_begin(head);
 
     // per-function caches: escape check, and the frame (saved registers)
     AsmNode *cached_entry = NULL;
@@ -1366,12 +1607,12 @@ int pass_promote_loop_registers(AsmNode *head) {
 
         // The enclosing function [func_first, func_last]. Hand-written code
         // with no "__function_" labels counts as one big function.
-        AsmNode *entry = curr;
-        while (entry && !is_function_entry(entry)) entry = entry->prev;
+        AsmNode *entry = enclosing_entry(curr);
         AsmNode *func_first, *func_last;
         if (entry) {
             func_first = entry->next;
             func_last  = function_last(entry);
+            if (!function_complete(entry, func_last)) { curr = curr->next; continue; }
         } else {
             func_first = head->next;
             func_last  = head;
@@ -1613,10 +1854,12 @@ int pass_promote_loop_registers(AsmNode *head) {
 // anywhere in it -- the same test the promote passes apply.
 // -------------------------------------------------------------------
 bool promote_frame_unaliased(AsmNode *n) {
-    AsmNode *entry = n;
-    while (entry && !is_function_entry(entry)) entry = entry->prev;
+    AsmNode *entry = enclosing_entry(n);
     if (!entry) return false;
     AsmNode *last = function_last(entry);
+    bool inside = false;
+    for (AsmNode *q = entry->next; q; q = q->next) { if (q == n) { inside = true; break; } if (q == last) break; }
+    if (!inside || !function_complete(entry, last)) return false;
     return !function_frame_escapes(entry->next, last) &&
            prologue_anchor(entry->next, last->next) != NULL;
 }
@@ -1626,6 +1869,8 @@ bool promote_frame_unaliased(AsmNode *n) {
 // -------------------------------------------------------------------
 bool promote_function_entry(const AsmNode *n) { return is_function_entry(n); }
 AsmNode *promote_function_last(AsmNode *entry) { return function_last(entry); }
+bool promote_function_complete(AsmNode *entry) { return function_complete(entry, function_last(entry)); }
+
 bool promote_bp_value_escapes(AsmNode *n) { return bp_value_escapes(n); }
 
 // ---- for loop-strength (src/peephole/loop_strength.c): the register rules of promote-loops ----
@@ -1633,11 +1878,13 @@ bool promote_bp_value_escapes(AsmNode *n) { return bp_value_escapes(n); }
 // The frame of the function `n` sits in, as promote-loops sees it. False when no register may
 // be used there at all (no recognisable prologue outside -L lua).
 bool promote_loop_frame(FrameInfo *fi, AsmNode *n) {
-    AsmNode *entry = n;
-    while (entry && !is_function_entry(entry)) entry = entry->prev;
+    AsmNode *entry = enclosing_entry(n);
     AsmNode *an = NULL, *last = NULL;
     if (entry) {
         last = function_last(entry);
+        bool inside = false;
+        for (AsmNode *q = entry->next; q; q = q->next) { if (q == n) { inside = true; break; } if (q == last) break; }
+        if (!inside || !function_complete(entry, last)) return false;
         an = prologue_anchor(entry->next, last->next);
     }
     if (an) {

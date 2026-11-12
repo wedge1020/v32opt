@@ -283,14 +283,37 @@ static int frame_cleanup(AsmNode *head)
 {
     int removed = 0;
     AsmNode *curr = head->next;
+    promote_bounds_begin(head);
     while (curr) {
         if (!promote_function_entry(curr)) { curr = curr->next; continue; }
         AsmNode *last = promote_function_last(curr);
         AsmNode *limit = last->next;
-        removed += fc_function(curr, last);
+        // Refused too when a label inside the function is reached from elsewhere (a shared epilogue
+        // that another function jumps into: its stack has that function's saves, not ours). The entry
+        // label is exempt: whatever jumps there -- a CALL, or a tail JMP after the jumper has taken its
+        // own frame down -- arrives with the stack a CALL would leave, and the prologue/epilogue pair
+        // stays balanced whatever this pass removes from both.
+        if (promote_function_complete(curr) && promote_labels_private(curr->next, last, NULL))
+            removed += fc_function(curr, last);
         curr = limit;
     }
     return removed;
+}
+
+// omit-frame-pointers: a "_return" label inside the body may be jumped to only from this same function
+// (from `push_bp` to the RET after it). BUG FIX: another function jumping to it (a shared epilogue) would,
+// once the frame is gone, return with ITS frame still on the stack. Counts come from loop_labels_build_all().
+static bool return_label_private(const AsmNode *label, AsmNode *push_bp) {
+    char nm[128];
+    get_label_name(label, nm, sizeof(nm));
+    LoopLabel *l = loop_label_find(nm);
+    if (!l || l->duplicate) return false;
+    int inside = 0;
+    for (AsmNode *n = push_bp; n; n = n->next) {
+        if (n->type != OP_LABEL && !n->debug_note && loop_mentions_reg(n, nm)) inside++;
+        if (n->type == OP_RET) break;
+    }
+    return inside >= l->refs;
 }
 
 // ===================================================================
@@ -343,7 +366,7 @@ int omit_frame_pointers(AsmNode *head)
                         size_t lbl_len = strlen(lbl);
                         bool is_return_label = (lbl_len >= 7 && str_case_eq(lbl + lbl_len - 7, "_return"));
 
-                        if (!is_return_label && !loop_label_unreferenced(scan)) {   // an unreferenced label is only fallen into
+                        if ((!is_return_label && !loop_label_unreferenced(scan)) || !return_label_private(scan, push_bp)) {   // an unreferenced label is only fallen into; a _return label only jumped to from this body
                             frame_used_in_body = true;
                             break;
                         }
@@ -392,7 +415,7 @@ int omit_frame_pointers(AsmNode *head)
                             size_t lbl_len = strlen(lbl);
                             bool is_return_label = (lbl_len >= 7 && str_case_eq(lbl + lbl_len - 7, "_return"));
 
-                            if (!is_return_label && !loop_label_unreferenced(scan)) {   // an unreferenced label is only fallen into
+                            if ((!is_return_label && !loop_label_unreferenced(scan)) || !return_label_private(scan, push_bp)) {   // an unreferenced label is only fallen into; a _return label only jumped to from this body
                                 frame_used_in_body = true;
                                 break;
                             }

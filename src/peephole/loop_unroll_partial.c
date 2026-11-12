@@ -159,6 +159,7 @@ int peephole_loop_unroll_partial(AsmNode *head)
     if (!head) return 0;
     loop_labels_build(head);
     liveness_begin(head);
+    promote_bounds_begin(head);
     int optimizations = 0, nplans = 0, cap = 0;
     PartialPlan *plans = NULL;
     for (AsmNode *n = head; n; n = n->next) n->mark = 0;
