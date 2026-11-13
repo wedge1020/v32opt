@@ -40,13 +40,14 @@ a wrong one is a compiler bug. `noinline` and the *requests* below (`inline`,
 limit, how much a loop may grow), never as a reason to skip a check of whether a
 transformation is correct, so they cannot make a program wrong.
 
-### `;@hints <version> [abi=caller-save|callee-save]`
+### `;@hints <version> [abi=caller-save|callee-save] [lang=lua]`
 
 | Part | Meaning |
 | --- | --- |
 | `1` | the format version (the only one so far) |
 | `abi=caller-save` | **The code follows v32cc's convention:** no register survives a `CALL`; a caller saves what it still needs; a callee may overwrite `R0`..`R10` without saving; the result is in `R0`. `v32opt` then promotes stack slots into free registers **without** adding a `PUSH`/`POP` to the function (the stock compiler's callee-save rule needs them, v32cc's does not). |
 | `abi=callee-save` | the stock compiler's convention (also what `v32opt` assumes when there is no hint) |
+| `lang=lua` | the file is v32lua output: `v32opt` runs as with `-L lua` unless `-L` is given on the command line (`-L c` wins) |
 
 `--abi=auto|stock|caller-save` on the command line overrides the header (`-L lua`
 is always caller-save). *The compiler promises that every function in the

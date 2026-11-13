@@ -194,6 +194,11 @@ int main(int argc, char **argv) {
     assign_source_lines(program_ast);
     // Compiler hints (';@' comments): optional facts that lift conservative assumptions
     bool have_hints = hints_parse(program_ast);
+    // v32lua says so in its header (";@hints 1 abi=caller-save lang=lua"): that is -L lua, unless -L was given
+    if (have_hints && hints_header_lua() && !config.lang_explicit && config.lang_mode != LANG_LUA) {
+        config.lang_mode = LANG_LUA;
+        if (config.verbose) printf("Language mode: lua (from the hints header).\n");
+    }
     if (config.verbose && have_hints)
         printf("Compiler hints found (calling convention: %s).\n", abi_caller_save() ? "caller-save" : "callee-save");
     if (g_profile_file) {

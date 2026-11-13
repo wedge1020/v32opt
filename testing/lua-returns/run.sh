@@ -14,6 +14,8 @@
 ##                 or return nothing, called directly, through a table and in multiple assignments.
 ##                 The hints are in the file for the first, second, third and last kind and not for the
 ##                 forwarding ones; the results r_* agree with the unoptimized run at -O1 -O2 -O3.
+##   header        the ';@hints 1 abi=caller-save lang=lua' line v32lua writes selects -L lua when -L is not
+##                 given (an explicit -L c wins).
 ## Needs v32as and v32sim built next to this project for the result checks.
 ## Usage: ./run.sh [path/to/v32opt]     (or V32OPT=path, default ../../bin/v32opt)
 ##
@@ -54,6 +56,15 @@ for f in fwd va; do
     ncases=$((ncases + 1))
     grep -qE ";@fn __function_${f} returns=" "${A}" && fail "returns.asm: ${f} forwards values and must have no returns= line"
 done
+
+# ---- the header's "lang=lua" (v32lua output) is -L lua unless -L is given
+"${OPT}" "${A}" -O2 -o "${TMP}/h0.asm" >/dev/null 2>&1
+"${OPT}" "${A}" -O2 -L lua -o "${TMP}/h1.asm" >/dev/null 2>&1
+"${OPT}" "${A}" -O2 -L c -o "${TMP}/h2.asm" >/dev/null 2>&1
+ncases=$((ncases + 1))
+cmp -s "${TMP}/h0.asm" "${TMP}/h1.asm" || fail "returns.asm -O2 without -L differs from -L lua (the header's lang=lua was not used)"
+ncases=$((ncases + 1))
+cmp -s "${TMP}/h0.asm" "${TMP}/h2.asm" && fail "returns.asm -O2 -L c gives the same as without -L (an explicit -L must win)"
 
 # ---- results agree
 want="$(python3 "${RUN}" "${A}")"

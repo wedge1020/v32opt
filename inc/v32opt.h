@@ -150,6 +150,7 @@ typedef struct {
     bool     opt_peephole_repeat_imm;   // MOV Rd, imm when Rd already holds imm (repeat_imm.c)
     bool     opt_resolve_defines;   // let passes see numeric %define values
     LangMode lang_mode;
+    bool     lang_explicit; // -L was given: the ';@hints' header's lang= does not change the mode
     AbiMode  abi;           // calling convention: auto (from hints), stock callee-save, caller-save
     bool     strip_src;     // --strip-src / -g0: drop the ';@src' source markers from the output
     bool     check_src;     // --check-src: verify the markers after optimization (srcmarks.c)

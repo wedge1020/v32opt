@@ -110,4 +110,5 @@ __function_copy_still_needed:
 __function_main:
     CALL __function_counter_step
     CALL __function_propagate
+    CALL __function_pointer_base    ; a caller closes the class: R2 is dead after the call
     RET

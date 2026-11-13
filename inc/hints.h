@@ -87,6 +87,7 @@ bool           node_in_cold_block (const AsmNode *);             // the node lie
 const FnHints *hints_fn_of_call   (const AsmNode *call);         // the ';@fn' of a direct CALL's target, or NULL
 
 bool           hints_parse     (AsmNode *head);        // scan a freshly parsed program; true if any hint was seen
+bool           hints_header_lua  (void);               // the header said 'lang=lua' (v32lua output)
 bool           hints_header_seen (void);               // a valid ';@hints N' header line was read
 void           hints_free      (void);
 bool           abi_caller_save (void);                 // the calling convention in force for this run

@@ -8,6 +8,14 @@
   without the hint (a runtime routine, a function that forwards `f()` or `...`) keeps R2/R3 live as before. New test
   `testing/lua-returns` (unit shape with teeth, and a v32lua program with one-, two- and three-value functions,
   forwarding and `...`).
+* The `;@hints` header's `lang=lua` (v32lua output) now selects `-L lua` when `-L` is not given. The `Make.sh`/`Make.bat` v32lua
+  writes run plain `v32opt -O3`, which was C mode on Lua output: no `peephole-lua-checks`, `lua-loop-var` or the R2/R3
+  live-out rule, and more instructions left (nostalgick: 51,033 against 50,528). An explicit `-L c` still wins.
+  Test: `testing/lua-returns`.
+* Three unit fixtures that had gone stale after the liveness and frame-cleanup work now test what they meant to: `omit-frame-pointers`
+  (the `ISUB SP,16` of `sp_modified` is used, so it is not an orphan frame), `peephole-copies` (`pointer_base` has a caller, so R2 is
+  dead after it) and `peephole-dead-regs` (the register a callee saves and restores is read after the call). The optimizer's output
+  was right in all three.
 * `peephole-zero-test` keeps the trailing source comment of the jump it rewrites (test `testing/zero-test-comment`).
 * `make -C testing` skips with one line when the stock `assemble` and `packrom` are not in PATH, instead of failing in
   every sub-directory.

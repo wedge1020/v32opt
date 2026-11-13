@@ -217,7 +217,8 @@ __function_sp_modified:
     MOV BP, SP ; KEEP(32)
     ISUB SP, 16        ; Allocate stack space - uses SP directly
     MOV R1, 42
-    MOV R2, 100
+    MOV [SP+2], R1     ; the space is used, so the frame is not an orphan
+    MOV R2, [SP+2]
     MOV SP, BP ; KEEP(33)
     POP BP ; KEEP(34)
     RET

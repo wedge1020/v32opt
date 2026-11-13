@@ -93,8 +93,9 @@ __function_uses_r5:
     RET
 
 __function_callee_saves:
-    MOV R5, 3           ; KEEP the callee saves R5 (PUSH reads it)
+    MOV R5, 3           ; KEEP the callee saves and restores R5, which is read after the call
     CALL __function_saves_r5
+    MOV R0, R5
     RET
 
 __function_saves_r5:

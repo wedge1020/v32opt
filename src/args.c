@@ -424,6 +424,7 @@ void process_args(int argc, char **argv, OptConfig *cfg,
                 break;
 
             case 'L':
+                cfg->lang_explicit = true;
                 if (str_case_eq(optarg, "c")) {
                     cfg->lang_mode = LANG_C;
                 } else if (str_case_eq(optarg, "lua")) {

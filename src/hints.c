@@ -18,6 +18,7 @@
 static FnHints *g_fn      = NULL;
 static int      g_fn_n    = 0;
 static int      g_fn_cap  = 0;
+static bool     g_hdr_lua = false;         // the header said lang=lua
 static AbiMode  g_hdr_abi = ABI_AUTO;      // what the file's header declared
 static bool     g_hdr_seen = false;        // a valid ';@hints <version>' header was read
 static LoopFacts *g_lf    = NULL;
@@ -71,6 +72,7 @@ void hints_free(void) {
     free(g_fn);
     g_fn = NULL; g_fn_n = g_fn_cap = 0;
     g_hdr_abi = ABI_AUTO;
+    g_hdr_lua = false;
     g_hdr_seen = false;
 }
 
@@ -291,6 +293,7 @@ static const char *hint_text(const char *raw) {
 
 // The input declared itself compiler output with a ';@hints' header (of a version we read).
 bool hints_header_seen(void) { return g_hdr_seen; }
+bool hints_header_lua(void) { return g_hdr_lua; }
 
 bool hints_parse(AsmNode *head) {
     bool any = false;
@@ -325,7 +328,7 @@ bool hints_parse(AsmNode *head) {
                     if (strncmp(tok, "abi=", 4) == 0) {
                         if      (strcmp(tok + 4, "caller-save") == 0) g_hdr_abi = ABI_CALLER_SAVE;
                         else if (strcmp(tok + 4, "callee-save") == 0) g_hdr_abi = ABI_CALLEE_SAVE;
-                    }
+                    } else if (strcmp(tok, "lang=lua") == 0) g_hdr_lua = true;
                 }
             } else if (strcmp(kw, "fn") == 0) {
                 parse_fn_line(save ? save : (char *)"");
