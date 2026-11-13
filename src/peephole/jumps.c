@@ -23,10 +23,18 @@
 //   - Removes code between JMP and its target label
 //   - Does NOT apply to indirect jumps (JMP R0) or immediate jumps (JMP 0x1000)
 //   - Does NOT apply to RET/HLT (prevents cross-scenario removal)
+//   - Compiler records (';@...' lines) in the range are kept
 //   Example: JMP _L8; MOV R1, 99; MOV R2, 100; _L8: → JMP _L8; _L8:
 //
 // Returns: Number of optimizations applied
 // ===================================================================
+// A ';@...' comment line written by the compiler (not a -d note of v32opt's)
+static bool is_record_line(const AsmNode *n) {
+    if (n->type != OP_OTHER || n->debug_note || !n->raw) return false;
+    const char *p = n->raw + strspn(n->raw, " \t");
+    return p[0] == ';' && p[1] == '@';
+}
+
 int peephole_jumps(AsmNode *head)
 {
     int optimizations = 0;
@@ -186,6 +194,19 @@ int peephole_jumps(AsmNode *head)
                     // "fixed" by splicing them out of the list unfreed, so
                     // -d output never showed the dead-code markers.
                     if (scan->debug_note) {
+                        scan = scan->next;
+                        continue;
+                    }
+
+                    // Compiler records (';@var' / ';@scope' / ';@home',
+                    // ';@loop', ';@fn', ';@cold {' / '}', ...) describe
+                    // the program; they are not part of the dead code.
+                    // Deleting a ';@scope }' left its '{' unclosed
+                    // (--check-vars), a ';@cold }' would leave a region
+                    // open. They stay where they are. (';@src' markers
+                    // are not in the list: they travel on the
+                    // instructions and go with them, srcmarks.h.)
+                    if (is_record_line(scan)) {
                         scan = scan->next;
                         continue;
                     }

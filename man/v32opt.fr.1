@@ -1,7 +1,7 @@
 .\" -*- coding: UTF-8 -*-
 .\" Traduction française de man/v32opt.1. `make version` met à jour la
 .\" date et la version de la ligne .TH ci-dessous.
-.TH V32OPT 1 "novembre 2026" "v32opt 20261112-dev" "Commandes de l'utilisateur"
+.TH V32OPT 1 "novembre 2026" "v32opt 20261113-dev" "Commandes de l'utilisateur"
 .SH NOM
 v32opt \- optimise du code assembleur Vircon32
 .SH SYNOPSIS
@@ -131,7 +131,11 @@ Choisit un niveau d'optimisation prédéfini :
 Aucune optimisation (la valeur par défaut).
 .TP
 .B \-O1
-Les quatorze passes locales à lucarne (voir
+Les seize passes locales à lucarne (dix-sept avec
+.BR "\-L lua" ,
+qui ajoute
+.IR peephole\-lua\-checks ;
+voir
 .BR "NIVEAUX D'OPTIMISATION" ,
 plus bas).
 .TP
@@ -241,7 +245,8 @@ peephole\-jmp\-chain, peephole\-zero\-test,
 peephole\-dead\-regs, peephole\-copies, cse, dce,
 constant\-folding, omit\-frame\-pointers, inline, promote\-regs,
 promote\-leaf, promote\-loops, loop\-invert, loop\-unroll, loop\-index,
-loop\-strength, loop\-unroll\-partial, peephole\-repeat\-imm
+loop\-strength, loop\-unroll\-partial, peephole\-repeat\-imm,
+peephole\-lua\-checks et lua\-loop\-var (\-L lua), promote\-loops\-calls
 .fi
 .RE
 .IP
@@ -400,6 +405,15 @@ pour les cibles calculées :
 .B "JMP R0"
 ou
 .BR "JMP 0x1000" ).
+Supprime aussi un
+.B JMP
+lorsqu'il n'y a entre lui et sa cible que d'autres étiquettes, des commentaires
+et des lignes vides (autant d'étiquettes que l'on veut ; une directive coupe la
+suite) : le saut arrive de toute façon à l'instruction suivante.
+.B JT
+et
+.B JF
+gardent la forme à une seule étiquette.
 .TP
 .I peephole\-movs
 Supprime les paires
@@ -453,9 +467,22 @@ dans les lectures qui la suivent. Un immédiat chargé par
 .B MOV Rd, imm
 est aussi propagé dans les lectures suivantes (second opérande d'une
 comparaison ou d'une instruction ALU, ou adresse d'un chargement ou d'une
-écriture) lorsque le registre est mort ensuite ; les instructions à virgule
-flottante, les instructions volatiles, les étiquettes et les sauts intermédiaires
-l'arrêtent.
+écriture) lorsque le registre est mort ensuite ; les instructions volatiles,
+les étiquettes et les sauts intermédiaires l'arrêtent. Les opérations à virgule
+flottante
+.RB ( FADD FSUB FMUL FDIV FMIN FMAX FEQ FNE FGT FGE FLT FLE )
+acceptent aussi l'immédiat, d'après le mot que contenait le registre et non
+d'après son écriture : un littéral flottant décimal
+.RB ( "MOV R1, 1.5" )
+est copié tel quel, un mot hexadécimal est réécrit en le décimal qui se lit avec
+les mêmes bits
+.RB ( 0x40200000
+devient
+.BR 2.5 ).
+Restent intacts un littéral entier comme
+.B "MOV R1, 5"
+qui alimente une opération flottante, un littéral flottant qui alimente une
+opération entière ou une adresse, un NaN, un infini, un dénormalisé et un symbole.
 .TP
 .I peephole\-dead\-stores
 Supprime les écritures dans des registres ou en mémoire écrasées avant
@@ -575,6 +602,25 @@ ont disparu. Une fonction contenant un
 .B CALL
 garde ses sauvegardes, et un corps qui saute hors de la fonction garde son
 cadre. Les étiquettes que rien ne référence sont traversées.
+.TP
+.I lua\-loop\-var
+.RB ( "\-L lua" " seulement)"
+Dans une boucle
+.B for
+numérique dont la ligne
+.B ;@loop kind=for
+porte
+.B var=N
+(écrit par v32lua : seule la copie du compteur au début de chaque itération
+écrit le mot de cadre de la variable visible de la boucle), les lectures de la
+variable lisent le compteur et la copie est supprimée. Refusé sauf si l'en-tête
+a la forme exacte, si le compteur est écrit une fois juste avant le saut de
+retour, si toute autre mention du mot est un simple chargement, si rien ne saute
+à l'intérieur de la boucle, si aucune adresse n'est prise, si rien n'est volatil
+et si le mot est écrit avant d'être lu à chaque sortie. La sortie d'un v32lua
+sans
+.B var=
+n'est pas touchée.
 .SS "\-O3 : interprocédural"
 .B \-O2
 plus :
@@ -684,6 +730,18 @@ avec
 .PP
 Les trois passes font partie de
 .BR \-O2 .
+Dans la sortie de
+.BR "\-L lua" ,
+.I promote\-loops
+garde en plus un registre à travers les
+.B CALL
+chauds d'une boucle lorsque chaque appelé a une liste
+.B ";@fn F clobbers="
+(écrite par v32lua) ; les appels par
+.BR __builtin_exec ,
+par un registre ou vers une routine sans liste coupent toujours la boucle.
+.B \-fno\-promote\-loops\-calls
+la désactive.
 La promotion seule conserve les cycles ; le gain vient des passes
 .B \-O1
 .B peephole\-copies

@@ -71,6 +71,10 @@ If your compiler is `v32lua`, add `-L lua`. If you use `v32cc`, give it
 (Measured on a few hundred generated programs; your game will differ. Loop-heavy
 code does much better: the primes benchmark below runs **63% faster** at `-O3`.)
 
+At `-O1` a constant loaded into a register and used once or twice by a float operation is written into the
+operation (`MOV R1, 1.5 / FADD R0, R1` becomes `FADD R0, 1.5`), and a jump over a run of labels to the label that
+ends the run (the leftovers of Lua's loops and branches) is removed.
+
 Rules of thumb:
 
 * Start with `-O2`. Always safe to try.
@@ -326,8 +330,17 @@ same when it reads the file: each local label gets its scope in its name
 on output, so the output is the same syntax. `--standard` is no longer needed for
 optimization (it gives the same optimization counts).
 
-**Lua?** Use `-L lua`. The loop passes do not apply to Lua's loops (their shape
-differs); you still get `-O1` and `-O2`.
+**Lua?** Use `-L lua`. The unrolling, index and pointer passes do not apply to Lua's loops
+(their shape differs); loop inversion does, and `-O1` and `-O2` give the rest. At `-O2` and up
+`lua-loop-var` reads a numeric `for` loop's variable from the loop counter and drops the copy made at the
+top of each iteration, when your `v32lua` writes `var=` on the loop's hint line (a `v32lua` without it is
+simply not helped), and `promote-loops` keeps a loop's counter in a register across the table and runtime
+calls in its body when `v32lua` says which registers each routine changes (`-fno-promote-loops-calls`
+turns that last part off; `-fno-lua-loop-var` turns off the other).
+
+**A warning that `;@v` is on an instruction that accesses no memory?** The `;@v` hint (volatile) belongs
+on a load or a store only. `v32opt` reports a misplaced one once, when it reads the file, and carries on;
+fix the compiler or the hand-written line.
 
 **Do not use `-L lua` on C output** (or the reverse): the two assume different
 register conventions and the result will be wrong.

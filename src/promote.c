@@ -1,4 +1,5 @@
 #include "v32opt.h"
+#include <stdint.h>
 
 // ============================================================================
 // promote -- stack-slot-to-register promotion passes
@@ -1585,6 +1586,87 @@ static bool is_loop_header_name(const char *name) {
            (len >= 7 && str_case_eq(norm + len - 7, "_while_"));
 }
 
+// -------------------------------------------------------------------
+// promote-loops across CALLs (-fpromote-loops-calls, L4 of doc/lua-loops.md)
+//
+// A hot CALL used to end every loop. It does not have to when the callee says, with ';@fn F clobbers=...',
+// which registers it can change: v32lua computes that list (tools/check_clobbers.py) for its runtime
+// routines over everything they can reach -- a CALL contributes its callee's set, an indirect call or
+// jump, an unbalanced stack or a callee it cannot analyse leave the routine without a list -- and leaves
+// out the registers a routine saves and restores. So a register in none of the lists of a loop's CALLs
+// keeps its value across them. A loop qualifies when every hot CALL in it is a DIRECT call to a function
+// with such a list; the registers in those lists are not candidates. A CALL through a register, to
+// __builtin_exec (user functions: no list) or to any routine without a list keeps blocking the loop.
+// The function's own list, if it has one, is a promise to ITS callers: a register it says it keeps is
+// not used either (a caller-save promotion adds no save, so the function would start to clobber it).
+//
+// V32OPT_PROMOTE_CALLS_DEBUG=1: one line per loop with hot CALLs (stderr): promoted, or why not.
+// V32OPT_PROMOTE_CALLS_CHECK=1: for every promotion across hot CALLs, walk each callee's code (direct
+// callees included) and report any write of the register outside a PUSH/POP save -- a list that
+// disagrees with the code it describes.
+// -------------------------------------------------------------------
+static AsmNode *find_label_global(AsmNode *head, const char *name) {
+    char lbl[128];
+    for (AsmNode *n = head; n; n = n->next) {
+        if (n->type != OP_LABEL) continue;
+        get_label_name(n, lbl, sizeof(lbl));
+        if (name_eq(lbl, name)) return n;
+    }
+    return NULL;
+}
+
+typedef struct { AsmNode *n; int saved; } XWalk;     // saved: how many PUSHes of the register are still open
+
+// 0: no write of `reg` outside a save on any path from `callee`; 1: a write (*where = the node); 2: not followed
+static int xcheck_callee(AsmNode *head, const char *callee, const char *reg, const AsmNode **where) {
+    AsmNode *entry = find_label_global(head, callee);
+    if (!entry) return 2;
+    int cap = 1 << 16, sp = 0, nseen = 0, seen_cap = 1 << 19;
+    XWalk *stack = malloc((size_t)cap * sizeof(XWalk));
+    XWalk *seen  = calloc((size_t)seen_cap, sizeof(XWalk));
+    if (!stack || !seen) { free(stack); free(seen); return 2; }
+    int result = 0, steps = 0;
+    stack[sp++] = (XWalk){ entry->next, 0 };
+    while (sp > 0 && result == 0) {
+        XWalk w = stack[--sp];
+        for (AsmNode *n = w.n; n; n = n->next) {
+            if (++steps > 4000000) { result = 2; break; }
+            if (n->type == OP_OTHER || n->type == OP_LABEL) continue;
+            // visited (node, saved)?
+            unsigned hsh = (unsigned)(((uintptr_t)n >> 4) * 2654435761u + (unsigned)w.saved) & (unsigned)(seen_cap - 1);
+            bool dup = false;
+            while (seen[hsh].n) {
+                if (seen[hsh].n == n && seen[hsh].saved == w.saved) { dup = true; break; }
+                hsh = (hsh + 1) & (unsigned)(seen_cap - 1);
+            }
+            if (dup) break;
+            if (++nseen > seen_cap / 2) { result = 2; break; }
+            seen[hsh] = (XWalk){ n, w.saved };
+
+            bool on_reg = n->has_dst && n->dst_op.mode == MODE_REG && str_case_eq(n->dst_op.reg, reg);
+            if (n->type == OP_PUSH) { if (on_reg && w.saved < 64) w.saved++; continue; }
+            if (n->type == OP_POP && on_reg && w.saved > 0) { w.saved--; continue; }
+            if (n->type == OP_RET || n->type == OP_HLT) break;
+            if (n->type == OP_JMP || n->type == OP_JT || n->type == OP_JF || n->type == OP_CALL) {
+                const Operand *t = (n->type == OP_JT || n->type == OP_JF) ? &n->src_op : &n->dst_op;
+                if (t->mode != MODE_IMMEDIATE) {
+                    if (w.saved > 0) break;                  // inside a save of the register: whatever runs there gets it back
+                    result = 2; *where = n; break;           // (when control comes back through the POP -- the stack discipline
+                }                                            //  tools/check_clobbers.py assumes as well)
+                AsmNode *tl = find_label_global(head, t->raw);
+                if (!tl) { result = 2; *where = n; break; }
+                if (sp >= cap) { result = 2; break; }
+                stack[sp++] = (XWalk){ tl->next, w.saved };
+                if (n->type == OP_JMP) break;
+                continue;                                    // JT/JF fall through; CALL returns here
+            }
+            if (w.saved == 0 && modifies_register(n, reg)) { result = 1; *where = n; break; }
+        }
+    }
+    free(stack); free(seen);
+    return result;
+}
+
 // Weighted candidate list for the loop pass, heaviest slot first.
 typedef struct { int idx; int weight; } SlotCand;
 
@@ -1751,11 +1833,27 @@ int pass_promote_loop_registers(AsmNode *head) {
 
         // Phase A: Safety Scan across the Loop Body
         bool loop_safe = true;
+        unsigned hot_clob = 0;                       // registers the loop's hot CALLs may change (promote-loops-calls)
+        int hot_calls = 0;
+        const char *refuse_why = NULL;
+        char refuse_callee[128] = "";
         for (AsmNode *n = curr->next; n && n != end_jmp; n = n->next) {
             // Rule 1: No CALLs, RETs, or HLTs inside the loop -- except CALLs that lie in a
-            // ';@cold' block: those are wrapped in a store/reload of each promoted register
-            if (is_barrier_call(n) || str_case_eq(n->mnemonic, "RET") ||
-                str_case_eq(n->mnemonic, "HLT")) { loop_safe = false; break; }
+            // ';@cold' block: those are wrapped in a store/reload of each promoted register --
+            // and (promote-loops-calls) direct CALLs to a function whose ';@fn clobbers=' is known
+            if (is_barrier_call(n)) {
+                const FnHints *h = config.opt_promote_loops_calls ? hints_fn_of_call(n) : NULL;
+                if (h && h->clobbers_known) { hot_clob |= h->clobbers; hot_calls++; continue; }
+                loop_safe = false;
+                if (!n->has_dst || n->dst_op.mode != MODE_IMMEDIATE) refuse_why = "call-through-register";
+                else {
+                    safe_str_copy(refuse_callee, n->dst_op.raw, sizeof(refuse_callee));
+                    refuse_why = name_eq(trim(refuse_callee), "__builtin_exec") ? "exec" : "unhinted";
+                }
+                break;
+            }
+            if (str_case_eq(n->mnemonic, "RET") ||
+                str_case_eq(n->mnemonic, "HLT")) { loop_safe = false; refuse_why = "ret-hlt"; break; }
             // Rule 2 (the whole function was checked above): no frame writes
             // by name either
             // Rule 3: Verify all branches jump inside loop, to start, or to exit
@@ -1763,10 +1861,16 @@ int pass_promote_loop_registers(AsmNode *head) {
                 char target[128];
                 branch_target(n, target, sizeof(target));
                 if (!name_eq(target, start_lbl) && !name_eq(target, exit_lbl) &&
-                    !label_in_range(target, curr->next, end_jmp)) { loop_safe = false; break; }
+                    !label_in_range(target, curr->next, end_jmp)) { loop_safe = false; refuse_why = "branch"; break; }
             }
         }
-        if (!loop_safe) { curr = curr->next; continue; }
+        bool calls_dbg = getenv("V32OPT_PROMOTE_CALLS_DEBUG") != NULL;
+        if (!loop_safe) {
+            if (calls_dbg && refuse_why && strncmp(refuse_why, "ret", 3) && strcmp(refuse_why, "branch"))
+                fprintf(stderr, "promote-loops-calls: %s refused %s %s\n", start_lbl, refuse_why, refuse_callee);
+            curr = curr->next;
+            continue;
+        }
 
         // Phase B: Execute Loop Promotion
         int count;
@@ -1788,6 +1892,20 @@ int pass_promote_loop_registers(AsmNode *head) {
 
         bool enclosed = ncand > 0 && region_reentered(func_first, func_last, curr, body_end);
         int promoted = 0;
+        // registers the hot CALLs may change are not candidates; nor, in a function that has its own
+        // ';@fn clobbers=' list, a register that list says the function keeps (a caller-save promotion adds
+        // no save: the function would start to change it behind its callers' backs)
+        for (int r = 0; r < 16; r++) if ((hot_clob >> r) & 1u) ri.reg_used[r] = true;
+        if (entry) {
+            char elbl[128];
+            get_label_name(entry, elbl, sizeof(elbl));
+            const FnHints *own = hints_fn(elbl);
+            if (own && own->clobbers_known && fi.lua)
+                for (int r = 0; r < 16; r++) if (!((own->clobbers >> r) & 1u)) ri.reg_used[r] = true;
+        }
+        int promoted_calls_regs[SLOT_COUNT], n_pcr = 0;
+        int free_regs = 0;                           // (debug: candidates left before liveness has its say)
+        for (int r = PROMOTE_FIRST_REG; r <= PROMOTE_LAST_REG; r++) if (!ri.reg_used[r]) free_regs++;
         for (int c = 0; c < ncand; c++) {
             int idx = cand[c].idx;
             int off = idx - SLOT_BIAS;
@@ -1870,6 +1988,27 @@ int pass_promote_loop_registers(AsmNode *head) {
                 insert_debug_comment(load, OPT_PROMOTE_LOOPS, dbg);
             }
             promoted++;
+            if (hot_calls && n_pcr < SLOT_COUNT) promoted_calls_regs[n_pcr++] = r;
+        }
+
+        if (hot_calls && calls_dbg)
+            fprintf(stderr, "promote-loops-calls: %s %s %d slot(s) across %d hot CALL(s), %d register(s) not excluded\n", start_lbl,
+                    promoted ? "promoted" : (ncand ? (free_regs ? "refused no-register(liveness)" : "refused no-register(excluded)") : "refused no-candidate"),
+                    promoted, hot_calls, free_regs);
+        if (hot_calls && n_pcr && getenv("V32OPT_PROMOTE_CALLS_CHECK")) {
+            for (AsmNode *n = curr->next; n && n != end_jmp; n = n->next) {
+                if (!is_barrier_call(n)) continue;
+                char callee[128];
+                safe_str_copy(callee, n->dst_op.raw, sizeof(callee));
+                for (int k = 0; k < n_pcr; k++) {
+                    char rn[8];
+                    snprintf(rn, sizeof(rn), "R%d", promoted_calls_regs[k]);
+                    const AsmNode *where = NULL;
+                    int x = xcheck_callee(head, trim(callee), rn, &where);
+                    fprintf(stderr, "promote-loops-calls-check: %s %s %s %s%s%s\n", start_lbl, trim(callee), rn,
+                            x == 0 ? "ok" : x == 1 ? "WRITES" : "not-followed", where ? " at: " : "", where ? where->raw : "");
+                }
+            }
         }
 
         // A promoted loop's body is fully rewritten (inner loops included);

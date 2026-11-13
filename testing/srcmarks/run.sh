@@ -3,7 +3,8 @@
 # with inject.py, then at every optimization level check that
 #   - the output is still valid for --check-src (no unmarked instruction, every function's first
 #     instruction has a marker),
-#   - -g0 gives the same program as running without markers (the markers cost nothing),
+#   - -g0 gives the same program as running without markers (the markers cost nothing; an input
+#     that has ';@src' lines of its own is compared with itself minus those lines),
 #   - the set of source lines with code at -O1..-O3 / -Os is a subset of the set at -O0:
 #     optimization may lose lines (dead code) but never invents one.
 OPT=${V32OPT:-../../bin/v32opt}
@@ -13,6 +14,9 @@ fail=0; n=0
 for f in $(find .. -name '*.asm' -not -path '../srcmarks/*' -not -path '../vars/*' -not -name '*Opt.asm' | sort); do
   b=$(echo $f | tr '/.' '__')
   python3 inject.py $f $T/$b.asm
+  # the unmarked program: an input compiled with -g has ';@src' lines of its own (the new suites' v32lua
+  # outputs); "plain" must be built without them, or it keeps them while -g0 drops them all
+  grep -v '^[[:space:]]*;@src' $f > $T/$b.unmarked.asm
   for M in c lua; do
     $OPT $T/$b.asm -O0 -L $M -o $T/$b.O0.asm 2>/dev/null
     python3 lineset.py $T/$b.O0.asm > $T/$b.O0.lines 2>/dev/null
@@ -20,7 +24,7 @@ for f in $(find .. -name '*.asm' -not -path '../srcmarks/*' -not -path '../vars/
       n=$((n+1))
       $OPT $T/$b.asm $L -L $M --check-src -o $T/$b.out.asm 2>$T/$b.err || { echo "FAIL check-src $f $L $M"; head -3 $T/$b.err; fail=1; continue; }
       $OPT $T/$b.asm $L -L $M -g0 -o $T/$b.strip.asm 2>/dev/null
-      $OPT $f $L -L $M -o $T/$b.plain.asm 2>/dev/null
+      $OPT $T/$b.unmarked.asm $L -L $M -o $T/$b.plain.asm 2>/dev/null
       if ! cmp -s $T/$b.strip.asm $T/$b.plain.asm; then echo "FAIL strip differs from unmarked $f $L $M"; fail=1; fi
       python3 lineset.py $T/$b.out.asm > $T/$b.lines 2>$T/$b.lerr || { echo "FAIL lineset $f $L $M: $(cat $T/$b.lerr)"; fail=1; }
       extra=$(comm -13 $T/$b.O0.lines $T/$b.lines)

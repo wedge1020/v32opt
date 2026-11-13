@@ -3,7 +3,22 @@
 Status: decision and pass specifications, from the loop catalog of real v32lua
 output (353 loops in 74 programs; 648 in the extended set of 232). L1 and L2 are
 implemented (`peephole-copies`, `peephole-jumps`), L3 as `lua-loop-var`
-(`src/peephole/lua_checks.c`; v32lua writes `var=`).
+(`src/peephole/lua_checks.c`; v32lua writes `var=`), L4 as part of `promote-loops`
+(`-fno-promote-loops-calls` turns it off; `src/promote.c`).
+
+Implementation status (2026-11-13): L1, L2, L3 and L4 are implemented.
+* L1, float immediates in `peephole-copies`, and L2, the `JMP` over labels in `peephole-jumps`: with the compiler-ABI
+  rule of `liveness.c` (a function reached through `__builtin_exec` keeps the ABI registers at its `RET`, so the
+  promote passes find free registers), 40 random Lua programs at `-O2` take 32,668,581 cycles against 33,247,006 with
+  the original optimizer (-1.7%).
+* L3, `lua-loop-var`: 32,473,596 cycles (a further -0.6%; measured with the patched v32lua that writes `var=`).
+  It rewrites the loops of the directed programs of `testing/lua-loop-var`; it skips a loop in a function whose range
+  is cut by a nested function definition (24 of 255 loops of the corpus), variable-step headers and functions with
+  other computed jumps.
+* L4, `promote-loops` across hot calls with `clobbers=` lists: 32,312,320 cycles (a further -0.5%). On the 74-program
+  corpus it reaches 12 of 152 numeric loops with hot calls: 72 are blocked by calls through `__builtin_exec`, 30 by
+  a callee without a list, 19 by every register being excluded and 19 by liveness not proving a register free across
+  `__builtin_table_set` (the categories overlap).
 
 ## What the data says
 
@@ -114,6 +129,19 @@ callee's clobber set must be closed over what it calls (confirm what v32lua's
 `clobbers=` means before relying on it: the routine itself only, or
 everything it can reach). Calls through `__builtin_exec` (user functions) have
 no hint and keep blocking the loop.
+
+As implemented: v32lua's `clobbers=` is closed over everything the routine can reach
+(`tools/check_clobbers.py`: a CALL adds its callee's set, an indirect call or jump or an
+un-analysable callee leaves the routine without a list) and leaves out registers the routine
+saves and restores. The loop's own registers, the union of its callees' lists and, in a
+function with its own list, the registers that list promises to keep are excluded; the rest
+of the choice is `pick_register` (`reg_dead_from` at the preheader). `V32OPT_PROMOTE_CALLS_CHECK=1`
+walks each callee for a write of the chosen register outside a save (none on the corpus).
+What limits it most is liveness, not the hints: through `__builtin_table_set`'s metamethod path
+(`__table_call_handler` saves R1-R13 around `CALL __builtin_exec`, which liveness cannot take for
+a save before an unknown callee, and a recursion past the call-depth limit) R6-R8 come out live
+in `fill.lua`; 19 of the 50 numeric loops whose CALLs all have lists stop there (19 more have no
+register left at all, 12 are promoted).
 
 ## Order and acceptance
 

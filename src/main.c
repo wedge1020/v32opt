@@ -80,6 +80,7 @@ OptConfig config = {
     .opt_resolve_defines          = true,
     .opt_promote_leaf             = false,
     .opt_promote_loops            = false,
+    .opt_promote_loops_calls      = true,
     .opt_promote_regs             = false,
     .opt_loop_invert              = false,
     .opt_loop_unroll              = false,

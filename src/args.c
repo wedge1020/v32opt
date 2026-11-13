@@ -29,6 +29,7 @@ static void set_opt_level(OptConfig *cfg, int level) {
     cfg -> opt_promote_regs              = false;
     cfg -> opt_promote_leaf              = false;
     cfg -> opt_promote_loops             = false;
+    cfg -> opt_promote_loops_calls       = true;     // (a part of promote-loops: on wherever it is)
     cfg -> opt_loop_invert               = false;
     cfg -> opt_loop_unroll               = false;
     cfg -> opt_loop_index                = false;
@@ -129,6 +130,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
         else if (strcmp(name, "promote-regs") == 0) cfg->opt_promote_regs = false;
         else if (strcmp(name, "promote-leaf") == 0) cfg->opt_promote_leaf = false;
         else if (strcmp(name, "promote-loops") == 0) cfg->opt_promote_loops = false;
+        else if (strcmp(name, "promote-loops-calls") == 0) cfg->opt_promote_loops_calls = false;
         else if (strcmp(name, "loop-invert") == 0) cfg->opt_loop_invert = false;
         else if (strcmp(name, "loop-unroll") == 0) cfg->opt_loop_unroll = false;
         else if (strcmp(name, "loop-index") == 0) cfg->opt_loop_index = false;
@@ -186,6 +188,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
     else if (strcmp(arg, "promote-regs") == 0) cfg->opt_promote_regs = true;
     else if (strcmp(arg, "promote-leaf") == 0) cfg->opt_promote_leaf = true;
     else if (strcmp(arg, "promote-loops") == 0) cfg->opt_promote_loops = true;
+    else if (strcmp(arg, "promote-loops-calls") == 0) cfg->opt_promote_loops_calls = true;
     else if (strcmp(arg, "loop-invert") == 0) cfg->opt_loop_invert = true;
     else if (strcmp(arg, "loop-unroll") == 0) cfg->opt_loop_unroll = true;
     else if (strcmp(arg, "loop-index") == 0) cfg->opt_loop_index = true;
@@ -250,7 +253,8 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "  inline, cse, dce, constant-folding, promote-regs, promote-leaf,\n");
     fprintf(stdout, "  promote-loops, omit-frame-pointers, peephole-compiler-myopia,\n");
     fprintf(stdout, "  peephole-zero-test, peephole-dead-regs, peephole-copies,\n  peephole-repeat-imm,\n");
-    fprintf(stdout, "  loop-invert, loop-unroll, loop-index, loop-strength,\n  loop-unroll-partial, lua-loop-var (-L lua)\n\n");
+    fprintf(stdout, "  loop-invert, loop-unroll, loop-index, loop-strength,\n  loop-unroll-partial, lua-loop-var (-L lua)\n");
+    fprintf(stdout, "  promote-loops-calls      (part of promote-loops, on with it) loops whose CALLs keep\n                           a register (';@fn F clobbers='); -fno-promote-loops-calls: CALL-free loops only\n\n");
     fprintf(stdout, "Loop tuning (-f<name>=N):\n");
     fprintf(stdout, "  loop-unroll-max-trips=N          Most iterations unrolled completely (16)\n");
     fprintf(stdout, "  loop-unroll-max-size=N           Most instructions in a fully unrolled loop (96)\n");

@@ -138,6 +138,7 @@ typedef struct {
     int      opt_inline_max_body_ins;
     bool     opt_promote_leaf;
     bool     opt_promote_loops;
+    bool     opt_promote_loops_calls;   // promote-loops: also loops with hot direct CALLs to ';@fn clobbers=' callees (-fno-promote-loops-calls)
     bool     opt_promote_regs;
     bool     opt_loop_invert;
     bool     opt_loop_unroll;

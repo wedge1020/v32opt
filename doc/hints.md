@@ -52,6 +52,14 @@ transformation is correct, so they cannot make a program wrong.
 is always caller-save). *The compiler promises that every function in the
 file, including hand-written assembly it links in, follows the convention.*
 
+The header also tells the liveness analysis how to read a function that can be entered from
+an unknown place (reached through `CALL Rn` / `JMP Rn`, no direct `CALL`): when every unknown
+way in is a `__function_` entry, only the convention's registers are taken as live at its `RET`
+instead of all of `R0`..`R10` (`-L lua` input gets the same rule without a header). On
+hand-written code whose functions do not follow the convention, for example a second result
+in `R1` returned to a caller that uses `CALL Rn`, the header makes the optimizer delete that
+write: leave the header out of such a file.
+
 ### `;@fn <label> [attribute ...]`
 
 `<label>` is the function's label exactly as written in the assembly
@@ -123,7 +131,7 @@ Facts (v32lua's numeric `for`; all optional, all promises of the compiler):
 | `counter=N` `limit=N` `step=N` | BP-relative frame words (`-9` is `[BP-9]`): the counter is written only by the loop's increment; limit and step only before the loop; none has its address taken |
 | `stepval=K` | the step is the integer constant K |
 | `from=A` `to=B` | the start and the limit are the integer constants A and B |
-| `var=N` | the frame word of the visible loop variable: between the start and the end label nothing but the copy of the counter at the top of each iteration writes it; the variable is not captured, not assigned in the body, the function is not variadic. Nothing is promised after the end label (the word is reused) |
+| `var=N` | the frame word of the visible loop variable (written after `step=` and before `stepval=`): between the start and the end label the word holds a copy of the counter, stored at the top of each iteration, and nothing else writes it. v32lua writes it only when the body has no assignment to a variable of that name (a nested block, a shadowing `local` and a nested loop on the same name all count), no closure captured the variable, the body has no inline assembly and the function is not variadic. Nothing is promised after the end label (the word is free for the next local) |
 
 `v32opt` still checks what it cheaply can before it believes them (the counter written once between the
 start label and the back edge, limit and step never, no jump into the body from outside, no escaping frame
@@ -135,6 +143,13 @@ address in the function); a loop that visibly breaks them is treated as if it ha
 pass checks the header shape, the step's place, every use of the word, the ways into the loop and that the word
 is written before it is read on every way out (`src/peephole/lua_checks.c`), then drops `var=` from the line
 and points the variable's `;@var` record at the counter.
+The checks of `lua-loop-var` before it believes `var=` (`src/peephole/lua_checks.c`): the facts pass the loop
+validation above and carry `var=`; the header is exactly `MOV Ra, [BP+c]` / copy to `Rk` / limit test / exit `JT`
+followed by `MOV [BP+v], Rk`; the counter slot is written once in the loop, by the `MOV` right before the back-edge
+`JMP`; everything else naming the variable's word is a plain load; no label of the loop but the start is jumped to
+from outside, no address is taken, the function has no computed jump (v32lua's closure return excepted), nothing in
+the loop is volatile; and on every way out of the loop the word is written before it is read, up to a `RET` or
+`HLT`. A loop that fails any of these keeps its copy. An older v32lua that writes no `var=` is simply not touched.
 
 A measured profile (`--profile`) that covers the loop outranks `hot` and `cold` on the
 loop and on its function; where the profile has nothing to say, the hints decide. An
@@ -193,6 +208,12 @@ A volatile access survives into the output carrying its `;@v` again, and
 before writing the output `v32opt` warns on stderr if a marked instruction
 stopped being a memory access (that would be a `v32opt` bug).
 
+`;@v` on an instruction that has no memory operand (`mov R1, 5 ;@v`) is a misplaced hint: it marks
+nothing that is a volatile access. `v32opt` says so once, when it reads the file (a warning on
+stderr that the hint marks loads and stores only, with the input line), the instruction is still
+treated as a barrier, and the end-of-run check does not report it as an access that was removed.
+The exit status is not changed.
+
 ### More attributes on `;@fn`
 
 | Attribute | Meaning |
@@ -227,7 +248,8 @@ These are *not* read yet; compilers may write them and old `v32opt`s ignore them
 ## Testing
 
 * `testing/vars/run.sh` — `;@var` / `;@home` after register promotion (see srcmarks.md).
-* `testing/hints/run.sh` — volatile accesses survive every optimization level.
+* `testing/hints/run.sh` — volatile accesses survive every optimization level; a misplaced `;@v` gives one warning.
+* `testing/lua-loop-var/run.sh` — `var=`: the loops that are rewritten, the refusals, an input without `var=`.
 * `testing/hints/run_requests.sh` — the requests: which functions `-finline` inlines under
   `inline` / `alwaysinline` / `hot` / `cold` (and with `-finline-max=0`), how many copies of
   a loop body each `;@loop` leaves (`requests_inline.c` and `requests_loops.c` made the `.asm`

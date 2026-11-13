@@ -19,7 +19,16 @@
 ## R4..R6, calls each function and stores R0 and R4..R6 into RAM); edit the files.
 ## Every input is also run in v32sim against its unoptimized self (RAM image, STRICT=1),
 ## which needs v32as and v32sim built next to this project.
-## shared_tail.asm is NOT run: it is a known failing reproducer (see ISSUES).
+##   shared_tail.asm    (commit d0814d8) function a jumps into the epilogue of function b: b's orphan
+##                      save is not removed (RAM[201] is a's R4); run at -fomit-frame-pointers, -O1,
+##                      -O2, -O3 against the unoptimized run
+##   frame_holes.asm    the two neighbouring holes that commit closed: rl_b's "_return" label is
+##                      jumped to from rl_a (omit-frame-pointers keeps rl_b's frame), and fs_b, whose
+##                      epilogue fs_a jumps into, gets no fresh promote save. Same four flag sets.
+##                      TEETH: a build of d0814d8 without return_label_private() fails
+##                      -fomit-frame-pointers/-O2/-O3, one without the frame_info() check fails
+##                      -O2/-O3 (RAM differs from the unoptimized run); the original optimizer fails
+##                      -fomit-frame-pointers/-O2/-O3 on frame_holes.asm and on shared_tail.asm.
 ## Usage: ./run.sh [path/to/v32opt]     (or V32OPT=path, default ../../bin/v32opt)
 ##
 #########################################################################
@@ -138,6 +147,16 @@ there "${TMP}/k.asm" keep_isub_bp '^isub SP, 1$'
 run "${X}" "${TMP}/x.asm" -fomit-frame-pointers
 same "${X}" "${TMP}/x.asm" keep_bp_jump_out kbjo_b keep_jump_out_save kjos_b main
 
+# ---- the neighbouring holes of d0814d8, in text: the frame of rl_b and the epilogue of fs_b stay as they are
+H="${HERE}/frame_holes.asm"
+run "${H}" "${TMP}/h.asm" -fomit-frame-pointers
+there "${TMP}/h.asm" rl_b '^push BP$' '^mov BP, SP$' '^mov SP, BP$' '^pop BP$'
+there "${TMP}/h.asm" rl_a '^push BP$' '^jt R0, __function_rl_b_return$'
+run "${H}" "${TMP}/h2.asm" -O2
+gone  "${TMP}/h2.asm" fs_b '^push R([3-9]|10)$' '^pop R([3-9]|10)$'
+there "${TMP}/h2.asm" fs_b '^push R1$' '^push R2$' '^pop R2$' '^pop R1$'
+gone  "${TMP}/h2.asm" fs_a '^push R([3-9]|10)$'
+
 # ---- --trigger-max=0 leaves the removable functions alone
 run "${R}" "${TMP}/r0.asm" -fomit-frame-pointers --trigger-max=0
 ncases=$((ncases + 1))
@@ -158,10 +177,14 @@ V32OPT="${OPT}" WORK="${TMP}/work" STRICT=1 python3 run.py \
     --flags "-fomit-frame-pointers" --flags "-O2" --flags "-O3" \
     "${R}" "${K}" "${HERE}/clear16.asm" > "${TMP}/diff.txt" 2>&1
 rc=$?
+V32OPT="${OPT}" WORK="${TMP}/work3" STRICT=1 python3 run.py \
+    --flags "-fomit-frame-pointers" --flags "-O1" --flags "-O2" --flags "-O3" \
+    "${HERE}/shared_tail.asm" "${H}" >> "${TMP}/diff.txt" 2>&1
+[ "${rc}" = 0 ] && rc=$?
 V32OPT="${OPT}" WORK="${TMP}/work2" STRICT=1 python3 run.py \
     --flags "-fomit-frame-pointers" --flags "-O2" "${X}" >> "${TMP}/diff.txt" 2>&1
 [ "${rc}" = 0 ] && rc=$?
-ncases=$((ncases + 3 * 3 + 2))
+ncases=$((ncases + 3 * 3 + 2 + 2 * 4))
 while IFS= read -r line; do
     echo "${line}"; status=1
 done < <(grep -E '^(FAIL|ERROR)' "${TMP}/diff.txt" | sed -E 's/  +/ /g' | cut -c1-160)

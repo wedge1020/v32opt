@@ -1,6 +1,6 @@
 # v32opt changes
 
-## 20261112-dev
+## 20261113-dev
 
 * Post-unroll cleanup: `omit-frame-pointers` now first shrinks the frame of a function whose locals are in registers
   (or gone after full unrolling): a `PUSH Rn` / `POP Rn` save that nothing uses any more is removed (not when `Rn`
@@ -34,6 +34,52 @@
   read a caller's register between a `PUSH` and its `POP`, or that return a result in a register other than the ABI's.
   Tests: `testing/peephole-dead-regs`, `testing/differential/asm/live_*.asm`, the `GEN_LIVE`/`GENLUA_LIVE`/
   `GENREG_LIVE` generators and `testing/differential/fuzz.sh`.
+* Function boundaries on v32lua output (`src/promote.c`): a function now ends at the next entry (the scope
+  initializer included), a `__literal_` label, its own `__<stem>_skip` label or a `CALL` target, and a range cut short
+  while its frame goes on is left alone by promotion, `peephole-lua-checks`, frame cleanup and `loop-strength`. Two
+  numeric `for` loops of `main()` and the top-level code used the same `[BP-n]` slots and were taken for one function:
+  `peephole-lua-checks` deleted the top-level loop's step and counter stores and the loop never ended. New test
+  `testing/lua-function-bounds`.
+* `promote-*` no longer count the save and reload of a promoted register around a cold `CALL` as a use of the slot:
+  every pass found something new to do and `v32opt` never terminated on some Lua loops at `-O2 -L lua`
+  (`testing/lua-function-bounds`).
+* Frame changes are refused for a function whose inner labels are reached from elsewhere (another function jumping
+  into its epilogue): `omit-frame-pointers` frame cleanup no longer removes the orphan save of a shared tail, no
+  fresh `promote-*` save is added (its `POP` would pop a word the jumper never pushed), and a `_return` label jumped
+  to from another function keeps the frame. Tests `testing/frame-cleanup` (`shared_tail.asm`, `frame_holes.asm`).
+* `peephole-copies`: the immediate propagation takes float literals into `FADD FSUB FMUL FDIV FMIN FMAX FEQ FNE FGT
+  FGE FLT FLE` (`MOV R1, 1.5 / FADD R0, R1` becomes `FADD R0, 1.5`). A hex word is respelled as the decimal float that
+  reads back to the same bits; an integer literal that has no such spelling (`MOV R1, 5`), a NaN, an infinity, a
+  denormal and a symbol are refused ("L1" of `doc/lua-loops.md`). Test `testing/peephole-copies-imm`.
+* `peephole-jumps`: `JMP L` is also deleted when only labels, comments and blank lines lie between it and `L` (any
+  number of labels; a directive ends the run); `JT`/`JF` keep the one-label form ("L2"). Its unreachable-code removal
+  no longer deletes the compiler's `;@scope }`, `;@var`, `;@home`, `;@loop`, `;@fn` and `;@cold` lines in the range
+  (`--check-vars` reported an unclosed scope). Test `testing/peephole-jumps-labels`.
+* Liveness: the tables of a session are reused by the next pass when the program is unchanged (an edit counter,
+  guarded by a fingerprint of the program), and the registers outside the compiler's ABI are free at the `RET` of a
+  function that is entered from an unknown place when a compiler vouches for the convention (`-L lua`, or a
+  `;@hints` header) and every unknown way in is a `__function_` entry. In v32lua output every function is reached
+  through `__builtin_exec`, so before this no register was ever free for the promote passes. A `;@hints` header on
+  hand-written code that does not follow the convention makes the optimizer wrong. Test `testing/liveness-trust`.
+* `dce` keeps a function that is reached by a jump to an inner label (a shared epilogue) or only fallen into from the
+  function above it. Test `testing/dce-reach`.
+* `MOVS`, `SETS` and `CMPS` read and write `CR`/`SR`/`DR` (`R11`-`R13`), and `CR`/`SR`/`DR` are those registers:
+  `peephole-movs` no longer deletes the repeated `MOV R12, 300` after a `MOVS`, `peephole-dead-stores` keeps the
+  `MOV R12, 7` before a `SETS`, and constant folding forgets `R11`-`R13` at a string instruction. Test
+  `testing/string-ops`.
+* `;@v` on an instruction without a memory operand is reported once at parse time (the hint marks loads and stores
+  only) and no longer produces a false "a volatile access was optimized away" report. Test `testing/hints`.
+* New pass `lua-loop-var` (`-O2`, `-L lua`, `-flua-loop-var`): with `var=` on the `;@loop kind=for` line (written by
+  v32lua) the reads of the loop variable's word read the counter instead and the per-iteration copy is deleted
+  ("L3"). Refused unless the header shape, the step, every use of the word, the ways into the loop and the ways out all
+  check ([doc/hints.md](doc/hints.md)). Test `testing/lua-loop-var`.
+* `promote-loops` keeps a register across the hot `CALL`s of a loop when every callee has a `;@fn F clobbers=` list
+  ("L4"; v32lua writes them); `-fno-promote-loops-calls` turns the extension off (on wherever `promote-loops` is).
+  Calls through `__builtin_exec`, through a register, or to a routine without a list still end the loop.
+  Test `testing/promote-loops-calls`.
+* Measured on 40 random Lua programs at `-O2`: 33,247,006 cycles with the original optimizer, 32,668,581 with the
+  float immediates, the jump over labels and the compiler-ABI rule, 32,473,596 with `lua-loop-var` as well and
+  32,312,320 with `promote-loops` across calls (patched v32lua).
 * Not done: shrinking an `ISUB SP,N` by part; removing the counter that a strength-reduced pointer makes redundant;
   a pointer register across a `CALL`. See `ISSUES`.
 

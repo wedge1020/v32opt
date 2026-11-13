@@ -17,8 +17,11 @@ PASSES
 
 [limit] The loop passes (loop-invert, loop-unroll, loop-unroll-partial,
   loop-index, loop-strength) match the loop shape the C compilers emit.
-  v32lua's loops have a different shape and are not touched: Lua gains from
-  -O1/-O2 only.
+  v32lua's loops have a different shape: loop-invert fires on most Lua
+  numeric for loops, loop-unrolling, loop-index and loop-strength do not
+  apply to Lua. What the Lua loop work consists of is the control-overhead
+  passes (float immediates in peephole-copies, the jump over labels in
+  peephole-jumps, lua-loop-var), see doc/lua-loops.md.
   A "while"/"for" with several exits, a test longer than 8 instructions (a
   setting), labels that are referenced from outside the loop, or a CALL in the
   body (loop-unroll, loop-unroll-partial, loop-index, loop-strength) are
@@ -73,6 +76,33 @@ PASSES
   computed jump targets: after "JMP R0" / "JMP 0x1000" the following code is
   left alone.
 
+[limit] lua-loop-var (-L lua, -O2 and up) needs "var=" on the ";@loop" line,
+  which v32lua writes; an older compiler's output is left alone. It skips a
+  loop in a function whose range is cut by a nested function definition (24 of
+  255 loops in the corpus), a header with a variable step, and a function with
+  another computed jump than v32lua's closure return. Loops whose variable is
+  captured, assigned or in a variadic function have no "var=".
+
+[limit] peephole-reduce deletes "FMUL R, 1.0" and "FDIV R, 1.0". That is not
+  bit-exact for a signaling NaN input, and v32lua's boxed values (tables,
+  strings, functions, nil) are signaling NaNs. Lua arithmetic tests for a
+  number first, so the instruction does not see one in compiled Lua.
+
+[limit] In -L lua, R2 and R3 are live at every RET: nothing in the code says
+  how many values a function returns (v32lua returns the extra values in R2
+  and R3).
+  That keeps a dead copy alive in about half of the loops lua-loop-var
+  rewrites.
+
+[limit] promote-loops across calls (-fpromote-loops-calls, on wherever promote-loops
+  is) promotes a loop with hot CALLs only when every callee has a ";@fn F
+  clobbers=" list. On the 74-program corpus it reaches 12 of 152 numeric loops
+  with hot calls: 72 are blocked by calls through __builtin_exec (user
+  functions), 30 by a callee without a list, 19 by every register being
+  excluded and 19 by liveness not proving a register free across
+  __builtin_table_set (its metamethod path saves R1-R13 around a CALL to an
+  unknown callee).
+
 [limit] liveness.c (peephole-zero-test, peephole-dead-regs, promote-*, the loop
   passes) answers for R0..R10 only. Functions are grouped into classes: code
   that control can enter from another function without a CALL (a JMP/JT/JF
@@ -80,11 +110,18 @@ PASSES
   function that jumps or falls into it, and a RET is charged to the callers of
   its whole class. A class that is only reached indirectly (no direct CALL),
   or whose address is taken (its label is an operand other than a CALL/JMP
-  target, or in a data directive), has all registers live at its RET. The
-  callee summaries are computed once per session and are not refreshed when a
-  pass removes instructions: they stay sound only because the passes remove
+  target, or in a data directive), has all registers live at its RET, except
+  that the compiler's ABI registers are enough there when every unknown way in
+  is a "__function_" entry and a compiler vouches for the convention (-L lua,
+  or a ";@hints" header). A header on hand-written code that does not follow
+  the convention makes the optimizer wrong: testing/liveness-trust has
+  second_r1.asm (a second result in R1 to a caller that uses "CALL Rn") which
+  stays correct without a header and loses the write to R1 with one.
+  The callee summaries are computed once per session and are not refreshed when
+  a pass removes instructions: they stay sound only because the passes remove
   nothing but writes proven dead (stale answers are more conservative, never
-  less). Two limits remain: a save slot overwritten or read through [SP+k] or
+  less). The tables of a session are reused by the next pass while the program
+  is unchanged (an edit counter, guarded by a fingerprint of the program). Two limits remain: a save slot overwritten or read through [SP+k] or
   [BP-k] aliasing is not detected, and a CALL/JMP to a numeric address is
   "unknown" at the call site (all live) but cannot make a function "address
   taken".
@@ -101,6 +138,20 @@ PASSES
   ("MOV R0, [BP+2]" in each copy of a body that stores a parameter) is not
   removed.
 
+[gap] Lua loop control: what is left after float immediates, lua-loop-var and
+  promote-loops across calls (doc/lua-loops.md) needs help from outside the
+  loop passes. Three known steps, none started: (1) a ";@fn F returns=N" hint
+  from v32lua, so R2/R3 can be dead at the RET of a function that returns at
+  most one value (a dead copy into R3 survives in 106 of 209 rewritten loops);
+  (2) "clobbers=" lists for more runtime routines (__builtin_strcat,
+  __builtin_len, __builtin_tostring, __pico8_add: 30 loops are refused for a
+  callee without a list); (3) liveness accepting a routine that saves R1..R13
+  and then pushes its arguments above them as preserving those registers
+  (__table_call_handler: 19 loops are refused because no register is proven
+  free across __builtin_table_set). Also: a function whose range is cut by a
+  nested function definition is skipped by peephole-lua-checks, lua-loop-var
+  and the promote passes (24 of 255 loops in the corpus).
+
 [gap] constant-folding trades register operands for immediates ("MOV Rd, Rs"
   -> "MOV Rd, const" is 2 words instead of 1), so the assembled program can
   grow; its payoff is enabling the immediate-based peepholes. A post-fold
@@ -111,33 +162,14 @@ PASSES
 
 [bug] peephole-zero-test: the rewritten jump loses its trailing source comment.
 
-[bug] A ";@v" hint on an instruction without a memory operand ("MOV R1, 5
-  ;@v") makes v32opt print "a volatile access was optimized away or
-  rewritten ... please report this" at every optimization level including
-  -O0, although nothing was changed: hints_verify() (src/hints.c) requires
-  every marked instruction to have an indirect operand. doc/hints.md says to
-  mark only the load or store, so the input is wrong, but the message blames
-  v32opt.
-
-[bug] omit-frame-pointers (frame cleanup): function A jumps into the
-  epilogue of function B (a shared tail: "jt R0, __b_tail"), both with
-  "PUSH R4 ... POP R4", A uses R4 and B does not. B's save looks orphaned
-  and is removed with its POP, so A's jump no longer restores R4. Compiler
-  output has no such jump; hand-written code and genasm can.
-  Reproducer: testing/frame-cleanup/shared_tail.asm (not in run.sh).
-
-[bug] peephole-movs deletes a repeated "MOV R12, imm" (R11/R13 too) after a
-  MOVS, SETS or CMPS, which write R11-R13 without naming them
-  (modifies_register() does not know). Present before the 20261109 changes.
-  Reproducer: testing/peephole-repeat-imm/known_peephole_movs.asm
-  (not in run.sh). peephole-repeat-imm itself handles them.
-
-[bug] dce drops a "__function_*" label that is only fallen into from the
-  function above it (the preceding function then runs on into the next one),
-  and a function that is only entered by a jump to a label inside it (the jump
-  target becomes undefined). Present before the 20261109 changes.
-  "__function_a: mov R0,1 / __function_b: iadd R0,2 / ret" with
-  "call __function_a" elsewhere loses __function_b at -fdce.
+[bug] --check-vars still reports problems on three v32lua audit programs
+  (tests/audit of v32lua). c4_funcs: a closure is defined inside a "for" scope
+  of main, the checker splits the records by function boundary, so the scope's
+  braces land in different functions (it fails at -O0 too; the same on
+  testing/lua-loop-var/directed.asm, function p08). index at -O1 and ts at
+  -O1/-O2/-O3: every access to a variable's slot is removed by
+  peephole-lua-checks together with compiler-myopia or forwarding, but the
+  variable's ";@var" record is not marked optimized-out.
 
 [bug] The stock Vircon32 compiler is not consistently callee-save (a function
   only ever called at statement level may write R1 without saving it).
@@ -178,11 +210,13 @@ TOOLING AND TESTS
 
 [limit] testing/differential and testing/bench need the sibling projects built
   (v32as, v32sim; v32cc, the stock "compile", v32c++, v32lua for their
-  languages) and are not part of "make tests". Seven suites of "make tests"
+  languages) and are not part of "make tests". Thirteen suites of "make tests"
   (peephole-dead-regs, loop-strength, frame-cleanup, peephole-repeat-imm,
-  peephole-copies-imm, constant-folding-entries, promote-save) run programs
-  of testing/differential through its run.py and need v32as and v32sim, but
-  no compiler. "make tests" itself needs the Vircon32 DevTools for its unit
+  peephole-copies-imm, constant-folding-entries, promote-save,
+  lua-function-bounds, dce-reach, string-ops, peephole-jumps-labels,
+  lua-loop-var, liveness-trust) run programs of testing/differential through
+  its run.py (the Lua ones through testing/lua-asm-run/asmrun.py, on v32lua
+  output that is checked in) and need v32as and v32sim, but no compiler. "make tests" itself needs the Vircon32 DevTools for its unit
   fixtures (testing/primes also needs v32lua).
 
 [bug] A few small memory leaks (nodes made by passes) are reported by

@@ -138,6 +138,14 @@ tests: bin/$(TARGET)
 	bash testing/peephole-copies-imm/run.sh bin/$(TARGET)
 	bash testing/constant-folding-entries/run.sh bin/$(TARGET)
 	bash testing/promote-save/run.sh bin/$(TARGET)
+	bash testing/lua-function-bounds/run.sh bin/$(TARGET)
+	bash testing/dce-reach/run.sh bin/$(TARGET)
+	bash testing/string-ops/run.sh bin/$(TARGET)
+	bash testing/peephole-jumps-labels/run.sh bin/$(TARGET)
+	bash testing/lua-loop-var/run.sh bin/$(TARGET)
+	bash testing/liveness-trust/run.sh bin/$(TARGET)
+	bash testing/promote-loops-calls/run.sh bin/$(TARGET)
+	V32OPT=$(CURDIR)/bin/$(TARGET) sh testing/hints/run.sh
 	V32OPT=$(CURDIR)/bin/$(TARGET) sh testing/case-sensitive/run.sh
 	V32OPT=$(CURDIR)/bin/$(TARGET) sh testing/return-label/run.sh
 	V32OPT=$(CURDIR)/bin/$(TARGET) sh testing/srcmarks/run.sh

@@ -13,7 +13,7 @@
 ## repeat_imm_blk.asm: MOVS, SETS and CMPS write R11-R13 without naming them.
 ## The pass is part of -O3 only. Every program is run in v32sim against its unoptimized
 ## self (RAM image, STRICT=1), which needs v32as and v32sim built next to this project.
-## known_peephole_movs.asm is NOT run: a known failing reproducer (see ISSUES).
+## known_peephole_movs.asm (fixed in 1aacb50) is run by testing/string-ops/run.sh.
 ## Usage: ./run.sh [path/to/v32opt]     (or V32OPT=path, default ../../bin/v32opt)
 ##
 #########################################################################

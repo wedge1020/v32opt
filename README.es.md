@@ -392,7 +392,13 @@ resuelven a través de `%define`; y la pasada de álgebra elimina la mitad
 compilador tras un productor de booleanos empaquetados. `-L c` (el valor
 por defecto) mantiene el comportamiento simple del modo C. Las etiquetas
 auxiliares internas `__global_*` de v32lua dentro del inicializador del
-ámbito global se entienden en cualquiera de los dos modos.
+ámbito global se entienden en cualquiera de los dos modos. El modo también deja
+que el análisis de vida de registros confíe en la convención del compilador: una
+función alcanzada solo mediante `__builtin_exec` mantiene vivos en su `RET` solo
+los registros de la ABI, lo que deja registros libres a las pasadas de promoción.
+Con `-O2` y superior hay dos pasadas propias del modo: `lua-loop-var` (abajo) y la
+extensión de `promote-loops` a través de llamadas (`-fno-promote-loops-calls`). El
+efecto medido está en [doc/lua-loops.md](doc/lua-loops.md).
 
 ### Ensamblador escrito a mano
 
@@ -455,8 +461,8 @@ v32opt <entrada.asm> [-o salida.asm] [opciones]
 | Opción | Descripción | Pasadas Incluidas |
 | --- | --- | --- |
 | `-O0` | **Sin Optimización** | Desactiva todas las pasadas de optimización (por defecto). |
-| `-O1` | **Mirilla Local** | Activa las 16 optimizaciones locales (14 de mirilla sobre ventana, más la **escritura muerta de registro** y la **limpieza de copias**, guiadas por vida de registros). |
-| `-O2` | **Análisis Global** | Activa todas las pasadas de `-O1` + **CSE**, **Eliminación de Código Muerto (DCE)**, **Plegado Global de Constantes**, **Eliminación del Puntero de Marco** y **Promoción de Memoria a Registros** (`promote-regs`, `promote-leaf`, `promote-loops`). |
+| `-O1` | **Mirilla Local** | Activa las 16 optimizaciones locales (14 de mirilla sobre ventana, más la **escritura muerta de registro** y la **limpieza de copias**, guiadas por vida de registros); `-L lua` añade `peephole-lua-checks`, 17 en total. |
+| `-O2` | **Análisis Global** | Activa todas las pasadas de `-O1` + **CSE**, **Eliminación de Código Muerto (DCE)**, **Plegado Global de Constantes**, **Eliminación del Puntero de Marco** y **Promoción de Memoria a Registros** (`promote-regs`, `promote-leaf`, `promote-loops`) y, con `-L lua`, **Lecturas de la Variable de Bucle** (`lua-loop-var`). |
 | `-O3` | **Agresivo** | Activa todas las pasadas de `-O2` + **Inserción de Funciones en Línea** + **Inversión de Bucles** + **Desenrollado de Bucles** (completo y parcial) + **Plegado del Índice** + **Reducción de Fuerza de Punteros** (`loop-strength`) + **Cargas Repetidas de Inmediatos** (`peephole-repeat-imm`). |
 | `-Os` | **Ahorro de Espacio** | `-O3` sin las pasadas de bucle (que duplican código o gastan un registro) y sin `peephole-repeat-imm` (que solo limpia tras ellas); marcador de posición para un nivel dedicado al tamaño. |
 | `-o <archivo>` | **Archivo de Salida** | Dónde escribir el ensamblador optimizado (por defecto: `<entrada>Opt.asm`). |
@@ -635,9 +641,12 @@ antes de que nada haya podido cambiarlo.
 
 ### Eliminación de Saltos Redundantes (`peephole-jumps`)
 
-Tres limpiezas locales del flujo de control: elimina los
+Cuatro limpiezas locales del flujo de control: elimina los
 `JMP`/`JT`/`JF` que apuntan directamente a la etiqueta que sigue
-inmediatamente a la instrucción; invierte los pares de rama sobre salto
+inmediatamente a la instrucción (un `JMP` también cuando entre él y su destino
+solo hay otras etiquetas, comentarios y líneas en blanco, cualquier número de
+etiquetas: el salto cae igualmente en la instrucción siguiente; una directiva
+corta la serie, y `JT`/`JF` conservan la forma de una sola etiqueta); invierte los pares de rama sobre salto
 (`JF R, L1; JMP L2; L1:` se convierte en `JT R, L2; L1:`); y elimina el
 código que un `JMP` incondicional vuelve inalcanzable (hasta la siguiente
 etiqueta, que se conserva).
@@ -805,10 +814,33 @@ MOV  [R1], R0
 
 Las formas son `OP Rd, Rt` (las operaciones enteras de la ALU y las
 comparaciones), `MOV Rd, [Rt]` y `MOV [Rt], Rs` sin desplazamiento. Solo
-literales enteros y símbolos simples (no un float), nada volátil, y ninguna
+literales enteros y símbolos simples, nada volátil, y ninguna
 etiqueta, salto ni `CALL` entre el `MOV` y los usos. El desenrollado completo
 deja `MOV R1, 19 / MOV [R1], R0` en cada copia del cuerpo; esto lo deja en una
 instrucción.
+
+*Inmediatos de coma flotante:* las operaciones de coma flotante (`FADD FSUB FMUL
+FDIV FMIN FMAX FEQ FNE FGT FGE FLT FLE`) también aceptan el inmediato, y la regla
+va por la palabra que contenía el registro, no por su grafía, porque v32as lee un
+literal entero en una operación de coma flotante como un número que hay que convertir
+(`FADD R0, 0x40200000` suma 1075838976.0, mientras que `MOV R1, 0x40200000` pone la
+palabra 0x40200000 en `R1`):
+
+```vircon32
+; ANTES                              ; DESPUÉS
+MOV  R1, 1.5                         FADD R0, 1.5
+FADD R0, R1
+
+MOV  R1, 0x40200000                  FMUL R0, 2.5       ; (la palabra hexadecimal reescrita como
+FMUL R0, R1                                             ;  el decimal con los mismos bits)
+```
+
+Un literal decimal de coma flotante se copia tal cual (a una operación de coma
+flotante o a un `MOV` de registro, nunca a una operación entera ni a una
+dirección); un literal entero va a una operación de coma flotante solo reescrito
+como un decimal que se lee exactamente como esa palabra. Se rechazan, y quedan
+como están: un literal entero sin esa grafía (`MOV R1, 5 / FADD R0, R1`: la palabra
+5 es un desnormal), un NaN, un infinito, un desnormal y un símbolo.
 
 ### Eliminación de Almacenamientos Muertos (`peephole-dead-stores`)
 
@@ -1325,6 +1357,21 @@ bucles; forma parte solo de `-O3` (limpia tras `loop-unroll`; `-Os` la omite) y
 posición por `MOV` eliminado.
 
 
+### Lecturas de la Variable de Bucle (`lua-loop-var`)
+
+`-L lua`, `-O2` y superior (`-flua-loop-var` / `-fno-lua-loop-var`). v32lua guarda
+la variable visible `i` de `for i = a, b, s` en su propia palabra de marco y le
+copia el contador oculto al principio de cada iteración. Cuando la línea
+`;@loop kind=for` lleva `var=N` (el compilador promete que entre la etiqueta de
+inicio y la de fin nada salvo esa copia escribe la palabra), la pasada lee el
+contador en lugar de la variable y elimina la copia. Antes de creer `var=`
+comprueba que la cabecera tiene exactamente la forma esperada, que el contador se
+escribe una vez, justo antes del salto de retorno, que toda otra mención de la
+palabra es una carga simple, que nada salta al interior del bucle, que no se toma
+ninguna dirección, que nada es volátil y que la palabra se escribe antes de leerse
+en cada salida. Un bucle que no lo cumple conserva su copia, igual que la salida de
+un v32lua que no escribe `var=`. Las reglas están en [doc/hints.md](doc/hints.md).
+
 ### Ajuste de las pasadas de bucles
 
 Los límites de las pasadas de bucles son opciones de línea de órdenes
@@ -1396,6 +1443,15 @@ fuera del bucle lee la posición (salvo en un bucle anidado, que se
 reentra). Las referencias se ponderan por el anidamiento (x8 por nivel),
 así que con pocos registros ganan los bucles más internos. Un bucle que
 no se puede promover se omite solo; los anidados se siguen considerando.
+
+*A través de llamadas (`-L lua`):* un `CALL` directo en el bucle ya no lo corta si
+su destino tiene una lista `;@fn F clobbers=` (v32lua escribe una para las rutinas
+de ejecución que ha analizado). La posición pasa a un registro fuera de los
+registros del propio bucle y de las listas de los llamados, de modo que el valor
+sobrevive a la llamada sin guardarse. Las llamadas mediante `__builtin_exec`
+(funciones del usuario), mediante un registro y a una rutina sin lista siguen
+bloqueando el bucle. `-fno-promote-loops-calls` desactiva esta parte;
+`-fno-promote-loops` desactiva toda la pasada.
 
 ### Convención de llamada: ¿de quién son los registros?
 

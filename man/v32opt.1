@@ -1,4 +1,4 @@
-.TH V32OPT 1 "November 2026" "v32opt 20261112-dev" "User Commands"
+.TH V32OPT 1 "November 2026" "v32opt 20261113-dev" "User Commands"
 .SH NAME
 v32opt \- optimize Vircon32 assembly code
 .SH SYNOPSIS
@@ -121,7 +121,11 @@ Select a preset optimization level:
 No optimization at all (the default).
 .TP
 .B \-O1
-All fourteen local peephole passes (see
+All sixteen local peephole passes (seventeen with
+.BR "\-L lua" ,
+which adds
+.IR peephole\-lua\-checks ;
+see
 .BR "OPTIMIZATION LEVELS" ,
 below).
 .TP
@@ -207,6 +211,10 @@ and the heat of its loops) and
 lines before a loop (\(dqunroll=N\(dq, \(dqunroll=full\(dq, \(dqnounroll\(dq, \(dqhot\(dq,
 \(dqcold\(dq); see
 .IR doc/hints.md .
+A
+.B ;@v
+on an instruction that accesses no memory is reported once, when the file is read,
+as a misplaced hint (it marks loads and stores only); nothing else changes.
 .TP
 .BR \-L " mode" ", " \-\-langmode " mode"
 Language mode, \(dqc\(dq (the default) or \(dqlua\(dq (either case).
@@ -247,7 +255,8 @@ peephole\-jmp\-chain, peephole\-zero\-test,
 peephole\-dead\-regs, peephole\-copies, cse, dce,
 constant\-folding, omit\-frame\-pointers, inline, promote\-regs,
 promote\-leaf, promote\-loops, loop\-invert, loop\-unroll, loop\-index,
-loop\-strength, loop\-unroll\-partial, peephole\-repeat\-imm
+loop\-strength, loop\-unroll\-partial, peephole\-repeat\-imm,
+peephole\-lua\-checks and lua\-loop\-var (\-L lua), promote\-loops\-calls
 .fi
 .RE
 .IP
@@ -400,6 +409,15 @@ and eliminates code made unreachable by an unconditional jump
 .B "JMP R0"
 or
 .BR "JMP 0x1000" ).
+A
+.B JMP
+is also removed when only other labels, comments and blank lines lie between it
+and its target (any number of labels; a directive ends the run): the jump lands on
+the next instruction anyway.
+.B JT
+and
+.B JF
+keep the one-label form.
 .TP
 .I peephole\-movs
 Removes duplicate and mirror
@@ -453,8 +471,21 @@ follow it. An immediate that a
 loaded into a register is also propagated into the reads that
 follow it (as the second operand of a compare or ALU instruction, or
 as a load or store address) when the register is dead afterwards;
-floating-point instructions, volatile instructions, labels and
-jumps in between stop it.
+volatile instructions, labels and jumps in between stop it. The
+floating-point operations
+.RB ( FADD FSUB FMUL FDIV FMIN FMAX FEQ FNE FGT FGE FLT FLE )
+take the immediate too, by the word the register held and not by its
+spelling: a decimal float literal
+.RB ( "MOV R1, 1.5" )
+is copied as written, a hex word is respelled as the decimal float that reads back to
+the same bits
+.RB ( 0x40200000
+becomes
+.BR 2.5 ).
+An integer literal such as
+.BR "MOV R1, 5"
+feeding a float operation, a float literal feeding an integer operation or an address,
+a NaN, an infinity, a denormal and a symbol are left alone.
 .TP
 .I peephole\-dead\-stores
 Removes stores to registers or memory that are overwritten before
@@ -567,6 +598,22 @@ pass: it erases the frame chain that emulators and debuggers walk
 to produce backtraces, so
 .B \-O1
 stays debug-safe.
+.TP
+.I lua\-loop\-var
+.RB ( "\-L lua" " only)"
+In a numeric
+.B for
+loop whose
+.B ;@loop kind=for
+line carries
+.B var=N
+(written by v32lua: nothing but the copy of the counter at the top of each iteration writes the visible
+loop variable's frame word), the reads of the variable read the counter slot instead and the copy is deleted.
+Refused unless the loop header has the exact shape, the counter is written once right before the back edge,
+every other mention of the word is a plain load, nothing jumps into the loop, no address is taken, nothing is
+volatile, and the word is written before it is read on every way out. Input from a v32lua without
+.B var=
+is left alone.
 .SS "\-O3: interprocedural"
 .B \-O2
 plus:
@@ -672,6 +719,19 @@ with
 .PP
 All three passes are part of
 .BR \-O2 .
+In
+.B "\-L lua"
+output,
+.I promote\-loops
+also keeps a register across the hot
+.B CALL
+instructions of a loop when every callee has a
+.B ";@fn F clobbers="
+list (v32lua writes them); calls through
+.BR __builtin_exec ,
+through a register, or to a routine without a list still end the loop.
+.B \-fno\-promote\-loops\-calls
+turns this part off.
 Promotion itself keeps the cycle count; the gain comes from the
 .B \-O1
 passes

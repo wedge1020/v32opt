@@ -1,7 +1,7 @@
 .\" -*- coding: UTF-8 -*-
 .\" Traducción al español de man/v32opt.1. `make version` actualiza la
 .\" fecha y la versión de la línea .TH siguiente.
-.TH V32OPT 1 "noviembre de 2026" "v32opt 20261112-dev" "Órdenes de usuario"
+.TH V32OPT 1 "noviembre de 2026" "v32opt 20261113-dev" "Órdenes de usuario"
 .SH NOMBRE
 v32opt \- optimiza código ensamblador de Vircon32
 .SH SINOPSIS
@@ -130,7 +130,11 @@ Selecciona un nivel de optimización predefinido:
 Ninguna optimización (el valor por defecto).
 .TP
 .B \-O1
-Las catorce pasadas locales de mirilla (véase
+Las dieciséis pasadas locales de mirilla (diecisiete con
+.BR "\-L lua" ,
+que añade
+.IR peephole\-lua\-checks ;
+véase
 .BR "NIVELES DE OPTIMIZACIÓN" ,
 más abajo).
 .TP
@@ -241,7 +245,8 @@ peephole\-jmp\-chain, peephole\-zero\-test,
 peephole\-dead\-regs, peephole\-copies, cse, dce,
 constant\-folding, omit\-frame\-pointers, inline, promote\-regs,
 promote\-leaf, promote\-loops, loop\-invert, loop\-unroll, loop\-index,
-loop\-strength, loop\-unroll\-partial, peephole\-repeat\-imm
+loop\-strength, loop\-unroll\-partial, peephole\-repeat\-imm,
+peephole\-lua\-checks y lua\-loop\-var (\-L lua), promote\-loops\-calls
 .fi
 .RE
 .IP
@@ -402,6 +407,15 @@ con destinos calculados:
 .B "JMP R0"
 o
 .BR "JMP 0x1000" ).
+También elimina un
+.B JMP
+cuando entre él y su destino solo hay otras etiquetas, comentarios y líneas en
+blanco (cualquier número de etiquetas; una directiva corta la serie): el salto
+cae igualmente en la instrucción siguiente.
+.B JT
+y
+.B JF
+conservan la forma de una sola etiqueta.
 .TP
 .I peephole\-movs
 Elimina los pares
@@ -455,9 +469,23 @@ en las lecturas que la siguen. Un inmediato cargado con
 .B MOV Rd, imm
 también se propaga a las lecturas siguientes (como segundo operando de una
 comparación o de una instrucción ALU, o como dirección de una carga o un
-almacenamiento) cuando el registro queda muerto después; las instrucciones de
-coma flotante, las volátiles, las etiquetas y los saltos intermedios lo
-detienen.
+almacenamiento) cuando el registro queda muerto después; las instrucciones
+volátiles, las etiquetas y los saltos intermedios lo detienen. Las operaciones
+de coma flotante
+.RB ( FADD FSUB FMUL FDIV FMIN FMAX FEQ FNE FGT FGE FLT FLE )
+también aceptan el inmediato, según la palabra que contenía el registro y no
+según su grafía: un literal decimal de coma flotante
+.RB ( "MOV R1, 1.5" )
+se copia tal cual, una palabra hexadecimal se reescribe como el decimal que se
+lee con los mismos bits
+.RB ( 0x40200000
+pasa a
+.BR 2.5 ).
+Se dejan intactos un literal entero como
+.B "MOV R1, 5"
+que alimenta una operación de coma flotante, un literal de coma flotante que
+alimenta una operación entera o una dirección, un NaN, un infinito, un
+desnormal y un símbolo.
 .TP
 .I peephole\-dead\-stores
 Elimina los almacenamientos en registros o en memoria que se sobrescriben
@@ -576,6 +604,24 @@ han desaparecido. Una función con un
 .B CALL
 conserva sus guardados, y un cuerpo que salta fuera de la función conserva su
 marco. Las etiquetas que nadie referencia se atraviesan.
+.TP
+.I lua\-loop\-var
+.RB ( "\-L lua" " solamente)"
+En un bucle
+.B for
+numérico cuya línea
+.B ;@loop kind=for
+lleva
+.B var=N
+(la escribe v32lua: solo la copia del contador al principio de cada iteración
+escribe la palabra de marco de la variable visible del bucle), las lecturas de la
+variable leen el contador y la copia se elimina. Se rechaza salvo que la cabecera
+tenga la forma exacta, el contador se escriba una vez justo antes del salto
+de retorno, toda otra mención de la palabra sea una carga simple, nada salte al
+interior del bucle, no se tome ninguna dirección, nada sea volátil y la palabra
+se escriba antes de leerse en cada salida. La entrada de un v32lua sin
+.B var=
+no se toca.
 .SS "\-O3: interprocedimental"
 .B \-O2
 más:
@@ -685,6 +731,18 @@ con
 .PP
 Las tres pasadas forman parte de
 .BR \-O2 .
+En la salida de
+.BR "\-L lua" ,
+.I promote\-loops
+conserva además un registro a través de los
+.B CALL
+calientes de un bucle cuando cada llamado tiene una lista
+.B ";@fn F clobbers="
+(la escribe v32lua); las llamadas mediante
+.BR __builtin_exec ,
+mediante un registro o a una rutina sin lista siguen cortando el bucle.
+.B \-fno\-promote\-loops\-calls
+lo desactiva.
 La promoción por sí sola conserva los ciclos; la ganancia viene de las
 pasadas de
 .B \-O1

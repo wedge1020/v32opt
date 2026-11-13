@@ -4,7 +4,7 @@
 
 ; Hand-written: MOVS, SETS and CMPS write R11-R13 (count, source, destination) without
 ; naming them, so the repeated MOV R11/R12/R13 after each must stay (peephole-repeat-imm).
-; Run with -fpeephole-repeat-imm only: peephole-movs deletes these MOVs, see ISSUES.
+; Run with -fpeephole-repeat-imm only (peephole-movs used to delete these MOVs: fixed in 1aacb50).
 
 __function_keep_movs:
   mov R11, 2

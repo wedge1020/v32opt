@@ -1,8 +1,8 @@
-; KNOWN WRONG RESULT, not part of run.sh (see ISSUES): peephole-movs deletes the second set of
-; R11/R12/R13 because MOVS looks like it writes none of them (modifies_register() ignores the
-; implicit R11-R13). The unoptimized program stores 300 and 310; with
-; -fpeephole-movs (and so -O1 and up) it stores 302 and 312. Present in the baseline optimizer too.
-; Check:  cd testing/differential && STRICT=1 python3 run.py --flags "-fpeephole-movs" ../peephole-repeat-imm/known_peephole_movs.asm
+; FIXED in 1aacb50 (was a known wrong result; run by testing/string-ops/run.sh): peephole-movs deleted the second set of
+; R11/R12/R13 because MOVS looked like it writes none of them (modifies_register() ignored the
+; implicit R11-R13). The unoptimized program stores 300 and 310; the broken optimizer, with
+; -fpeephole-movs (and so -O1 and up), stored 302 and 312. Present in the baseline optimizer too.
+; Check:  cd testing/differential && STRICT=1 python3 run.py --flags "-fpeephole-movs" ../string-ops/known_peephole_movs.asm
 ; program start section
   call __function_main
   hlt

@@ -72,3 +72,23 @@ ways it answers "dead" for a live register. Each was reproduced as a miscompile 
   `-fpeephole-dead-regs`, `-O2`, `-O3` (STRICT=1).
 * The existing suites still pass, and the cycle/word totals of the differential
   programs do not get worse by more than noise (report the table).
+
+## Since the audit
+
+* **More gaps, found while implementing the fix** (G1-G7 are in commit 1e7f1a3; the rules are in the header comment
+  of `src/liveness.c`). The rules that came out of G6, G7 and a deeper form of G5 are: a `PUSH Rn ... POP Rn` is a save only when the pushed word
+  cannot be a stack argument, which asks for more than the callee's class (a CALL while the word is within the reach of
+  the callee's stack arguments, or to an unknown callee; the reach of a target is that of all the code it runs on its
+  frame, jumps followed, `[BP+k]` reading word k-2 from the top and a read through `SP` or a computed `JMP` reaching
+  any); writes between a save's `PUSH` and `POP` are outputs only if a jump leaves the range or an entry label lies
+  inside it; and which registers a function returns is found per class (a callee that returns a second value in `R1`,
+  like v32cc's unsigned divide) and asked at each direct call site.
+* **Trust rule** (commit 2f9327c): the compiler-ABI exemption of "Open classes" above applies only where a compiler
+  vouches for the convention: `-L lua`, or a `;@hints` header. Hand-written assembly without a header keeps the strict
+  rule. Measured on primes (`-O2 -L lua`): promote-loops promotions 76 before the fix, 0 with the strict rule, 70 with
+  this one. A header that is false for a function (a second result in `R1` to an indirect caller) makes the optimizer
+  delete that write; `testing/liveness-trust` has the program that stays correct without the header.
+* **Session reuse** (commits 47034c9, 2f9327c): the begin-time tables are a function of the program alone, so a pass
+  that finds the program unchanged since the previous one reuses them; the answers are those of a fresh session. The
+  fast test is an edit counter, and a reuse also needs the program's fingerprint to match, so an edit made without
+  the counted helpers still gets a rebuild.

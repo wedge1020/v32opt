@@ -370,7 +370,13 @@ pattern) are never resolved through `%define`, and the algebra pass drops
 the provably-dead  "is it Nil?"  half of the compiler's  fixed truthiness
 test after a boxed-boolean producer. `-L c` (the default) keeps the plain
 C-mode behavior. v32lua's internal  `__global_*` helper labels inside the
-global-scope initializer are understood in either mode.
+global-scope initializer are understood in either mode. The mode also lets the
+liveness analysis trust the compiler's convention: a function reached only
+through `__builtin_exec` keeps just the ABI registers live at its `RET`, which is
+what leaves registers free for the promote passes. At `-O2` and up two passes are
+specific to it: `lua-loop-var` (below) and the extension of `promote-loops` across
+calls (`-fno-promote-loops-calls`). The measured effect of the Lua work is in
+[doc/lua-loops.md](doc/lua-loops.md).
 
 ### Compiler hints (`;@` comments)
 
@@ -382,7 +388,9 @@ local of the function in memory), `noinline`, and `volatile` accesses (`;@v`, ne
 merged, forwarded or removed). It can also pass on what the programmer asked for in the
 source: `inline` / `always_inline` / `hot` / `cold` functions (the inliner's size limit, and
 whether a function's loops may grow) and, per loop, `#pragma unroll N` / `nounroll` / hot /
-cold (`;@loop`). A file without hints is optimized exactly as before.
+cold (`;@loop`). A file without hints is optimized exactly as before. A `;@v` on an
+instruction that accesses no memory is a misplaced hint: it is reported once, when the
+file is read, and changes nothing else.
 The format and its rules are in [doc/hints.md](doc/hints.md).
 Source-line markers (`;@src`, `-g`, `--strip-src`, `--check-src`) and variable records (`;@var`, `;@scope`, `;@home`, `--check-vars`) are described in [doc/srcmarks.md](doc/srcmarks.md); `-L lua` type-check removal (`-fpeephole-lua-checks`) uses the `;@loop kind=for`, `;@cold` and `clobbers=` hints.
 
@@ -440,8 +448,8 @@ v32opt <input.asm> [-o output.asm] [options]
 | Flag | Description | Included Passes |
 | --- | --- | --- |
 | `-O0` | **No Optimization** | Disables all optimization passes (default). |
-| `-O1` | **Local Peephole** | Enables all 16 local peephole optimizations (14 window passes, plus the liveness-driven **dead register write** and **copy cleanup**). |
-| `-O2` | **Global Analysis** | Enables all `-O1` passes + **CSE**, **Dead Code Elimination (DCE)**, **Global Constant Folding**, **Frame Pointer Elimination** & **Memory-to-Register Promotion** (`promote-regs`, `promote-leaf`, `promote-loops`). |
+| `-O1` | **Local Peephole** | Enables all 16 local peephole optimizations (14 window passes, plus the liveness-driven **dead register write** and **copy cleanup**); `-L lua` adds `peephole-lua-checks`, 17 in all. |
+| `-O2` | **Global Analysis** | Enables all `-O1` passes + **CSE**, **Dead Code Elimination (DCE)**, **Global Constant Folding**, **Frame Pointer Elimination** & **Memory-to-Register Promotion** (`promote-regs`, `promote-leaf`, `promote-loops`), and with `-L lua` **Loop Variable Reads** (`lua-loop-var`). |
 | `-O3` | **Aggressive** | Enables all `-O2` passes + **Function Inlining** + **Loop Inversion** + **Loop Unrolling** (full and partial) + **Loop Index Folding** + **Pointer Strength Reduction** (`loop-strength`) + **Repeated Immediates** (`peephole-repeat-imm`). |
 | `-Os` | **Space Saving** | `-O3` without the loop passes (which duplicate code, or spend a register) and without `peephole-repeat-imm` (which only cleans up after them); a placeholder for a dedicated size-focused tier. |
 | `-o <file>` | **Output File** | Where to write the optimized assembly (default: `<input>Opt.asm`). |
@@ -614,8 +622,11 @@ have changed.
 
 ### Redundant Jump Elimination (`peephole-jumps`)
 
-Three  local control-flow  cleanups: removes  `JMP`/`JT`/`JF` that  point
-directly  to the  label  immediately following  the instruction;  inverts
+Four  local control-flow  cleanups: removes  `JMP`/`JT`/`JF` that  point
+directly  to the  label  immediately following  the instruction (a `JMP`
+also when only other labels, comments and blank lines lie between it and
+its target, any number of labels: the jump lands on the next instruction
+anyway; a directive ends the run, and `JT`/`JF` keep the one-label form);  inverts
 branch-over-jump pairs (`JF R, L1; JMP L2; L1:` becomes `JT R, L2; L1:`);
 and eliminates code made unreachable by an unconditional `JMP` (up to the
 next label, which is kept).
@@ -785,11 +796,32 @@ MOV  [R1], R0
 
 The forms are `OP Rd, Rt` (the integer ALU operations and compares),
 `MOV Rd, [Rt]` and `MOV [Rt], Rs` with no offset. Integer literals and plain
-symbols only (not a float: an immediate float operand is not the same as a
-register holding its bits for every instruction), nothing volatile, no
-label, jump or `CALL` between the `MOV` and the uses. Full unrolling leaves
+symbols, nothing volatile, no label, jump or `CALL` between the `MOV` and the
+uses. Full unrolling leaves
 `MOV R1, 19 / MOV [R1], R0` in every copy of a body; this makes it one
 instruction.
+
+*Float immediates:* the float operations (`FADD FSUB FMUL FDIV FMIN FMAX FEQ FNE
+FGT FGE FLT FLE`) take the immediate too, and the rule goes by the word the
+register held, not by its spelling, because v32as reads an integer literal in a
+float operation as a number to convert (`FADD R0, 0x40200000` adds
+1075838976.0, while `MOV R1, 0x40200000` puts the word 0x40200000 in `R1`):
+
+```vircon32
+; BEFORE                             ; AFTER
+MOV  R1, 1.5                         FADD R0, 1.5
+FADD R0, R1
+
+MOV  R1, 0x40200000                  FMUL R0, 2.5       ; (the hex word respelled as the
+FMUL R0, R1                                             ;  decimal float with the same bits)
+```
+
+A decimal float literal is copied as written (into a float operation or a
+register `MOV`, never into an integer operation or an address); a hex or decimal
+integer literal goes into a float operation only respelled as a decimal float that
+reads back to exactly that word. Refused, and left as it is: an integer literal
+with no such spelling (`MOV R1, 5 / FADD R0, R1`: the word 5 is a denormal), a
+NaN, an infinity, a denormal, a symbol.
 
 ### Dead Store Elimination (`peephole-dead-stores`)
 
@@ -1320,6 +1352,32 @@ it out) and `-fpeephole-repeat-imm` enables it on its own; `--trigger-max`
 counts one slot per deleted `MOV`.
 
 
+### Loop Variable Reads (`lua-loop-var`)
+
+`-L lua`, `-O2` and up (`-flua-loop-var` / `-fno-lua-loop-var`). v32lua keeps the
+visible variable `i` of `for i = a, b, s` in its own frame word and copies the hidden
+counter into it at the top of every iteration. When the `;@loop kind=for` line carries
+`var=N` (the compiler promises that nothing but that copy writes the word between the
+loop's start and end label), the pass reads the counter slot instead and deletes the copy:
+
+```vircon32
+; BEFORE                             ; AFTER
+start:  MOV Ra, [BP+c]               start:  MOV Ra, [BP+c]
+        MOV Rk, Ra                           MOV Rk, Ra     ; (dead now: peephole-dead-regs)
+        ... JT Ra, end                       ... JT Ra, end
+        MOV [BP+v], Rk                       ; (deleted)
+        ... MOV Rn, [BP+v] ...               ... MOV Rn, [BP+c] ...
+        MOV [BP+c], Rs                       MOV [BP+c], Rs
+        JMP start                            JMP start
+```
+
+It checks before it believes `var=`: the header has exactly that shape, the counter is
+written once, right before the back edge, every other mention of the word is a plain
+load, nothing jumps into the loop, no address is taken, nothing is volatile, and the word
+is written before it is read on every way out. A loop that fails keeps its copy; so does
+the output of a v32lua that writes no `var=`. The rules are in
+[doc/hints.md](doc/hints.md).
+
 ### Tuning the loop passes
 
 The limits of the loop passes are command-line settings (`-f<name>=N`), so a
@@ -1446,6 +1504,14 @@ References are weighted by loop nesting, so when there are not enough free
 registers for every candidate the innermost loops' variables win. A loop
 that cannot be promoted (it contains a `CALL`, a `RET`, ...) is skipped
 on its own; loops nested inside it are still considered.
+
+*Across calls (`-L lua`):* a direct `CALL` in the loop no longer ends it when its
+callee has a `;@fn F clobbers=` list (v32lua writes one for the runtime routines it
+has analysed). The slot goes in a register outside the loop's own registers and the
+callees' lists, so the value survives the call without being saved. Calls through
+`__builtin_exec` (user functions), through a register, and to a routine without a
+list still block the loop. `-fno-promote-loops-calls` turns this part off;
+`-fno-promote-loops` turns off the whole pass.
 
 ### Calling convention: whose registers are they?
 
