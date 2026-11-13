@@ -387,6 +387,21 @@ static bool is_symbolic_immediate(const Operand *op) {
     return true;
 }
 
+// MOVS / SETS / CMPS change CR, SR and DR (R11..R13) without naming them, and an instruction may name
+// those three by their aliases, which parse as symbols ("MOV CR, 5"): forget what is known about them.
+static void forget_string_regs(const AsmNode *node, BlockState *st) {
+    bool all = node->type == OP_MOVS || node->type == OP_SETS || node->type == OP_CMPS;
+    for (int r = 11; r <= 13; r++) {
+        bool hit = all;
+        if (!hit && node->has_dst && node->dst_op.mode == MODE_IMMEDIATE &&
+            node->type != OP_JMP && node->type != OP_CALL && node->type != OP_PUSH && node->type != OP_OUT) {
+            static const char *alias[3] = { "CR", "SR", "DR" };
+            hit = str_case_eq(node->dst_op.raw, alias[r - 11]);
+        }
+        if (hit) st->regs[r] = (RegState){VAL_BOTTOM, 0};
+    }
+}
+
 // ===================================================================
 // CONSTANT PROPAGATION: TRANSFER FUNCTION
 // Applies the effect of a basic block's instructions to the state.
@@ -478,6 +493,7 @@ bool apply_transfer_function(BasicBlock *block) {
             }
         }
 
+        forget_string_regs(node, &current);
         if (node == block->last_ins) break;
     }
 
@@ -676,6 +692,7 @@ int fold_constants_cfg(ControlFlowGraph *cfg) {
                 }
             }
 
+            forget_string_regs(node, &current);
             if (node == block->last_ins) break;
         }
     }

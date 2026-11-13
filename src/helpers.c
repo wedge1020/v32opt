@@ -97,11 +97,34 @@ bool is_immediate_string(const char *str)
 // Handles SP/BP implicitly modified by PUSH/POP
 // Handles R0-R13 clobbered by CALL
 // ---------------------------------------------------------------
+// A register's number from any of its names: R0..R15, SP/BP, and the string instructions' aliases
+// CR = R11, SR = R12, DR = R13 (which parse as symbols, not registers). -1 for anything else.
+static int reg_canon(const char *s) {
+    int i = get_reg_index(s);
+    if (i >= 0) return i;
+    if (!s || !s[0] || !s[1] || s[2]) return -1;
+    char a = (char)toupper((unsigned char)s[0]), b = (char)toupper((unsigned char)s[1]);
+    if (b != 'R') return -1;
+    return a == 'C' ? 11 : a == 'S' ? 12 : a == 'D' ? 13 : -1;
+}
+
 bool modifies_register(AsmNode *node, const char *reg_name)
 {
     if (!node || !reg_name) return false;
 
-    bool dst_is_read_only = (str_case_eq(node->mnemonic, "JMP")  ||
+    // BUG FIX: MOVS / SETS / CMPS change CR, SR and DR (R11, R12, R13) without naming them -- a pass
+    // that asked whether "MOVS" writes R12 was told no, and peephole-movs then deleted a second
+    // "MOV R12, 300" after it as a duplicate.
+    if (node->type == OP_MOVS || node->type == OP_SETS || node->type == OP_CMPS) {
+        int c = reg_canon(reg_name);
+        if (c >= 11 && c <= 13) return true;
+    }
+
+    // (first-letter precheck: only J... P... C... mnemonics can match; same answers, far fewer
+    // string comparisons -- this runs hundreds of millions of times inside liveness queries)
+    char m0 = (char)toupper((unsigned char)node->mnemonic[0]);
+    bool dst_is_read_only = (m0 == 'J' || m0 == 'P' || m0 == 'C') &&
+                            (str_case_eq(node->mnemonic, "JMP")  ||
                              str_case_eq(node->mnemonic, "PUSH") ||
                              str_case_eq(node->mnemonic, "JT")   ||
                              str_case_eq(node->mnemonic, "JF")   ||
@@ -109,6 +132,12 @@ bool modifies_register(AsmNode *node, const char *reg_name)
 
     if (!dst_is_read_only && node->has_dst && node->dst_op.mode == MODE_REG) {
         if (str_case_eq(node->dst_op.reg, reg_name)) return true;
+    }
+    // ... and under either spelling: "MOV CR, 5" writes R11 (CR parses as a symbol operand)
+    if (!dst_is_read_only && node->has_dst &&
+        (node->dst_op.mode == MODE_REG || node->dst_op.mode == MODE_IMMEDIATE)) {
+        int a = reg_canon(node->dst_op.mode == MODE_REG ? node->dst_op.reg : node->dst_op.raw);
+        if (a >= 11 && a <= 13 && a == reg_canon(reg_name)) return true;
     }
 
     if (node->type == OP_PUSH || node->type == OP_POP) {
@@ -125,7 +154,7 @@ bool modifies_register(AsmNode *node, const char *reg_name)
         if (str_case_eq(reg_name, "SP") || str_case_eq(reg_name, "R15")) return true;
     }
 
-    if (str_case_eq(node->mnemonic, "CALL")) {
+    if (m0 == 'C' && str_case_eq(node->mnemonic, "CALL")) {
         int idx = get_reg_index(reg_name);
         if (idx >= 0 && idx <= 13) return true;
     }
@@ -220,6 +249,12 @@ bool is_dead_store_scan_boundary(AsmNode *node)
 bool is_register_read(AsmNode *node, const char *reg_name)
 {
     if (!node || !reg_name) return false;
+
+    // MOVS / SETS / CMPS read CR, SR and DR (R11..R13) without naming them (see modifies_register)
+    if (node->type == OP_MOVS || node->type == OP_SETS || node->type == OP_CMPS) {
+        int c = reg_canon(reg_name);
+        if (c >= 11 && c <= 13) return true;
+    }
 
     if (node->has_src && node->src_op.mode == MODE_REG) {
         if (str_case_eq(node->src_op.reg, reg_name)) return true;

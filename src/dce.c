@@ -611,6 +611,43 @@ int opt_dce (AsmNode *head)
     }
 
     // ----------------------------------------------------------------
+    // 3B. EVERY LABEL OF EVERY SEGMENT
+    // ----------------------------------------------------------------
+    // BUG FIX: reachability used to follow references to a segment's NAME only (its entry label), so a
+    // segment entered any other way was swept while code still went there, leaving an undefined label:
+    //   - a jump into another function's inner label (function a ending in "JT R0, __b_tail", a shared
+    //     epilogue inside function b, which nothing calls);
+    //   - a function that is only fallen into ("__function_a: ... / __function_b: ... RET" with only
+    //     "CALL __function_a").
+    // Now any operand that names a label of a segment -- entry or inner, by a jump, a CALL or any other
+    // instruction -- makes that segment reachable, and so does falling off the end of a reachable
+    // segment into the next one.
+    int nseglabels = 0;
+    for (int i = 0; i < func_count; i++)
+        for (AsmNode *n = funcs[i].start_node; n; n = n->next) {
+            if (n->type == OP_LABEL) nseglabels++;
+            if (n == funcs[i].end_node) break;
+        }
+    FuncNameIdx *lbl_idx = malloc(sizeof(FuncNameIdx) * (size_t)(nseglabels + 1));
+    char (*lbl_names)[128] = malloc(sizeof(char[128]) * (size_t)(nseglabels + 1));
+    int nlbl = 0;
+    if (lbl_idx && lbl_names) {
+        for (int i = 0; i < func_count; i++)
+            for (AsmNode *n = funcs[i].start_node; n; n = n->next) {
+                if (n->type == OP_LABEL) {
+                    get_label_name(n, lbl_names[nlbl], sizeof(lbl_names[0]));
+                    lbl_idx[nlbl].name = lbl_names[nlbl];
+                    lbl_idx[nlbl].idx  = i;
+                    nlbl++;
+                }
+                if (n == funcs[i].end_node) break;
+            }
+        qsort(lbl_idx, (size_t)nlbl, sizeof(FuncNameIdx), cmp_func_name_idx);
+    } else {
+        free(lbl_idx); free(lbl_names); lbl_idx = NULL; lbl_names = NULL;
+    }
+
+    // ----------------------------------------------------------------
     // 4. WORKLIST TRAVERSAL
     // ----------------------------------------------------------------
     // Propagate reachability: if a reachable function calls another,
@@ -639,6 +676,7 @@ int opt_dce (AsmNode *head)
             // see the "1C." comment above for why that's fatal on a
             // large program. Same name-equality test, O(log func_count).)
             int f_dst = (op_dst[0] != '\0') ? find_func_by_name(name_idx, func_count, op_dst) : -1;
+            if (f_dst < 0 && op_dst[0] != '\0' && lbl_idx) f_dst = find_func_by_name(lbl_idx, nlbl, op_dst);
             if (f_dst >= 0 && !funcs[f_dst].reachable) {
                 funcs[f_dst].reachable = true;
                 if (worklist_size < worklist_cap) {
@@ -646,6 +684,7 @@ int opt_dce (AsmNode *head)
                 }
             }
             int f_src = (op_src[0] != '\0') ? find_func_by_name(name_idx, func_count, op_src) : -1;
+            if (f_src < 0 && op_src[0] != '\0' && lbl_idx) f_src = find_func_by_name(lbl_idx, nlbl, op_src);
             if (f_src >= 0 && !funcs[f_src].reachable) {
                 funcs[f_src].reachable = true;
                 if (worklist_size < worklist_cap) {
@@ -655,7 +694,30 @@ int opt_dce (AsmNode *head)
 
             if (node == fn->end_node) break;
         }
+
+        // Falling off the end: the segment that starts right after this one runs next.
+        AsmNode *lastins = NULL;
+        for (AsmNode *node = fn->start_node; node; node = node->next) {
+            if (node->type != OP_LABEL && !(node->type == OP_OTHER && !is_data_directive_node(node))) lastins = node;
+            if (node == fn->end_node) break;
+        }
+        bool falls = !lastins || !(lastins->type == OP_JMP || lastins->type == OP_RET || lastins->type == OP_HLT ||
+                                   is_data_directive_node(lastins));
+        if (falls && fn->end_node) {
+            AsmNode *nx = fn->end_node->next;
+            for (int k = 0; nx && k < func_count; k++) {
+                if (funcs[k].start_node != nx) continue;
+                if (!funcs[k].reachable) {
+                    funcs[k].reachable = true;
+                    if (worklist_size < worklist_cap)
+                        safe_str_copy(worklist[worklist_size++], funcs[k].name, sizeof(worklist[0]));
+                }
+                break;
+            }
+        }
     }
+    free(lbl_idx);
+    free(lbl_names);
 
     // ----------------------------------------------------------------
     // 5. SWEEP UNREACHABLE FUNCTIONS

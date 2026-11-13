@@ -8,6 +8,10 @@
 // PATTERN 1: Redundant Jump to Next Label
 //   - Removes JMP/JT/JF when target label is immediately next
 //   - Handles comments/blanks between jump and label
+//   - JMP only: any number of other labels may stand between the jump
+//     and its target (labels take no space, so the jump still lands on
+//     the next instruction): JMP _end; _else: _end: -> (JMP removed).
+//     JT/JF keep the one-label form.
 //   Example: JMP _L1; _L1: → (JMP removed)
 //
 // PATTERN 2: Branch Over Jump (Condition Inversion)
@@ -43,18 +47,32 @@ int peephole_jumps(AsmNode *head)
             {
                 AsmNode *next_non_comment = skip_other_nodes(curr->next);
 
+                bool lands_next = false;
                 if (next_non_comment && next_non_comment->type == OP_LABEL)
                 {
                     char lbl_name[128];
                     get_label_name(next_non_comment, lbl_name, sizeof(lbl_name));
+                    lands_next = name_eq(lbl_name, target_label);
+                }
+                // JMP: look through a run of labels for the target. Only
+                // comments and blank lines may stand between them: any
+                // directive (data, %define, %include) ends the run.
+                for (AsmNode *scan = curr->next; !lands_next && curr->type == OP_JMP && scan; scan = scan->next)
+                {
+                    if (scan->type == OP_OTHER && !is_directive_node(scan)) continue;
+                    if (scan->type != OP_LABEL) break;
+                    char lbl_name[128];
+                    get_label_name(scan, lbl_name, sizeof(lbl_name));
+                    lands_next = name_eq(lbl_name, target_label);
+                }
 
-                    if (name_eq(lbl_name, target_label))
-                    {
-                        // Removed redundant debug comment insertion here
-                        AsmNode *nodes[] = {curr};
-                        if (remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_JUMPS)) optimizations++;
-                        did_optimize = true;
-                    }
+                if (lands_next)
+                {
+                    // (curr is advanced by remove_with_debug() whether or
+                    // not the trigger cap lets the removal happen)
+                    AsmNode *nodes[] = {curr};
+                    if (remove_with_debug(&curr, nodes, 1, OPT_PEEPHOLE_JUMPS)) optimizations++;
+                    did_optimize = true;
                 }
             }
         }

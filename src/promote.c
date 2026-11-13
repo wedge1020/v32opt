@@ -200,8 +200,9 @@ static bool sp_value_escapes(AsmNode *n) {
 // Helper: is a branch instruction (JMP/JT/JF)?
 // -------------------------------------------------------------------
 static bool is_jump(const AsmNode *n) {
-    return n && (str_case_eq(n->mnemonic, "JMP") || str_case_eq(n->mnemonic, "JT") ||
-                 str_case_eq(n->mnemonic, "JF"));
+    return n && (n->mnemonic[0] == 'J' || n->mnemonic[0] == 'j') &&
+           (str_case_eq(n->mnemonic, "JMP") || str_case_eq(n->mnemonic, "JT") ||
+            str_case_eq(n->mnemonic, "JF"));
 }
 
 // -------------------------------------------------------------------
@@ -389,6 +390,12 @@ void promote_bounds_begin(AsmNode *head) {
         g_call_tgt[g_call_tgt_n++] = strdup(trim(buf));
     }
     if (g_call_tgt) qsort(g_call_tgt, (size_t)g_call_tgt_n, sizeof(char *), cmp_cstr);
+    g_bounds_head = head;
+}
+
+// The label reference counts, built on first use (promote_labels_private) for the list of the
+// last promote_bounds_begin().
+static void lc_build(AsmNode *head) {
     int nl = 0;
     for (AsmNode *n = head; n; n = n->next) if (n->type == OP_LABEL) nl++;
     g_lc = calloc((size_t)nl + 1, sizeof(LabelCount));
@@ -401,7 +408,6 @@ void promote_bounds_begin(AsmNode *head) {
     if (g_lc) qsort(g_lc, (size_t)g_lc_n, sizeof(LabelCount), cmp_lc);
     for (AsmNode *n = head; n && g_lc; n = n->next)
         if (n->type != OP_LABEL && !n->debug_note) lc_count(n, 0);
-    g_bounds_head = head;
 }
 
 // Is every label of [first, last] other than `except` referenced only from inside [first, last]?
@@ -411,6 +417,7 @@ void promote_bounds_begin(AsmNode *head) {
 // The counts are those of promote_bounds_begin() (references are not edited by the passes that ask).
 bool promote_labels_private(AsmNode *first, AsmNode *last, const AsmNode *except) {
     bounds_for(first);
+    if (!g_lc) lc_build(g_bounds_head);
     if (!g_lc) return false;
     for (int i = 0; i < g_lc_n; i++) g_lc[i].inside = 0;
     for (AsmNode *n = first; n; n = n->next) {
@@ -697,6 +704,11 @@ static void scan_region(AsmNode *from, AsmNode *to, const int *weights, RegionIn
         // a volatile slot ('volatile int x;' local, hint ';@v') stays in memory: pushing its
         // count far below any threshold takes it out of every pass's candidates
         const int VOL_PENALTY = 1 << 24;
+        // BUG FIX (non-convergence, -O2 -L lua): the save/reload a promotion put around a cold CALL is
+        // not a use of the slot. Counted as two references inside a loop, promote-loops took the slot
+        // into a fresh register -- whose own cold-CALL save the copy cleanup then folded straight back
+        // into the original pair, so every fixed-point iteration redid and undid the same 8 changes.
+        if (n->hints & NH_PROMOTE_SPILL) w = 0;
         if (n->has_dst && n->dst_op.mode == MODE_INDIRECT && str_case_eq(n->dst_op.reg, "BP") &&
             slot_promotable(n->dst_op.offset)) {
             ri->refs[n->dst_op.offset + SLOT_BIAS] += node_is_volatile(n) ? -VOL_PENALTY : w;
@@ -1000,17 +1012,30 @@ static void frame_info(FrameInfo *fi, AsmNode *anchor, AsmNode *first, AsmNode *
     // BUG FIX (same kind as the frame-cleanup shared-tail one): a label of the function that is
     // reached from elsewhere -- another function jumping into this one's epilogue -- would run the
     // added POP on a stack that never got the PUSH.
+    // (Decided on first use, by fi_can_save(): it needs the label reference table, which most
+    // functions -- no fresh save wanted -- never have to pay for.)
     if (fi->can_save) {
-        AsmNode *last = first;
-        while (last->next && last->next != limit) last = last->next;
-        if (!promote_labels_private(first, last, NULL)) fi->can_save = false;
+        fi->lbl_pending = true;
+        fi->lbl_first = first;
+        fi->lbl_limit = limit;
     }
+}
+
+static bool fi_can_save(const FrameInfo *cfi) {
+    FrameInfo *fi = (FrameInfo *)cfi;
+    if (fi->can_save && fi->lbl_pending) {
+        fi->lbl_pending = false;
+        AsmNode *last = fi->lbl_first;
+        while (last->next && last->next != fi->lbl_limit) last = last->next;
+        if (!promote_labels_private(fi->lbl_first, last, NULL)) fi->can_save = false;
+    }
+    return fi->can_save;
 }
 
 // Make sure the function saves and restores Rr; false if it can't.
 static bool frame_save_reg(FrameInfo *fi, int r, OptType t) {
     if (fi->lua || fi->saved[r]) return true;
-    if (!fi->can_save) return false;
+    if (!fi_can_save(fi)) return false;
     char nm[8], raw[24];
     snprintf(nm, sizeof(nm), "R%d", r);
     snprintf(raw, sizeof(raw), "    PUSH %s", nm);
@@ -1047,7 +1072,7 @@ static int pick_register(AsmNode *at, RegionInfo *ri, const FrameInfo *fi, bool 
             bool is_saved = fi->lua || fi->saved[r];
             if (pass == 0 && !is_saved) continue;
             if (pass == 1) {
-                if (is_saved || !allow_fresh || !fi->can_save || r < 4) continue;
+                if (is_saved || !allow_fresh || !fi_can_save(fi) || r < 4) continue;
             }
             char name[8];
             snprintf(name, sizeof(name), "R%d", r);
@@ -1205,8 +1230,8 @@ static int wrap_cold_calls(AsmNode *from, AsmNode *to, const char *slot, const c
         link_after(n, load);
         srcmarks_inherit(store, n);
         srcmarks_inherit(load, n);
-        store->hints |= NH_COLD_BLK;
-        load->hints  |= NH_COLD_BLK;
+        store->hints |= NH_COLD_BLK | NH_PROMOTE_SPILL;
+        load->hints  |= NH_COLD_BLK | NH_PROMOTE_SPILL;
         added += 2;
         char dbg[160];
         snprintf(dbg, sizeof(dbg), "PROMOTE: %s is saved to %s around this cold CALL (only the slow path pays)", reg_name, slot);
@@ -1590,7 +1615,9 @@ int pass_promote_loop_registers(AsmNode *head) {
     liveness_begin(head);
     if (head) promote_bounds_begin(head);
 
-    // per-function caches: escape check, and the frame (saved registers)
+    // per-function caches: boundaries, escape check, and the frame (saved registers)
+    AsmNode *bounds_entry = NULL, *bounds_last = NULL;
+    bool     bounds_complete = false;
     AsmNode *cached_entry = NULL;
     bool     cached_valid = false;
     bool     cached_escapes = false;
@@ -1610,9 +1637,16 @@ int pass_promote_loop_registers(AsmNode *head) {
         AsmNode *entry = enclosing_entry(curr);
         AsmNode *func_first, *func_last;
         if (entry) {
+            // (per function, not per loop: what this pass adds -- loads, stores, saves -- goes inside the
+            // range and never adds a label or a jump, so neither answer changes while it works)
+            if (entry != bounds_entry) {
+                bounds_entry    = entry;
+                bounds_last     = function_last(entry);
+                bounds_complete = function_complete(entry, bounds_last);
+            }
             func_first = entry->next;
-            func_last  = function_last(entry);
-            if (!function_complete(entry, func_last)) { curr = curr->next; continue; }
+            func_last  = bounds_last;
+            if (!bounds_complete) { curr = curr->next; continue; }
         } else {
             func_first = head->next;
             func_last  = head;

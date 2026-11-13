@@ -14,6 +14,7 @@
 
 int  peephole_pairs           (AsmNode *);
 int  peephole_lua_checks      (AsmNode *);   // -fpeephole-lua-checks (-O1, -L lua only), lua_checks.c
+int  lua_loop_var             (AsmNode *);   // -flua-loop-var (-O2, -L lua only), lua_checks.c
 int  peephole_algebra         (AsmNode *);
 int  peephole_compiler_myopia (AsmNode *);
 int  peephole_forwarding      (AsmNode *);

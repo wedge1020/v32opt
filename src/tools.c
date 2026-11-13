@@ -33,7 +33,8 @@ const char *opt_type_names[]       = {
     [OPT_LOOP_UNROLL_PARTIAL]      = "loop-unroll-partial",
     [OPT_PEEPHOLE_LUA_CHECKS]      = "peephole-lua-checks",
     [OPT_PEEPHOLE_REPEAT_IMM]      = "peephole-repeat-imm",
-    [OPT_LOOP_STRENGTH]            = "loop-strength"
+    [OPT_LOOP_STRENGTH]            = "loop-strength",
+    [OPT_LUA_LOOP_VAR]             = "lua-loop-var"
 };
 
 bool is_lua_mode(void) {
@@ -257,10 +258,14 @@ char *trim(char *str) {
 //   - s2: Second string
 // Returns: true if strings are equal (case-insensitive), false otherwise
 // ===================================================================
+// (ASCII folding inline: the C locale's toupper() is exactly this, and this runs billions of times on
+// a large input -- every modifies_register()/get_reg_index() call goes through it.)
+static inline int fold_upper(unsigned char c) { return (c >= 'a' && c <= 'z') ? c - 32 : c; }
+
 bool str_case_eq(const char *s1, const char *s2) {
     // Compare character by character (case-insensitive)
     while (*s1 && *s2) {
-        if (toupper((unsigned char)*s1) != toupper((unsigned char)*s2)) 
+        if (fold_upper((unsigned char)*s1) != fold_upper((unsigned char)*s2))
             return false;
         s1++; s2++;
     }
@@ -288,7 +293,13 @@ bool name_eq(const char *a, const char *b) {
 }
 
 int get_reg_index(const char *reg_str) {
-    if (!reg_str || strlen(reg_str) == 0) return -1;
+    if (!reg_str || reg_str[0] == '\0') return -1;
+    // Fast rejection: every register name starts with R, S or B (any case). Same answers, without
+    // the four string comparisons below for every label and symbol it is asked about.
+    {
+        int c0 = fold_upper((unsigned char)reg_str[0]);
+        if (c0 != 'R' && c0 != 'S' && c0 != 'B') return -1;
+    }
 
     // Handle special aliases
     if (str_case_eq(reg_str, "SP") || str_case_eq(reg_str, "R15")) return 15;
@@ -400,7 +411,13 @@ Operand parse_operand(const char *str) {
 //   - node_set_raw:  replace the text with a copy of `text`
 //   - node_set_rawf: replace it with printf-style formatted text
 // ===================================================================
+// Bumped by every change to the instruction list that goes through the shared helpers (a new or
+// rewritten line: node_set_raw*, create_node, clone_node; a removed one: remove_node). main.c uses it to
+// skip a pass that found nothing on an unchanged program.
+unsigned long g_program_edits = 0;
+
 void node_set_raw(AsmNode *node, const char *text) {
+    g_program_edits++;
     size_t n = strlen(text);
     char *copy = (char*)malloc(n + 1);
     if (!copy) {
@@ -413,6 +430,7 @@ void node_set_raw(AsmNode *node, const char *text) {
 }
 
 void node_set_rawf(AsmNode *node, const char *fmt, ...) {
+    g_program_edits++;
     va_list ap, ap2;
     va_start(ap, fmt);
     va_copy(ap2, ap);
@@ -509,6 +527,7 @@ bool is_data_directive_node(const AsmNode *node) {
 // place, unlinked from nothing. Returns without freeing.
 void remove_node(AsmNode *node) {
     if (is_directive_node(node)) return;
+    g_program_edits++;
     // Unlink from previous node
     if (node->prev) node->prev->next = node->next;
     // Unlink from next node

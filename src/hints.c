@@ -19,6 +19,7 @@ static FnHints *g_fn      = NULL;
 static int      g_fn_n    = 0;
 static int      g_fn_cap  = 0;
 static AbiMode  g_hdr_abi = ABI_AUTO;      // what the file's header declared
+static bool     g_hdr_seen = false;        // a valid ';@hints <version>' header was read
 static LoopFacts *g_lf    = NULL;
 static int      g_lf_n    = 0;
 static int      g_lf_cap  = 0;
@@ -31,6 +32,27 @@ const LoopFacts *hints_loop_facts(const AsmNode *label) {
     if (!label || !(label->hints & NH_LOOP_FACTS)) return NULL;
     for (int i = 0; i < g_lf_n; i++) if (g_lf[i].label == label) return &g_lf[i];
     return NULL;
+}
+
+void hints_loop_drop_var(const AsmNode *label) {
+    if (!label || !(label->hints & NH_LOOP_FACTS)) return;
+    for (int i = 0; i < g_lf_n; i++) if (g_lf[i].label == label) g_lf[i].has_var = false;
+    // the ';@loop' line: the comments above the label
+    for (AsmNode *c = label->prev; c && c->type == OP_OTHER; c = c->prev) {
+        const char *p = c->raw + strspn(c->raw, " \t");
+        if (strncmp(p, ";@loop", 6) != 0) continue;
+        const char *v = strstr(c->raw, " var=");
+        if (!v) return;
+        const char *e = v + 5;
+        while (*e && *e != ' ' && *e != '\t' && *e != '\r' && *e != '\n') e++;
+        char *nr = malloc(strlen(c->raw) + 1);
+        if (!nr) return;
+        memcpy(nr, c->raw, (size_t)(v - c->raw));
+        strcpy(nr + (v - c->raw), e);
+        node_set_raw(c, nr);
+        free(nr);
+        return;
+    }
 }
 
 bool node_is_volatile(const AsmNode *n) {
@@ -49,6 +71,7 @@ void hints_free(void) {
     free(g_fn);
     g_fn = NULL; g_fn_n = g_fn_cap = 0;
     g_hdr_abi = ABI_AUTO;
+    g_hdr_seen = false;
 }
 
 static int cmp_fn(const void *a, const void *b) {
@@ -157,6 +180,7 @@ static bool parse_loop_fact(LoopFacts *lf, const char *tok) {
     if (tok_int(tok, "counter", &v) && v >= -128 && v <= 127) { lf->has_counter = true; lf->counter = (int)v; return true; }
     if (tok_int(tok, "limit",   &v) && v >= -128 && v <= 127) { lf->has_limit   = true; lf->limit   = (int)v; return true; }
     if (tok_int(tok, "step",    &v) && v >= -128 && v <= 127) { lf->has_step    = true; lf->step    = (int)v; return true; }
+    if (tok_int(tok, "var",     &v) && v >= -128 && v <= 127) { lf->has_var     = true; lf->var     = (int)v; return true; }
     if (tok_int(tok, "stepval", &v)) { lf->has_stepval = true; lf->stepval = v; return true; }
     if (tok_int(tok, "from",    &v)) { lf->has_from    = true; lf->from    = v; return true; }
     if (tok_int(tok, "to",      &v)) { lf->has_to      = true; lf->to      = v; return true; }
@@ -260,6 +284,9 @@ static const char *hint_text(const char *raw) {
     return p ? p + 2 : NULL;
 }
 
+// The input declared itself compiler output with a ';@hints' header (of a version we read).
+bool hints_header_seen(void) { return g_hdr_seen; }
+
 bool hints_parse(AsmNode *head) {
     bool any = false;
     bool in_cold_region = false;                       // between ';@cold {' and ';@cold }'
@@ -288,6 +315,7 @@ bool hints_parse(AsmNode *head) {
                     return false;                              // all or nothing
                 }
                 any = true;
+                g_hdr_seen = true;
                 for (char *tok = strtok_r(NULL, " \t", &save); tok; tok = strtok_r(NULL, " \t", &save)) {
                     if (strncmp(tok, "abi=", 4) == 0) {
                         if      (strcmp(tok + 4, "caller-save") == 0) g_hdr_abi = ABI_CALLER_SAVE;
@@ -363,6 +391,21 @@ bool hints_parse(AsmNode *head) {
             if ((len == 1 && *q == 'v') || (len == 8 && strncmp(q, "volatile", 8) == 0)) {
                 n->hints |= NH_VOLATILE;
                 any = true;
+                // ';@v' belongs on a load or a store (doc/hints.md). On anything else it says nothing
+                // about memory: say so once, here, instead of hints_verify() claiming at the end that
+                // an access was removed. The instruction is still treated as a barrier (harmless).
+                bool mem = (n->has_dst && n->dst_op.mode == MODE_INDIRECT) ||
+                           (n->has_src && n->src_op.mode == MODE_INDIRECT);
+                if (!mem) {
+                    n->hints |= NH_VOL_NOMEM;
+                    static bool warned = false;
+                    if (!warned) {
+                        warned = true;
+                        fprintf(stderr, "v32opt: warning: ';@v' on an instruction that accesses no memory "
+                                        "(input line %d: %s): the hint marks loads and stores only\n",
+                                n->src_line, n->raw);
+                    }
+                }
             }
             q = e;
         }
@@ -412,7 +455,7 @@ int hints_loop_unroll(const AsmNode *l) {
 int hints_verify(AsmNode *head) {
     int bad = 0;
     for (AsmNode *n = head ? head->next : NULL; n; n = n->next) {
-        if (!node_is_volatile(n)) continue;
+        if (!node_is_volatile(n) || (n->hints & NH_VOL_NOMEM)) continue;
         bool mem = (n->has_dst && n->dst_op.mode == MODE_INDIRECT) ||
                    (n->has_src && n->src_op.mode == MODE_INDIRECT);
         if (!mem) {

@@ -279,6 +279,41 @@ static int fc_function(AsmNode *entry, AsmNode *last) {
     return removed;
 }
 
+// promote_labels_private() on the table omit_frame_pointers() already built (loop_labels_build_all:
+// the same counting rules), so the frame cleanup does not build a second one on every iteration.
+static int  *g_fc_inside = NULL;
+static int  *g_fc_touched = NULL;
+static int   g_fc_ntouched = 0;
+
+static void fc_count_inside(LoopLabel *l, const char *tok, void *arg) {
+    (void)tok; (void)arg;
+    int i = (int)(l - g_loop_labels);
+    if (g_fc_inside[i]++ == 0) g_fc_touched[g_fc_ntouched++] = i;
+}
+
+static bool fc_labels_private(AsmNode *first, AsmNode *last) {
+    if (!g_fc_inside) return false;
+    g_fc_ntouched = 0;
+    bool ok = true;
+    // every label token inside the range is counted once per occurrence; the touched list is at most
+    // the number of distinct labels, which the arrays are sized for
+    for (AsmNode *n = first; n; n = n->next) {
+        if (n->type != OP_LABEL && !n->debug_note) loop_label_tokens_all(n, fc_count_inside, NULL);
+        if (n == last) break;
+    }
+    for (AsmNode *n = first; n && ok; n = n->next) {
+        if (n->type == OP_LABEL) {
+            char nm[128];
+            get_label_name(n, nm, sizeof(nm));
+            LoopLabel *l = loop_label_find(nm);
+            if (!l || l->duplicate || g_fc_inside[l - g_loop_labels] != l->refs) ok = false;
+        }
+        if (n == last) break;
+    }
+    for (int k = 0; k < g_fc_ntouched; k++) g_fc_inside[g_fc_touched[k]] = 0;
+    return ok;
+}
+
 static int frame_cleanup(AsmNode *head)
 {
     int removed = 0;
@@ -293,7 +328,7 @@ static int frame_cleanup(AsmNode *head)
         // label is exempt: whatever jumps there -- a CALL, or a tail JMP after the jumper has taken its
         // own frame down -- arrives with the stack a CALL would leave, and the prologue/epilogue pair
         // stays balanced whatever this pass removes from both.
-        if (promote_function_complete(curr) && promote_labels_private(curr->next, last, NULL))
+        if (promote_function_complete(curr) && fc_labels_private(curr->next, last))
             removed += fc_function(curr, last);
         curr = limit;
     }
@@ -324,9 +359,15 @@ static bool return_label_private(const AsmNode *label, AsmNode *push_bp) {
 // ===================================================================
 int omit_frame_pointers(AsmNode *head)
 {
-    int optimizations = head ? frame_cleanup(head) : 0;
-    AsmNode *curr = head ? head->next : NULL;
-    if (head) loop_labels_build_all(head);
+    if (!head) return 0;
+    loop_labels_build_all(head);
+    g_fc_inside  = calloc((size_t)g_loop_labels_n + 1, sizeof(int));
+    g_fc_touched = malloc(((size_t)g_loop_labels_n + 1) * sizeof(int));
+    if (!g_fc_touched) { free(g_fc_inside); g_fc_inside = NULL; }
+    int optimizations = frame_cleanup(head);
+    free(g_fc_inside); free(g_fc_touched);
+    g_fc_inside = NULL; g_fc_touched = NULL;
+    AsmNode *curr = head->next;
 
     while (curr)
     {
@@ -520,6 +561,6 @@ int omit_frame_pointers(AsmNode *head)
         curr = curr->next;
     }
 
-    if (head) loop_labels_free();
+    loop_labels_free();
     return optimizations;
 }

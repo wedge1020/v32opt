@@ -725,3 +725,294 @@ int peephole_lua_checks(AsmNode *head)
     liveness_end();
     return total;
 }
+
+// ============================================================================
+// lua-loop-var (-L lua, -O2) -- the loop variable of a numeric for read from the counter slot.
+//
+// v32lua keeps the visible variable `i` of `for i = a, b, s` in its own frame word and copies the hidden counter
+// into it at the top of every iteration. With ';@loop kind=for counter=c ... var=v' (v32lua doc/HINTS.md: between
+// the start and the end label nothing but that copy writes [BP+v], and the variable is not captured, not assigned,
+// the function not variadic) the copy is not needed: inside the loop [BP+c] holds the same value until the step
+// stores the next one, and the step is the last thing before the back edge.
+//
+//     start: MOV Ra, [BP+c]            start: MOV Ra, [BP+c]
+//            MOV Rk, Ra                       MOV Rk, Ra          (dead now: left to peephole-dead-regs)
+//            <limit> / Fcmp Ra, X             <limit> / Fcmp Ra, X
+//            JT  Ra, end                      JT  Ra, end
+//            MOV [BP+v], Rk          ->       (deleted)
+//            ... MOV Rn, [BP+v] ...           ... MOV Rn, [BP+c] ...
+//            MOV [BP+c], Rs                   MOV [BP+c], Rs
+//            JMP start                        JMP start
+//      end:                             end:
+//
+// The loop is "start .. end" in the text (cold and _slow blocks inside it included). Refused unless:
+//   1. the ';@loop' facts pass add_loop() (counter written once, limit and step never, no jump into the body, the
+//      function's frame unaliased and its range complete) and carry var= (V_FACTS);
+//   2. the header is exactly the shape above, Rk distinct from Ra and untouched before the copy, the copy follows the
+//      exit JT with only comments between (V_HEADER);
+//   3. [BP+c] is written once in start..end, by the MOV right before the back-edge JMP (V_STEP);
+//   4. everything else in start..end that names [BP+v] is a plain load "MOV Rn, [BP+v]" (V_USE);
+//   5. no label of start..end other than start is the target of a jump from outside, its address is not taken, the
+//      function has no computed jump (but v32lua's closure return), no instruction of the loop is volatile (V_ENTRY);
+//   6. at every way out of the loop (the end label, and each jump from inside to a label outside start..end), every
+//      path writes [BP+v] before reading it, up to a RET/HLT (or v32lua's closure return, is_closure_return); a computed jump, a label outside the function, running
+//      off the function or the step budget refuse the loop (V_EXIT). The old code left the last value of `i` there,
+//      the new one the start value: only a later read could tell.
+// Then the ';@var' record of the variable is re-pointed at the counter slot, and 'var=' is taken off the ';@loop'
+// line (the fact no longer holds). One trigger slot per loop.
+// Shape B (counter already promoted to a register) does not match: the pass runs before promote-loops.
+// V32OPT_LOOPVAR_DEBUG=1 prints the reason a loop with 'var=' was refused (stderr).
+// ============================================================================
+enum { V_OK, V_FACTS, V_HEADER, V_STEP, V_USE, V_ENTRY, V_EXIT, V_NREASONS };
+static const char *v_reason[V_NREASONS] = { "rewritten", "facts", "header", "step", "use", "entry", "exit" };
+
+static bool slot_is(const Operand *op, int off) {
+    int o;
+    return is_bp_slot(op, &o) && o == off;
+}
+
+static bool mentions_slot(const AsmNode *x, int off) {
+    return (x->has_dst && slot_is(&x->dst_op, off)) || (x->has_src && slot_is(&x->src_op, off));
+}
+
+// v32lua's return from a closure with upvalues: "MOV SP, BP / POP BP / MOV Rn, [SP] / IADD SP, k / JMP Rn". The frame
+// is gone and Rn is the caller's return address: a RET, for the rules below.
+static bool is_closure_return(const Fn *f, int i) {
+    if (i < 4) return false;
+    const AsmNode *j = f->nodes[i], *a = f->nodes[i - 1], *m = f->nodes[i - 2], *p = f->nodes[i - 3], *s = f->nodes[i - 4];
+    if (!j || !a || !m || !p || !s) return false;
+    if (j->type != OP_JMP || !j->has_dst || j->dst_op.mode != MODE_REG) return false;
+    if (a->type != OP_IADD || !str_case_eq(a->dst_op.reg, "SP") || a->dst_op.mode != MODE_REG ||
+        a->src_op.mode != MODE_IMMEDIATE || a->src_op.is_float) return false;
+    if (m->type != OP_MOV || m->dst_op.mode != MODE_REG || !str_case_eq(m->dst_op.reg, j->dst_op.reg) ||
+        m->src_op.mode != MODE_INDIRECT || !str_case_eq(m->src_op.reg, "SP") || m->src_op.offset != 0) return false;
+    if (p->type != OP_POP || p->dst_op.mode != MODE_REG || !str_case_eq(p->dst_op.reg, "BP")) return false;
+    return s->type == OP_MOV && s->dst_op.mode == MODE_REG && str_case_eq(s->dst_op.reg, "SP") &&
+           s->src_op.mode == MODE_REG && str_case_eq(s->src_op.reg, "BP");
+}
+
+// rule 6: from node index `start`, is [BP+v] written before any read on every path?
+static bool slot_dead_from(const Fn *f, int start, int off) {
+    bool *seen = calloc((size_t)f->n, sizeof(bool));
+    int  *stack = malloc((size_t)(f->n + 2) * 2 * sizeof(int));
+    if (!seen || !stack) { free(seen); free(stack); return false; }
+    int sp = 0, steps = 0;
+    bool ok = true;
+    stack[sp++] = start;
+    while (sp > 0 && ok) {
+        int i = stack[--sp];
+        for (;;) {
+            if (i < 0 || i >= f->n || ++steps > 20000) { ok = false; break; }
+            if (seen[i]) break;
+            seen[i] = true;
+            const AsmNode *x = f->nodes[i];
+            if (mentions_slot(x, off)) {
+                if (x->type == OP_MOV && x->has_dst && slot_is(&x->dst_op, off) && !(x->has_src && slot_is(&x->src_op, off)))
+                    break;                                          // written: this path is done
+                ok = false; break;                                  // read (or anything else)
+            }
+            if (x->type == OP_RET || x->type == OP_HLT || is_closure_return(f, i)) break;
+            if (x->type == OP_JMP || x->type == OP_JT || x->type == OP_JF) {
+                const Operand *t = (x->type == OP_JMP) ? &x->dst_op : &x->src_op;
+                if ((x->type == OP_JMP ? !x->has_dst : !x->has_src) || t->mode != MODE_IMMEDIATE) { ok = false; break; }
+                int ti = find_label_idx(f, t->raw);
+                if (ti < 0) { ok = false; break; }
+                if (x->type == OP_JMP) { i = ti; continue; }
+                if (sp >= 2 * f->n) { ok = false; break; }
+                stack[sp++] = ti;
+            }
+            i++;
+        }
+    }
+    free(seen); free(stack);
+    return ok;
+}
+
+static int loop_var_one(Fn *f, const Loop *l, AsmNode *entry) {
+    const LoopFacts *lf = l->lf;
+    int si = l->si, bi = l->bi, c = l->ctr, v = lf->var;
+    if (v == c || (lf->has_limit && v == lf->limit) || (lf->has_step && v == lf->step)) return V_FACTS;
+
+    // 2. the header
+    int i = si + 1;
+    if (i >= f->n) return V_HEADER;
+    const AsmNode *ld = f->nodes[i];
+    if (ld->type != OP_MOV || !ld->has_dst || !ld->has_src || !slot_is(&ld->src_op, c)) return V_HEADER;
+    int ra = reg_of(&ld->dst_op), rk = -1;
+    if (ra < 0) return V_HEADER;
+    i++;
+    if (i < f->n && f->nodes[i]->type == OP_MOV && f->nodes[i]->has_src && reg_of(&f->nodes[i]->src_op) == ra &&
+        reg_of(&f->nodes[i]->dst_op) >= 0 && reg_of(&f->nodes[i]->dst_op) != ra) {
+        rk = reg_of(&f->nodes[i]->dst_op);
+        i++;
+    }
+    if (rk < 0) return V_HEADER;                        // the compare destroys Ra: the copy needs Rk
+    int nlim = 0;
+    while (i < f->n && f->nodes[i]->type == OP_MOV && nlim < 2) {      // the limit: MOV Rx, <anything but a store>
+        const AsmNode *x = f->nodes[i];
+        int rx = reg_of(&x->dst_op);
+        if (rx < 0 || rx == ra || rx == rk) return V_HEADER;
+        if (x->has_src && (slot_is(&x->src_op, v))) return V_HEADER;
+        nlim++; i++;
+    }
+    if (i >= f->n) return V_HEADER;
+    const AsmNode *cmp = f->nodes[i];
+    if (!(cmp->type == OP_FGT || cmp->type == OP_FLT || cmp->type == OP_FGE || cmp->type == OP_FLE) ||
+        reg_of(&cmp->dst_op) != ra || (cmp->has_src && (reg_of(&cmp->src_op) == rk || slot_is(&cmp->src_op, v))))
+        return V_HEADER;
+    i++;
+    if (i >= f->n) return V_HEADER;
+    const AsmNode *jt = f->nodes[i];
+    if (jt->type != OP_JT || reg_of(&jt->dst_op) != ra || !jt->has_src || jt->src_op.mode != MODE_IMMEDIATE) return V_HEADER;
+    int e = find_label_idx(f, jt->src_op.raw);
+    if (e <= bi) return V_HEADER;                       // the end label lies after the back edge
+    i++;
+    if (i >= f->n) return V_HEADER;
+    AsmNode *copy = f->nodes[i];
+    if (copy->type != OP_MOV || !copy->has_dst || !slot_is(&copy->dst_op, v) || !copy->has_src || reg_of(&copy->src_op) != rk)
+        return V_HEADER;
+    int ci = i;
+
+    // 3. the counter: written once in start..end, right before the back edge
+    int first = -1;
+    if (count_writes(f, si, e - 1, c, true, &first) != 1 || first != bi - 1) return V_STEP;
+
+    // 4. the other mentions of [BP+v]
+    for (int k = si; k < e; k++) {
+        const AsmNode *x = f->nodes[k];
+        if (k == ci || !mentions_slot(x, v)) continue;
+        if (x->type != OP_MOV || !x->has_dst || x->dst_op.mode != MODE_REG || !slot_is(&x->src_op, v)) return V_USE;
+    }
+
+    // 5. entries
+    for (int k = 0; k < f->n; k++) {
+        const AsmNode *x = f->nodes[k];
+        if (x->type == OP_JMP && x->has_dst && x->dst_op.mode != MODE_IMMEDIATE && !is_closure_return(f, k)) return V_ENTRY;
+        if ((x->type == OP_JT || x->type == OP_JF) && x->has_src && x->src_op.mode != MODE_IMMEDIATE) return V_ENTRY;
+        if (k >= si && k < e) {
+            if (node_is_volatile(x)) return V_ENTRY;
+            continue;
+        }
+        if (x->type == OP_JMP || x->type == OP_JT || x->type == OP_JF) {
+            int t = find_label_idx(f, branch_label(x));
+            if (t >= si && t < e) return V_ENTRY;
+        } else if (x->type != OP_LABEL && x->type != OP_CALL && x->has_src && x->src_op.mode == MODE_IMMEDIATE) {
+            int t = find_label_idx(f, x->src_op.raw);
+            if (t >= si && t < e) return V_ENTRY;
+        }
+    }
+    for (int k = si; k < e; k++) {                       // an address taken inside the loop
+        const AsmNode *x = f->nodes[k];
+        if (x->type == OP_LABEL || x->type == OP_CALL || x->type == OP_JMP || x->type == OP_JT || x->type == OP_JF) continue;
+        if (x->has_src && x->src_op.mode == MODE_IMMEDIATE) {
+            int t = find_label_idx(f, x->src_op.raw);
+            if (t >= si && t < e) return V_ENTRY;
+        }
+    }
+
+    // 6. the ways out
+    if (!slot_dead_from(f, e, v)) return V_EXIT;
+    for (int k = si; k < e; k++) {
+        const AsmNode *x = f->nodes[k];
+        if (x->type != OP_JMP && x->type != OP_JT && x->type != OP_JF) continue;
+        if (is_closure_return(f, k)) continue;
+        int t = find_label_idx(f, branch_label(x));
+        if (t < 0) return V_EXIT;
+        if (t >= si && t <= e) continue;
+        if (!slot_dead_from(f, t, v)) return V_EXIT;
+    }
+
+    if (!trigger_allowed()) return -1;
+
+    // rewrite: the loads, the copy, the records
+    char addr[32];
+    snprintf(addr, sizeof(addr), "[BP%s%d]", c < 0 ? "-" : "+", c < 0 ? -c : c);
+    for (int k = si; k < e; k++) {
+        AsmNode *x = f->nodes[k];
+        if (k == ci || !x->has_src || !slot_is(&x->src_op, v)) continue;
+        insert_debug_comment(x->prev, OPT_LUA_LOOP_VAR, x->raw);
+        x->src_op = parse_operand(addr);
+        node_set_rawf(x, "    MOV %s, %s", x->dst_op.raw, addr);
+    }
+    insert_debug_comment(copy->prev, OPT_LUA_LOOP_VAR, copy->raw);
+    remove_node(copy);
+    f->nodes[ci] = NULL;
+
+    // the variable's ';@var' record: the nearest one above the loop at BP<v> now lives in the counter slot
+    char cslot[24];
+    snprintf(cslot, sizeof(cslot), "BP%+d", c);
+    for (AsmNode *p = f->nodes[si]->prev; p && p != entry; p = p->prev) {
+        if (p->type != OP_OTHER) continue;
+        if (varloc_has(p, p->next, v)) { varloc_rewrite(p, p->next, v, cslot); break; }
+    }
+    hints_loop_drop_var(f->nodes[si]);
+    return V_OK;
+}
+
+static int loop_var_function(AsmNode *entry) {
+    AsmNode *last = promote_function_last(entry);
+    Fn f;
+    memset(&f, 0, sizeof(f));
+    int n = 0;
+    bool any_var = false;
+    for (AsmNode *x = entry->next; x; x = x->next) {
+        if (x->type != OP_OTHER) {
+            n++;
+            if (x->type == OP_LABEL && (x->hints & NH_LOOP_FACTS)) {
+                const LoopFacts *lf = hints_loop_facts(x);
+                if (lf && lf->has_var) any_var = true;
+            }
+        }
+        if (x == last) break;
+    }
+    if (!any_var || n < 8 || n > MAX_FN_NODES) return 0;
+    f.nodes = malloc((size_t)n * sizeof(AsmNode *));
+    if (!f.nodes) return 0;
+    f.n = 0;
+    for (AsmNode *x = entry->next; x; x = x->next) {
+        if (x->type != OP_OTHER) f.nodes[f.n++] = x;
+        if (x == last) break;
+    }
+    bool dbg = getenv("V32OPT_LOOPVAR_DEBUG") != NULL;
+    f.frame_ok = promote_function_complete(entry) && promote_frame_unaliased(entry->next);
+
+    int done = 0;
+    // one loop at a time; the node array is rebuilt after each rewrite (one node is gone)
+    for (int k = 0; k < f.n; k++) {
+        AsmNode *lab = f.nodes[k];
+        if (!lab || lab->type != OP_LABEL || !(lab->hints & NH_LOOP_FACTS)) continue;
+        const LoopFacts *lf = hints_loop_facts(lab);
+        if (!lf || !lf->has_var) continue;
+        int r;
+        f.nloops = 0;
+        const char *why = "";
+        if (!f.frame_ok) { r = V_FACTS; why = "(frame)"; }
+        else if (!add_loop(&f, k)) { r = V_FACTS; why = "(loop)"; }
+        else r = loop_var_one(&f, &f.loops[0], entry);
+        if (dbg && r >= 0) {
+            char nm[128];
+            get_label_name(lab, nm, sizeof(nm));
+            fprintf(stderr, "lua-loop-var: %s %s%s\n", nm, v_reason[r], why);
+        }
+        if (r == V_OK) {
+            done++;
+            int m = 0;
+            for (int q = 0; q < f.n; q++) if (f.nodes[q]) f.nodes[m++] = f.nodes[q];
+            f.n = m;
+        }
+    }
+    free(f.nodes);
+    return done;
+}
+
+int lua_loop_var(AsmNode *head)
+{
+    if (!is_lua_mode() || !head) return 0;
+    int total = 0;
+    promote_bounds_begin(head);
+    for (AsmNode *n = head->next; n; n = n->next) {
+        if (!promote_function_entry(n)) continue;
+        total += loop_var_function(n);
+    }
+    return total;
+}

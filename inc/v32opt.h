@@ -73,7 +73,8 @@ typedef enum
     OPT_LOOP_UNROLL_PARTIAL,
     OPT_PEEPHOLE_LUA_CHECKS,
     OPT_PEEPHOLE_REPEAT_IMM,
-    OPT_LOOP_STRENGTH
+    OPT_LOOP_STRENGTH,
+    OPT_LUA_LOOP_VAR
 } OptType;
 
 // ---------------------------------------------------------------------------
@@ -143,6 +144,7 @@ typedef struct {
     bool     opt_loop_index;
     bool     opt_loop_unroll_partial;
     bool     opt_loop_strength;         // pointer strength reduction (loop_strength.c)
+    bool     opt_lua_loop_var;          // -L lua: loop variable read from the counter slot (lua_checks.c)
     bool     opt_peephole_lua_checks;   // -L lua: drop type checks the code proves (lua_checks.c)
     bool     opt_peephole_repeat_imm;   // MOV Rd, imm when Rd already holds imm (repeat_imm.c)
     bool     opt_resolve_defines;   // let passes see numeric %define values

@@ -1,7 +1,9 @@
 # Lua loops: what to match, and what not to
 
 Status: decision and pass specifications, from the loop catalog of real v32lua
-output (353 loops in 74 programs; 648 in the extended set of 232).
+output (353 loops in 74 programs; 648 in the extended set of 232). L1 and L2 are
+implemented (`peephole-copies`, `peephole-jumps`), L3 as `lua-loop-var`
+(`src/peephole/lua_checks.c`; v32lua writes `var=`).
 
 ## What the data says
 

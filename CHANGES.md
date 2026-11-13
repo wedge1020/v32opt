@@ -1,6 +1,6 @@
 # v32opt changes
 
-## 20261109-dev
+## 20261112-dev
 
 * Post-unroll cleanup: `omit-frame-pointers` now first shrinks the frame of a function whose locals are in registers
   (or gone after full unrolling): a `PUSH Rn` / `POP Rn` save that nothing uses any more is removed (not when `Rn`

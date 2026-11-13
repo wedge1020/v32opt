@@ -35,6 +35,7 @@ static void set_opt_level(OptConfig *cfg, int level) {
     cfg -> opt_loop_strength             = false;
     cfg -> opt_loop_unroll_partial       = false;
     cfg -> opt_peephole_lua_checks       = false;
+    cfg -> opt_lua_loop_var              = false;
     cfg -> opt_peephole_repeat_imm       = false;
 
     if (level                           == 0) return; // -O0: all off
@@ -71,6 +72,7 @@ static void set_opt_level(OptConfig *cfg, int level) {
     cfg -> opt_promote_regs              = true;
     cfg -> opt_promote_leaf              = true;
     cfg -> opt_promote_loops             = true;
+    cfg -> opt_lua_loop_var              = true;    // (-L lua only)
 
     if (level                           == 2) return;
 
@@ -102,6 +104,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
         const char *name = arg + 3;
         if (strcmp(name, "peephole-pairs") == 0) cfg->opt_peephole_pairs = false;
         else if (strcmp(name, "peephole-lua-checks") == 0) cfg->opt_peephole_lua_checks = false;
+        else if (strcmp(name, "lua-loop-var") == 0) cfg->opt_lua_loop_var = false;
         else if (strcmp(name, "peephole-algebra") == 0) cfg->opt_peephole_algebra = false;
         else if (strcmp(name, "peephole-compiler-myopia") == 0) cfg->opt_peephole_compiler_myopia = false;
         else if (strcmp(name, "peephole-forwarding") == 0) cfg->opt_peephole_forwarding = false;
@@ -158,6 +161,7 @@ static bool handle_f_arg(const char *arg, OptConfig *cfg, int *max_passes) {
     // Enable
     if (strcmp(arg, "peephole-pairs") == 0) cfg->opt_peephole_pairs = true;
     else if (strcmp(arg, "peephole-lua-checks") == 0) cfg->opt_peephole_lua_checks = true;
+    else if (strcmp(arg, "lua-loop-var") == 0) cfg->opt_lua_loop_var = true;
     else if (strcmp(arg, "peephole-algebra") == 0) cfg->opt_peephole_algebra = true;
     else if (strcmp(arg, "peephole-compiler-myopia") == 0) cfg->opt_peephole_compiler_myopia = true;
     else if (strcmp(arg, "peephole-forwarding") == 0) cfg->opt_peephole_forwarding = true;
@@ -232,7 +236,7 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "  -O1                      Local peephole passes\n");
     fprintf(stdout, "  -O2                      -O1 + cse, dce, constant-folding,\n");
     fprintf(stdout, "                           omit-frame-pointers, promote-regs,\n");
-    fprintf(stdout, "                           promote-leaf, promote-loops\n");
+    fprintf(stdout, "                           promote-leaf, promote-loops, lua-loop-var (-L lua)\n");
     fprintf(stdout, "  -O3                      -O2 + inline, loop-invert, loop-unroll, loop-index,\n                           loop-strength, loop-unroll-partial, peephole-repeat-imm (aggressive; could break)\n");
     fprintf(stdout, "  -Os                      -O3 without the loop passes\n\n");
     fprintf(stdout, "Individual Optimization Toggles:\n");
@@ -246,7 +250,7 @@ void print_usage(const char *prog_name)
     fprintf(stdout, "  inline, cse, dce, constant-folding, promote-regs, promote-leaf,\n");
     fprintf(stdout, "  promote-loops, omit-frame-pointers, peephole-compiler-myopia,\n");
     fprintf(stdout, "  peephole-zero-test, peephole-dead-regs, peephole-copies,\n  peephole-repeat-imm,\n");
-    fprintf(stdout, "  loop-invert, loop-unroll, loop-index, loop-strength,\n  loop-unroll-partial\n\n");
+    fprintf(stdout, "  loop-invert, loop-unroll, loop-index, loop-strength,\n  loop-unroll-partial, lua-loop-var (-L lua)\n\n");
     fprintf(stdout, "Loop tuning (-f<name>=N):\n");
     fprintf(stdout, "  loop-unroll-max-trips=N          Most iterations unrolled completely (16)\n");
     fprintf(stdout, "  loop-unroll-max-size=N           Most instructions in a fully unrolled loop (96)\n");

@@ -31,6 +31,10 @@
 #define  NH_COLD_BLK       0x40u    //   is a rarely taken block (a hint about frequency, never about correctness)
 // On a loop's start label: ';@loop kind=for ...' gave facts about the loop (hints_loop_facts)
 #define  NH_LOOP_FACTS     0x80u
+// Made by the promote passes: the store / reload of a promoted register around a cold CALL (not a use of the slot)
+#define  NH_PROMOTE_SPILL  0x100u
+// ';@v' on an instruction with no memory operand (misplaced: doc/hints.md puts it on a load or store only)
+#define  NH_VOL_NOMEM      0x200u
 // 'unroll=N' / 'unroll=full': the count in the high half of AsmNode.hints (0: no request)
 #define  NH_UNROLL_SHIFT   16
 #define  NH_UNROLL_MASK    0xFFFF0000u
@@ -71,13 +75,17 @@ typedef struct {
     int   counter, limit, step;
     bool  has_stepval, has_from, has_to;
     long  stepval, from, to;
+    bool  has_var;                              // 'var=N': the frame word of the visible loop variable (v32lua doc/HINTS.md)
+    int   var;
 } LoopFacts;
 
 const LoopFacts *hints_loop_facts (const AsmNode *loop_label);   // NULL: none (or the label was cloned)
+void           hints_loop_drop_var (const AsmNode *loop_label);  // the 'var=' fact no longer holds: forget it, and take it off the ';@loop' line
 bool           node_in_cold_block (const AsmNode *);             // the node lies in a ';@cold' block
 const FnHints *hints_fn_of_call   (const AsmNode *call);         // the ';@fn' of a direct CALL's target, or NULL
 
 bool           hints_parse     (AsmNode *head);        // scan a freshly parsed program; true if any hint was seen
+bool           hints_header_seen (void);               // a valid ';@hints N' header line was read
 void           hints_free      (void);
 bool           abi_caller_save (void);                 // the calling convention in force for this run
 const FnHints *hints_fn        (const char *label);    // NULL: no ';@fn' line for it

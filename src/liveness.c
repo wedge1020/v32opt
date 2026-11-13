@@ -57,11 +57,21 @@
 // unknown place and reach a RET: from the program start (region 0), through
 // an escaped entry, or through entries none of which is the target of a
 // direct CALL. Its callers are not all known, so at its RETs every register
-// R0..R10 is live; also at a RET with lv_fn 0. Compiler-ABI exemption: with
-// LV_TRUST_COMPILER_ABI set, an open class whose every unknown way in is a
+// R0..R10 is live; also at a RET with lv_fn 0. Compiler-ABI exemption
+// (class_trusts_abi): an open class whose every unknown way in is a
 // "__function_" entry keeps the ABI (plus outputs) instead, since compiled
-// functions follow the compiler's convention for indirect callers too
-// (class_trusts_abi). It is off: measured, it buys under 0.05%.
+// functions follow the compiler's convention for indirect callers too -- but
+// only where a compiler vouches for that convention: the input is v32lua
+// output (-L lua) or carries a ';@hints' header. Hand-written assembly
+// without a header keeps the strict rule (a hand-written function reached
+// through "CALL Rn" may well return a second value in R1). It matters for
+// v32lua, where every function is reached through __builtin_exec / "JMP R0":
+// all strict, no register is ever free for the promote passes. Measured on
+// primes (corpus/primes, -O2 -L lua): promote-loops promotions 76 before the
+// liveness fix (1e7f1a3), 0 with the strict rule, 70 (plus 72 promote-regs)
+// with this one; 40 genlua seeds at -O2: 33,247,006 / 33,552,248 /
+// 33,338,487 cycles. (With a header whose promise is wrong for a function --
+// a second result in R1 to an indirect caller -- that write can be deleted.)
 //
 // OUTPUTS. Which registers a function returns is a convention, and not every
 // callee follows the compiler's: v32cc's unsigned-divide helper returns the
@@ -102,10 +112,10 @@
 #define LV_MAX_STEPS 20000
 #define LV_MAX_DEPTH 8
 
-// Compiler-ABI exemption for open classes (see OPEN CLASSES above):
-// 1 = trust "__function_" entries to follow the ABI, 0 = all-live.
+// Compiler-ABI exemption for open classes (see OPEN CLASSES above). 1 (default): the run-time rule in
+// class_trusts_abi(); 0 (build with -DLV_TRUST_COMPILER_ABI=0, for testing): never, every open RET all-live.
 #ifndef LV_TRUST_COMPILER_ABI
-#define LV_TRUST_COMPILER_ABI 0
+#define LV_TRUST_COMPILER_ABI 1
 #endif
 
 #define LV_REACH_ALL 0x7fffffff  // code that may read any word of its caller's stack
@@ -139,7 +149,32 @@ static int cmp_label(const void *a, const void *b) {
     return strcmp(((const LabelEntry *)a)->name, ((const LabelEntry *)b)->name);
 }
 
-void liveness_end(void) {
+// ---------------------------------------------------------------------------
+// Session reuse. liveness_begin() costs several walks of the whole program; the fixed-point loop
+// calls it from six passes per iteration, and on a large input most of them see exactly the
+// program the previous one analysed (it found nothing to change). The begin-time tables are a
+// function of the program alone, so when nothing was edited since the last begin
+// (g_program_edits, counted by node_set_raw*/create_node/clone_node/remove_node) the tables are
+// kept, and the per-query state -- the callee cache and the visit stamps -- is put back exactly as
+// begin left it. The answers are the ones a fresh session gives. The counter is only the fast first
+// test: a reuse also needs the program's fingerprint (lv_fp: every node's type, hints, operand modes
+// and texts) to equal the one taken at the build, so an edit some future pass makes without the
+// counted helpers still gets a rebuild (and a diagnostic under -v / -d). Costs about 7% of the run
+// time on a 160K-line input, still far less than the rebuilds it saves. V32OPT_LV_NOREUSE=1 turns
+// reuse off (a test aid).
+// ---------------------------------------------------------------------------
+static bool          g_active       = false;  // between liveness_begin() and liveness_end()
+static bool          g_kept         = false;  // the tables below are still those of g_kept_head
+static AsmNode      *g_kept_head    = NULL;
+static unsigned long g_kept_edits   = 0;
+static signed char (*g_callee0)[11] = NULL;   // g_callee as begin left it
+static int          *g_stamp0       = NULL;
+static int           g_stamp_id0    = 0;
+
+static void liveness_free(void) {
+    free(g_callee0); free(g_stamp0);
+    g_callee0 = NULL; g_stamp0 = NULL;
+    g_kept = false;
     free(g_labels); free(g_stamp); free(g_callee); free(g_extra); free(g_is_entry); free(g_lbl_cls);
     free(g_open); free(g_trust); free(g_reach); free(g_in); free(g_in_ok);
     g_labels = NULL; g_stamp = NULL; g_callee = NULL; g_extra = NULL; g_is_entry = NULL; g_lbl_cls = NULL;
@@ -147,13 +182,71 @@ void liveness_end(void) {
     g_label_count = 0; g_ncls = 0;
 }
 
+void liveness_end(void) {
+    g_active = false;                       // tables kept for a possible reuse (see above)
+}
+
 static bool find_entries(AsmNode *head);
 static bool build_classes(AsmNode *head);
 static void compute_outputs(AsmNode *head);
 static void compute_inputs(void);
 
+static void liveness_build(AsmNode *head);
+static unsigned long long lv_fp(AsmNode *head) {
+    unsigned long long h = 1469598103934665603ULL;
+    for (AsmNode *n = head; n; n = n->next) {
+        h = (h ^ (unsigned)n->type) * 1099511628211ULL;
+        h = (h ^ (unsigned)n->hints) * 1099511628211ULL;
+        for (const char *c = n->raw; c && *c; c++) h = (h ^ (unsigned char)*c) * 1099511628211ULL;
+        for (const char *c = n->dst_op.raw; *c; c++) h = (h ^ (unsigned char)*c) * 1099511628211ULL;
+        for (const char *c = n->src_op.raw; *c; c++) h = (h ^ (unsigned char)*c) * 1099511628211ULL;
+        h = (h ^ (unsigned)n->dst_op.mode ^ ((unsigned)n->src_op.mode << 4) ^ ((unsigned)n->has_dst << 8) ^ ((unsigned)n->has_src << 9)) * 1099511628211ULL;
+    }
+    return h;
+}
+static unsigned long long g_kept_fp = 0;
+
 void liveness_begin(AsmNode *head) {
-    liveness_end();
+    static int noreuse = -1;
+    if (noreuse < 0) noreuse = getenv("V32OPT_LV_NOREUSE") != NULL;
+    bool reuse = !noreuse && g_kept && head == g_kept_head && g_program_edits == g_kept_edits;
+    if (reuse && lv_fp(head) != g_kept_fp) {
+        // the program changed without going through the counted helpers: never trust the tables
+        if (config.verbose || config.debug)
+            fprintf(stderr, "v32opt: liveness: an edit the edit count missed was detected (tables rebuilt) -- please report this\n");
+        reuse = false;
+    }
+    if (reuse) {
+        if (g_labels) {
+            memcpy(g_callee, g_callee0, (size_t)g_label_count * sizeof(*g_callee));
+            memcpy(g_stamp, g_stamp0, (size_t)g_label_count * sizeof(int));
+        }
+        g_stamp_id = g_stamp_id0;
+        g_steps = 0;
+        g_active = true;
+        return;
+    }
+    liveness_free();
+    g_active = true;                        // compute_outputs() asks reg_dead_from() while building
+    liveness_build(head);
+    g_kept = true;
+    g_kept_head = head;
+    g_kept_edits = g_program_edits;
+    g_kept_fp = lv_fp(head);
+    if (g_labels && g_label_count > 0) {
+        g_callee0 = malloc((size_t)g_label_count * sizeof(*g_callee));
+        g_stamp0  = malloc((size_t)g_label_count * sizeof(int));
+        if (!g_callee0 || !g_stamp0) { free(g_callee0); free(g_stamp0); g_callee0 = NULL; g_stamp0 = NULL; g_kept = false; }
+        else {
+            memcpy(g_callee0, g_callee, (size_t)g_label_count * sizeof(*g_callee));
+            memcpy(g_stamp0, g_stamp, (size_t)g_label_count * sizeof(int));
+        }
+    }
+    g_stamp_id0 = g_stamp_id;
+    g_active = true;
+}
+
+static void liveness_build(AsmNode *head) {
     int cap = 0;
     for (AsmNode *n = head; n; n = n->next)
         if (n->type == OP_LABEL) cap++;
@@ -161,7 +254,7 @@ void liveness_begin(AsmNode *head) {
     g_labels = calloc((size_t)cap, sizeof(LabelEntry));
     g_stamp  = calloc((size_t)cap, sizeof(int));
     g_callee = malloc((size_t)cap * sizeof(*g_callee));
-    if (!g_labels || !g_stamp || !g_callee) { liveness_end(); return; }
+    if (!g_labels || !g_stamp || !g_callee) { liveness_free(); return; }
     memset(g_callee, -1, (size_t)cap * sizeof(*g_callee));
     for (AsmNode *n = head; n; n = n->next) {
         if (n->type != OP_LABEL) continue;
@@ -178,7 +271,7 @@ void liveness_begin(AsmNode *head) {
     g_stamp_id = 0;
 
     // Any failure below drops the whole session (g_labels NULL): every query then answers LIVE.
-    if (!find_entries(head) || !build_classes(head)) { liveness_end(); return; }
+    if (!find_entries(head) || !build_classes(head)) { liveness_free(); return; }
     compute_outputs(head);
     compute_inputs();
 }
@@ -221,7 +314,10 @@ static bool is_function_label_name(const char *nm) {
 // The compiler-ABI exemption: may an open class keep "ABI + outputs" at its RETs instead of all-live?
 static bool class_trusts_abi(int cls) {
 #if LV_TRUST_COMPILER_ABI
-    return g_trust && g_trust[cls];
+    if (!g_trust || !g_trust[cls]) return false;
+    // Only where a compiler vouches for the convention: v32lua output (-L lua), or any input with a
+    // ';@hints' header. Hand-written assembly without one keeps the strict all-live rule.
+    return config.lang_mode == LANG_LUA || hints_header_seen();
 #else
     (void)cls;
     return false;
@@ -415,7 +511,7 @@ static int flow(AsmNode *node, const char *reg, int ridx, int depth, int stamp) 
 }
 
 bool reg_dead_from(AsmNode *start, const char *reg) {
-    if (!g_labels || !start || !reg) return false;
+    if (!g_active || !g_labels || !start || !reg) return false;
     int ridx = get_reg_index(reg);
     if (ridx < 0 || ridx > 10) return false;
     if (toupper((unsigned char)reg[0]) != 'R') return false;   // no aliases

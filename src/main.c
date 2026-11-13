@@ -87,7 +87,8 @@ OptConfig config = {
     .opt_loop_unroll_partial      = false,
     .opt_peephole_lua_checks      = false,
     .opt_peephole_repeat_imm      = false,
-    .opt_loop_strength            = false
+    .opt_loop_strength            = false,
+    .opt_lua_loop_var             = false
 };
 
 // Helper macro for aligned optimization output
@@ -161,7 +162,8 @@ int main(int argc, char **argv) {
             [OPT_LOOP_INDEX]               = config.opt_loop_index,
             [OPT_LOOP_UNROLL_PARTIAL]      = config.opt_loop_unroll_partial,
             [OPT_PEEPHOLE_REPEAT_IMM]      = config.opt_peephole_repeat_imm,
-            [OPT_LOOP_STRENGTH]            = config.opt_loop_strength
+            [OPT_LOOP_STRENGTH]            = config.opt_loop_strength,
+            [OPT_LUA_LOOP_VAR]             = config.opt_lua_loop_var
         };
 
         for (OptType t = 0; t < MAX_OPTIMIZATION_ALGORITHMS; t++) {
@@ -241,6 +243,11 @@ int main(int argc, char **argv) {
         //     slots, which promotion turns into registers.
         if (config.opt_peephole_lua_checks) {
             opts[OPT_PEEPHOLE_LUA_CHECKS] = peephole_lua_checks(program_ast);
+        }
+        // 1c. Lua loop variable read from the counter slot (';@loop ... var='). Also before promotion: it matches the
+        //     slot form of the loop header, which promote-loops rewrites into registers.
+        if (config.opt_lua_loop_var) {
+            opts[OPT_LUA_LOOP_VAR] = lua_loop_var(program_ast);
         }
 
         // 2. Memory-to-Register Promotion

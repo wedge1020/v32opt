@@ -123,13 +123,18 @@ Facts (v32lua's numeric `for`; all optional, all promises of the compiler):
 | `counter=N` `limit=N` `step=N` | BP-relative frame words (`-9` is `[BP-9]`): the counter is written only by the loop's increment; limit and step only before the loop; none has its address taken |
 | `stepval=K` | the step is the integer constant K |
 | `from=A` `to=B` | the start and the limit are the integer constants A and B |
+| `var=N` | the frame word of the visible loop variable: between the start and the end label nothing but the copy of the counter at the top of each iteration writes it; the variable is not captured, not assigned in the body, the function is not variadic. Nothing is promised after the end label (the word is reused) |
 
 `v32opt` still checks what it cheaply can before it believes them (the counter written once between the
 start label and the back edge, limit and step never, no jump into the body from outside, no escaping frame
 address in the function); a loop that visibly breaks them is treated as if it had no facts. With `-L lua`
 (`peephole-lua-checks`, `-O1`): loads of `limit` / `step` become immediates when `to=` / `stepval=` are given
 (and their initializing stores go when nothing else reads them), and the counter is known to be a number
-(and, with `from>=1`, `stepval>=1`, a whole number >= 1 for the table-index checks).
+(and, with `from>=1`, `stepval>=1`, a whole number >= 1 for the table-index checks). With `var=` (`lua-loop-var`,
+`-O2`): the loop's reads of the variable's word read the counter instead and the per-iteration copy goes; the
+pass checks the header shape, the step's place, every use of the word, the ways into the loop and that the word
+is written before it is read on every way out (`src/peephole/lua_checks.c`), then drops `var=` from the line
+and points the variable's `;@var` record at the counter.
 
 A measured profile (`--profile`) that covers the loop outranks `hot` and `cold` on the
 loop and on its function; where the profile has nothing to say, the hints decide. An

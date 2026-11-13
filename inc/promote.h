@@ -35,6 +35,8 @@ typedef struct {
     bool     can_save;              // a push/pop can be added (every exit is a recognised epilogue, no [SP+k] reaches it)
     int      n_epi;
     AsmNode *epi_first[MAX_EPILOGUES];   // our pops go right before this node, per epilogue
+    bool     lbl_pending;           // can_save still waits for the label check (fi_can_save)
+    AsmNode *lbl_first, *lbl_limit;
 } FrameInfo;
 
 bool promote_loop_frame         (FrameInfo *fi, AsmNode *n);          // frame_info() of n's function; false: no register usable

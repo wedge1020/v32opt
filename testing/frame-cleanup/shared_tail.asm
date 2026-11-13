@@ -2,7 +2,7 @@
 ; function b (a shared tail). Both have "push R4"; a really uses R4, b does not, so frame
 ; cleanup removes b's PUSH R4 / POP R4 and the jump from a then leaves a's R4 unrestored:
 ; RAM[201] is 111 unoptimized and 5 with -fomit-frame-pointers (and so -O2, -O3).
-; (-O2/-O3 also fail to assemble: dce drops function b, which nothing calls.)
+; (dce used to drop function b as well, which nothing calls: fixed.)
 ; Check:  cd testing/differential && STRICT=1 python3 run.py --flags "-fomit-frame-pointers" ../frame-cleanup/shared_tail.asm
 ; program start section
   call __function_main

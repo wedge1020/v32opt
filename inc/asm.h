@@ -138,6 +138,7 @@ typedef struct AsmNode {
 Operand  parse_operand (const char *);
 AsmNode *create_node   (const char *, OpType, const char *, const char *, const char *);
 void     remove_node   (AsmNode    *);
+extern unsigned long g_program_edits;   // count of edits through node_set_raw*/create_node/clone_node/remove_node
 void     node_set_raw  (AsmNode *, const char *);
 void     node_set_rawf (AsmNode *, const char *, ...)
          __attribute__((format(printf, 2, 3)));

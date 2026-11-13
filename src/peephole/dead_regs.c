@@ -1,4 +1,5 @@
 #include "v32opt.h"
+#include <stdint.h>
 
 // ===================================================================
 // PEEPHOLE: DEAD REGISTER WRITES  (-fpeephole-dead-regs)
@@ -254,9 +255,29 @@ static int propagate_copy(AsmNode *copy) {
 // when every read of Rt before the end of the straight-line window is one
 // of those forms (at most two: each costs a word) and Rt is dead after the
 // last one, so the MOV goes too: one cycle and at least one word less. Full
-// unrolling leaves "MOV R1, 19 / MOV [R1], R0" in every copy. Integer
-// literals and plain symbols only (no floats: an immediate float operand is
-// not the same as a register holding its bits for every instruction).
+// unrolling leaves "MOV R1, 19 / MOV [R1], R0" in every copy.
+//
+// Float operations (FADD FSUB FMUL FDIV FMIN FMAX FEQ FNE FGT FGE FLT FLE)
+// take an immediate too:   MOV R2, 1.0 / FADD R5, R2  ->  FADD R5, 1.0
+// but v32as (like the official assembler) reads an INTEGER literal there as
+// a number to convert: "FADD R1, 1" adds 1.0 (word 0x3F800000) and
+// "FADD R1, 0x3F800000" adds 1065353216.0, while "MOV R2, 1" / "MOV R2,
+// 0x3F800000" put the words 0x00000001 / 0x3F800000 in the register. So the
+// rule goes by the word the register held, never by the spelling:
+//   - a decimal float literal (-?digits.digits, which v32as reads with
+//     strtof and a sign flip, in MOV and in a float operation alike) is
+//     copied as written into a float operation or a "MOV Rd, Rt"; never
+//     into an integer operation or an address;
+//   - an integer literal (decimal or 0x hex, 32 bits) goes into a float
+//     operation only respelled as a decimal float literal that strtof reads
+//     back to exactly that word (0x3F800000 -> 1.0, 0x41200000 -> 10.0);
+//     a word that has no such spelling (NaN, infinity, a denormal or a
+//     value needing too many digits: "MOV R2, 1 / FADD R1, R2" adds the
+//     denormal 0x00000001) is refused;
+//   - a symbol never goes into a float operation (v32as takes only a number
+//     there).
+// Checked with v32as --standard (encoded immediate word of both forms) and
+// in v32sim (same result for both forms) for each of the twelve mnemonics.
 // -------------------------------------------------------------------
 static bool imm_alu_takes_imm(OpType t) {
     switch (t) {
@@ -267,6 +288,81 @@ static bool imm_alu_takes_imm(OpType t) {
         default:
             return false;
     }
+}
+
+static bool imm_float_takes_imm(OpType t) {
+    switch (t) {
+        case OP_FADD: case OP_FSUB: case OP_FMUL: case OP_FDIV: case OP_FMIN: case OP_FMAX:
+        case OP_FEQ: case OP_FNE: case OP_FGT: case OP_FGE: case OP_FLT: case OP_FLE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// "-?[0-9]+.[0-9]+": v32as's float token (with an optional unary minus).
+static bool float_literal_text(const char *s) {
+    if (*s == '-') s++;
+    if (!isdigit((unsigned char)*s)) return false;
+    while (isdigit((unsigned char)*s)) s++;
+    if (*s++ != '.' || !isdigit((unsigned char)*s)) return false;
+    while (isdigit((unsigned char)*s)) s++;
+    return *s == '\0';
+}
+
+// The 32-bit word an integer literal puts in a register: decimal (no leading
+// zero: v32as would read octal) or 0x hex with at most 8 digits, an optional
+// minus. Anything else (symbols, octal, out of range) answers false.
+static bool int_literal_word(const char *s, uint32_t *w) {
+    bool neg = (*s == '-');
+    if (neg) s++;
+    unsigned long long v = 0;
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        s += 2;
+        int nd = 0;
+        for (; *s; s++, nd++) {
+            if (!isxdigit((unsigned char)*s) || nd >= 8) return false;
+            v = v * 16 + (unsigned)(isdigit((unsigned char)*s) ? *s - '0' : (tolower((unsigned char)*s) - 'a' + 10));
+        }
+        if (nd == 0) return false;
+    } else {
+        if (!isdigit((unsigned char)*s) || (s[0] == '0' && s[1] != '\0')) return false;
+        for (; *s; s++) {
+            if (!isdigit((unsigned char)*s)) return false;
+            v = v * 10 + (unsigned)(*s - '0');
+            if (v > 0xFFFFFFFFull) return false;
+        }
+    }
+    if (neg) {
+        if (v > 0x80000000ull) return false;
+        v = (0x100000000ull - v) & 0xFFFFFFFFull;
+    }
+    *w = (uint32_t)v;
+    return true;
+}
+
+// A decimal float literal that v32as reads back to exactly `w`, or false.
+static bool float_spelling(uint32_t w, char *out, size_t size) {
+    float f;
+    memcpy(&f, &w, sizeof(f));
+    if (isnan(f) || isinf(f)) return false;
+    uint32_t mag = w & 0x7FFFFFFFu;
+    float m;
+    memcpy(&m, &mag, sizeof(m));
+    for (int prec = 1; prec <= 12; prec++) {
+        char buf[64];
+        int len = snprintf(buf, sizeof(buf), "%.*f", prec, (double)m);
+        if (len <= 0 || len > 40) return false;
+        if (!float_literal_text(buf)) continue;
+        float back = strtof(buf, NULL);
+        uint32_t bw;
+        memcpy(&bw, &back, sizeof(bw));
+        if (bw != mag) continue;
+        if ((size_t)len + 2 > size) return false;
+        snprintf(out, size, "%s%s", (w & 0x80000000u) ? "-" : "", buf);
+        return true;
+    }
+    return false;
 }
 
 static bool plain_imm(const Operand *op) {
@@ -286,10 +382,18 @@ static bool plain_imm(const Operand *op) {
 
 static int propagate_imm(AsmNode *mov) {
     if (mov->type != OP_MOV || !mov->has_dst || !mov->has_src || node_is_volatile(mov)) return 0;
-    if (mov->dst_op.mode != MODE_REG || reg_number(mov->dst_op.reg) < 0 || !plain_imm(&mov->src_op)) return 0;
+    if (mov->dst_op.mode != MODE_REG || reg_number(mov->dst_op.reg) < 0) return 0;
+    // a float literal: into float operations and register MOVs only, as written
+    bool is_flt = mov->src_op.mode == MODE_IMMEDIATE && float_literal_text(mov->src_op.raw);
+    if (!is_flt && !plain_imm(&mov->src_op)) return 0;
+    // an integer literal: into float operations respelled (if it can be)
+    uint32_t word = 0;
+    char fspell[64] = "";
+    if (!is_flt && int_literal_word(mov->src_op.raw, &word) &&
+        !float_spelling(word, fspell, sizeof(fspell))) fspell[0] = '\0';
     const char *rt = mov->dst_op.reg;
 
-    enum { U_SRC, U_LOAD, U_STORE };
+    enum { U_SRC, U_LOAD, U_STORE, U_FSRC };
     AsmNode *use[2];
     int kind[2], nuse = 0, dist = 0;
     for (AsmNode *n = mov->next; n; n = n->next) {
@@ -305,8 +409,15 @@ static int propagate_imm(AsmNode *mov) {
         if (nuse == 2 || node_is_volatile(n)) return 0;
         int k = -1;
         if (n->has_dst && n->has_src && n->dst_op.mode == MODE_REG && !str_case_eq(n->dst_op.reg, rt) &&
-            n->src_op.mode == MODE_REG && str_case_eq(n->src_op.reg, rt) && imm_alu_takes_imm(n->type))
+            n->src_op.mode == MODE_REG && str_case_eq(n->src_op.reg, rt) && imm_alu_takes_imm(n->type) &&
+            (!is_flt || n->type == OP_MOV))
             k = U_SRC;
+        else if (n->has_dst && n->has_src && n->dst_op.mode == MODE_REG && !str_case_eq(n->dst_op.reg, rt) &&
+                 n->src_op.mode == MODE_REG && str_case_eq(n->src_op.reg, rt) && imm_float_takes_imm(n->type) &&
+                 (is_flt || fspell[0]))
+            k = U_FSRC;
+        else if (is_flt)
+            k = -1;                                       // (a float is never an address)
         else if (n->type == OP_MOV && n->has_dst && n->has_src && n->dst_op.mode == MODE_REG &&
                  !str_case_eq(n->dst_op.reg, rt) && n->src_op.mode == MODE_INDIRECT &&
                  str_case_eq(n->src_op.reg, rt) && n->src_op.offset == 0)
@@ -329,6 +440,7 @@ static int propagate_imm(AsmNode *mov) {
         AsmNode *n = use[i];
         insert_debug_comment(n->prev, OPT_PEEPHOLE_COPIES, n->raw);
         if (kind[i] == U_SRC)       n->src_op = mov->src_op;
+        else if (kind[i] == U_FSRC) n->src_op = is_flt ? mov->src_op : parse_operand(fspell);
         else if (kind[i] == U_LOAD) n->src_op = parse_operand(addr);
         else                        n->dst_op = parse_operand(addr);
         refresh_raw(n);
