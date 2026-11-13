@@ -62,6 +62,8 @@ typedef struct {
     unsigned char   escaped[256];    // BP-relative word offset + 128 -> 1 if its address is taken
     bool            clobbers_known;  // a 'clobbers=' attribute was given (and could be read)
     unsigned        clobbers;        // ... bit n = Rn may be written by a call to this function (and what it calls)
+    bool            returns_known;   // a 'returns=' attribute was given (v32lua: at most N values come back, R0/R2/R3 first)
+    int             returns;         // ... N, the most values any return of the function produces (0 or more)
     int             line_lo, line_hi;    // 'lines=A..B': the function's source range (0: not given)
 } FnHints;
 

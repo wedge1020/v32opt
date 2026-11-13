@@ -76,6 +76,7 @@ needs no line unless a function `X` also exists.
 | `escapes=none` | no word of the frame has its address taken | nothing in the function forms a pointer into its frame (no `LEA R, [BP±n]`, no `MOV R, BP`) |
 | `escapes=<list>` | only the listed words can be reached through a pointer; every other local is promoted as if the function had no pointers at all | see below |
 | `escapes=all` | any word may be reached through a pointer (the default behaviour; useful to say "I checked") | |
+| `returns=N` | (`-L lua`) every function of the class a `RET` belongs to returns at most N values; with N <= 1 R2 and R3 are not live there, so a write to them before the `RET` is dead | v32lua: no `return` of the function produces more than N values, none forwards the values of a call or of `...`, and the body has no inline assembly. A caller reads R2/R3 only after checking `[RET_COUNT]`. Written for every such function, not for one that forwards values |
 | `inline` | `-finline` allows a body of up to twice `-finline-max` instructions (at most `MAX_BODY_INS`, 32) | the source said `inline` (a soft request) |
 | `alwaysinline` | `-finline` takes the body whatever its length (up to 32), even with `-finline-max=0`, even if the function is also `cold` | the source said `always_inline` |
 | `hot` | like `inline` for the inliner; every loop in the function counts as hot (below) | the source said `hot` |

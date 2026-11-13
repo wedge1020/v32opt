@@ -2,6 +2,15 @@
 
 ## 20261113-dev
 
+* `;@fn F returns=N` (written by v32lua, `-L lua`): when every function a `RET` can belong to has `returns=0` or
+  `returns=1`, R2 and R3 are no longer live at that `RET` (v32lua's callers read them only after checking `[RET_COUNT]`),
+  so the dead copies of a loop's control value into R3 and the like can go. A function whose class has an entry
+  without the hint (a runtime routine, a function that forwards `f()` or `...`) keeps R2/R3 live as before. New test
+  `testing/lua-returns` (unit shape with teeth, and a v32lua program with one-, two- and three-value functions,
+  forwarding and `...`).
+* `peephole-zero-test` keeps the trailing source comment of the jump it rewrites (test `testing/zero-test-comment`).
+* `make -C testing` skips with one line when the stock `assemble` and `packrom` are not in PATH, instead of failing in
+  every sub-directory.
 * Post-unroll cleanup: `omit-frame-pointers` now first shrinks the frame of a function whose locals are in registers
   (or gone after full unrolling): a `PUSH Rn` / `POP Rn` save that nothing uses any more is removed (not when `Rn`
   is mentioned, when the function has a `CALL`, or when an `[SP+k]` or `[BP-k]` operand reaches the saved word), and

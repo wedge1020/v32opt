@@ -137,6 +137,7 @@ static int         g_ncls        = 0;      // number of regions; a class is name
 static unsigned short *g_extra   = NULL;   // per-class: registers (bit n = Rn) a direct caller reads after the call
 static signed char *g_open       = NULL;   // per-class: callers not all known (see OPEN CLASSES)
 static signed char *g_trust      = NULL;   // per-class: every way in from an unknown place is a "__function_" entry
+static signed char *g_ret1       = NULL;   // per-class (-L lua): every entry is a "__function_" label with ';@fn returns=N', N <= 1
 static int        *g_reach       = NULL;   // per-label (call targets): words of the caller's stack (from the top, at the CALL)
                                            // it may read as arguments; LV_REACH_ALL if unbounded
 static unsigned short *g_in      = NULL;   // per-label: registers (bit n = Rn) the function at that label may READ before writing
@@ -176,9 +177,9 @@ static void liveness_free(void) {
     g_callee0 = NULL; g_stamp0 = NULL;
     g_kept = false;
     free(g_labels); free(g_stamp); free(g_callee); free(g_extra); free(g_is_entry); free(g_lbl_cls);
-    free(g_open); free(g_trust); free(g_reach); free(g_in); free(g_in_ok);
+    free(g_open); free(g_trust); free(g_ret1); free(g_reach); free(g_in); free(g_in_ok);
     g_labels = NULL; g_stamp = NULL; g_callee = NULL; g_extra = NULL; g_is_entry = NULL; g_lbl_cls = NULL;
-    g_open = NULL; g_trust = NULL; g_reach = NULL; g_in = NULL; g_in_ok = NULL;
+    g_open = NULL; g_trust = NULL; g_ret1 = NULL; g_reach = NULL; g_in = NULL; g_in_ok = NULL;
     g_label_count = 0; g_ncls = 0;
 }
 
@@ -329,9 +330,11 @@ static int flow(AsmNode *node, const char *reg, int ridx, int depth, int stamp);
 // Is Rridx live when `ret` executes: returned by the ABI, an open class's RET,
 // or read after a call by some direct caller of the class `ret` belongs to?
 static bool ret_live_out(const AsmNode *ret, const char *reg, int ridx) {
-    if (is_live_out_register(reg)) return true;
     if (!g_extra || ret->lv_fn <= 0 || ret->lv_fn > g_ncls) return true;   // made after liveness_begin(): unknown
     int c = ret->lv_fn - 1;
+    // v32lua returns a second and third value in R2 and R3 and says how many in RET_COUNT, which callers check
+    // before they read them: with ';@fn F returns=N' (N <= 1) on every function the RET can belong to, they are not read.
+    if (is_live_out_register(reg) && !((ridx == 2 || ridx == 3) && g_ret1 && g_ret1[c])) return true;
     if (g_open[c] && !class_trusts_abi(c)) return true;
     return (g_extra[c] >> ridx) & 1u;
 }
@@ -518,7 +521,6 @@ bool reg_dead_from(AsmNode *start, const char *reg) {
     g_steps = 0;
     int r = flow(start, reg, ridx, 0, ++g_stamp_id);
     if (r & LV_LIVE) return false;
-    if ((r & LV_PASSTHRU) && is_live_out_register(reg)) return false;
     return true;
 }
 
@@ -738,11 +740,12 @@ static bool build_classes(AsmNode *head) {
     g_extra      = calloc((size_t)nreg, sizeof(unsigned short));
     g_open       = calloc((size_t)nreg, 1);
     g_trust      = calloc((size_t)nreg, 1);
+    g_ret1       = calloc((size_t)nreg, 1);
     g_reach      = calloc((size_t)nl + 1, sizeof(int));
     signed char *bad = calloc((size_t)nreg, 1);        // has an entry that is not a "__function_" label
     signed char *called = calloc((size_t)nreg, 1);     // has an entry with a direct CALL site
     signed char *has = calloc((size_t)nreg, 1);        // has an entry
-    if (!parent || !g_lbl_cls || !g_extra || !g_open || !g_trust || !g_reach || !bad || !called || !has) {
+    if (!parent || !g_lbl_cls || !g_extra || !g_open || !g_trust || !g_ret1 || !g_reach || !bad || !called || !has) {
         free(parent); free(bad); free(called); free(has);
         return false;
     }
@@ -809,6 +812,22 @@ static bool build_classes(AsmNode *head) {
         if (parent[c] != c || called[c]) continue;
         g_open[c] = 1;
         if (bad[c] || !has[c]) g_trust[c] = 0;
+    }
+    // g_ret1: at most one value comes back from every function of the class (v32lua's ';@fn F returns=N')
+    if (config.lang_mode == LANG_LUA) {
+        signed char *all = calloc((size_t)nreg, 1);       // every entry of the class is a hinted function
+        if (all) {
+            for (int c = 0; c < nreg; c++) all[c] = has[c];
+            for (int i = 0; i < nl; i++) {
+                if (!g_labels[i].node || !g_is_entry[i]) continue;
+                const FnHints *h = (g_is_entry[i] & 4) ? hints_fn(g_labels[i].name) : NULL;
+                if (!h || !h->returns_known || h->returns > 1) all[g_lbl_cls[i]] = 0;
+            }
+            for (int c = 0; c < nreg; c++) g_ret1[c] = (parent[c] == c) ? all[c] : 0;
+            all[uf_find(parent, 0)] = 0;
+            g_ret1[uf_find(parent, 0)] = 0;
+            free(all);
+        }
     }
     // stack arguments of each call target: what the code it runs on its frame may read (see is_register_save)
     for (int i = 0; i < nl; i++) {

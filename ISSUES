@@ -88,11 +88,13 @@ PASSES
   strings, functions, nil) are signaling NaNs. Lua arithmetic tests for a
   number first, so the instruction does not see one in compiled Lua.
 
-[limit] In -L lua, R2 and R3 are live at every RET: nothing in the code says
-  how many values a function returns (v32lua returns the extra values in R2
-  and R3).
-  That keeps a dead copy alive in about half of the loops lua-loop-var
-  rewrites.
+[limit] In -L lua, R2 and R3 are live at a RET unless every function it can belong to
+  has ";@fn F returns=N" with N <= 1 (v32lua writes it for a function with no
+  `return f()`, `return ...` or inline assembly; doc/hints.md). A function that
+  forwards values, a runtime routine and any class that has such an entry keep
+  R2/R3 live. v32lua could write a bound for `return f()` where f is known to
+  return one value (calls to a function whose own bound is known, builtins);
+  it does not.
 
 [limit] promote-loops across calls (-fpromote-loops-calls, on wherever promote-loops
   is) promotes a loop with hot CALLs only when every callee has a ";@fn F
@@ -138,19 +140,20 @@ PASSES
   ("MOV R0, [BP+2]" in each copy of a body that stores a parameter) is not
   removed.
 
-[gap] Lua loop control: what is left after float immediates, lua-loop-var and
-  promote-loops across calls (doc/lua-loops.md) needs help from outside the
-  loop passes. Three known steps, none started: (1) a ";@fn F returns=N" hint
-  from v32lua, so R2/R3 can be dead at the RET of a function that returns at
-  most one value (a dead copy into R3 survives in 106 of 209 rewritten loops);
-  (2) "clobbers=" lists for more runtime routines (__builtin_strcat,
-  __builtin_len, __builtin_tostring, __pico8_add: 30 loops are refused for a
-  callee without a list); (3) liveness accepting a routine that saves R1..R13
-  and then pushes its arguments above them as preserving those registers
-  (__table_call_handler: 19 loops are refused because no register is proven
-  free across __builtin_table_set). Also: a function whose range is cut by a
-  nested function definition is skipped by peephole-lua-checks, lua-loop-var
-  and the promote passes (24 of 255 loops in the corpus).
+[gap] Lua loop control: what is left after float immediates, lua-loop-var,
+  promote-loops across calls and "returns=" (doc/lua-loops.md) needs help from
+  outside the loop passes. Two known steps: (1) "clobbers=" lists. v32lua writes
+  one for 217 of 237 runtime routines (tools/check_clobbers.py). Of the rest
+  __builtin_strcat, __builtin_tostring, __builtin_print, __builtin_len,
+  __builtin_string_format, __builtin_string_gsub, __builtin_ftoa and
+  __table_call_handler come out as changing all of R0-R13 (the tool leaves a list
+  that says "everything" out, as it helps nobody): a shorter list would need the
+  routines to save the registers they use, a runtime change in v32lua; (2) liveness
+  accepting a routine that saves R1..R13 and then pushes its arguments above them
+  as preserving those registers (__table_call_handler: 19 loops are refused because
+  no register is proven free across __builtin_table_set). Also: a function whose
+  range is cut by a nested function definition is skipped by peephole-lua-checks,
+  lua-loop-var and the promote passes (24 of 255 loops in the corpus).
 
 [gap] constant-folding trades register operands for immediates ("MOV Rd, Rs"
   -> "MOV Rd, const" is 2 words instead of 1), so the assembled program can
@@ -159,8 +162,6 @@ PASSES
 
 [gap] Profile-guided decisions cover the loop passes only. Function inlining
   and the promote passes do not look at the profile.
-
-[bug] peephole-zero-test: the rewritten jump loses its trailing source comment.
 
 [bug] --check-vars still reports problems on three v32lua audit programs
   (tests/audit of v32lua). c4_funcs: a closure is defined inside a "for" scope
@@ -194,11 +195,6 @@ TOOLING AND TESTS
 [limit] bench.py --tune is a greedy search (one change at a time, at most 8),
   not exhaustive; every candidate is a full build and run, so large programs
   (crisp: 700K lines of assembly) take minutes per candidate.
-
-[fixed] Operand names were kept in a 32-byte field, so two symbols sharing their first
-  31 characters compared equal and the dead-store pass deleted a live store
-  (crisp: global_ringblastEnemyStoneAngle / ...AngleVel). Now 128 bytes;
-  testing/long-names.
 
 [limit] crisp-game-lib is timing-sensitive (see testing/crisp/README.md): builds of
   different speed can diverge in the last games even with a fixed seed.

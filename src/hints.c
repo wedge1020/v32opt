@@ -273,6 +273,11 @@ static void parse_fn_line(char *rest) {
             unsigned m;
             if (parse_reg_set(tok + 9, &m)) { h->clobbers_known = true; h->clobbers = m; }
         }
+        else if (strncmp(tok, "returns=", 8) == 0) {
+            char *end = NULL;
+            long v = strtol(tok + 8, &end, 10);
+            if (end != tok + 8 && *end == '\0' && v >= 0 && v <= 1000) { h->returns_known = true; h->returns = (int)v; }
+        }
         // anything else (future attributes): ignored
     }
 }
