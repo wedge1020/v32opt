@@ -393,6 +393,20 @@ static int propagate_imm(AsmNode *mov) {
         !float_spelling(word, fspell, sizeof(fspell))) fspell[0] = '\0';
     const char *rt = mov->dst_op.reg;
 
+    // BUG FIX: a LABEL (data/function address) is only an operand of MOV and of a memory address
+    // ("MOV Rd, label", "[label]"): v32as's integer ALU forms take a register or a literal integer
+    // ("IADD second operand must be a register or an integer"), so "MOV R2, __tic80_palette / IADD
+    // R1, R2" must NOT become "IADD R1, __tic80_palette". A %define whose value is a plain integer
+    // literal is resolved by the preprocessor and is fine anywhere.
+    bool sym_not_int = false;
+    if (!is_flt && mov->src_op.mode == MODE_IMMEDIATE) {
+        const char *r = mov->src_op.raw;
+        if (!(isdigit((unsigned char)r[0]) || (r[0] == '-' && isdigit((unsigned char)r[1])))) {
+            long iv; bool isf;
+            sym_not_int = !(define_numeric_value(r, &iv, NULL, &isf) && !isf);
+        }
+    }
+
     enum { U_SRC, U_LOAD, U_STORE, U_FSRC };
     AsmNode *use[2];
     int kind[2], nuse = 0, dist = 0;
@@ -410,7 +424,7 @@ static int propagate_imm(AsmNode *mov) {
         int k = -1;
         if (n->has_dst && n->has_src && n->dst_op.mode == MODE_REG && !str_case_eq(n->dst_op.reg, rt) &&
             n->src_op.mode == MODE_REG && str_case_eq(n->src_op.reg, rt) && imm_alu_takes_imm(n->type) &&
-            (!is_flt || n->type == OP_MOV))
+            (!is_flt || n->type == OP_MOV) && (!sym_not_int || n->type == OP_MOV))
             k = U_SRC;
         else if (n->has_dst && n->has_src && n->dst_op.mode == MODE_REG && !str_case_eq(n->dst_op.reg, rt) &&
                  n->src_op.mode == MODE_REG && str_case_eq(n->src_op.reg, rt) && imm_float_takes_imm(n->type) &&
