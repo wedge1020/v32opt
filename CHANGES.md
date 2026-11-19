@@ -1,12 +1,14 @@
 # v32opt changes
 
-## 20261113-dev
+## 20261119-dev
 
 * BUG FIX (`peephole-copies`, immediate propagation): a LABEL was pasted into integer ALU operands --
   `MOV R2, __tic80_palette / IADD R1, R2` became `IADD R1, __tic80_palette`, which v32as and the stock assembler
   reject ("IADD second operand must be a register or an integer"; nostalgick's blastic). A label is an operand of
   `MOV` and of a memory address (`[label]`) only; a `%define` with an integer value is still propagated anywhere.
   New test `testing/peephole-copies-label` (with teeth; assembles the output when `assemble` is in PATH).
+
+## 20261113-dev
 
 * `;@fn F returns=N` (written by v32lua, `-L lua`): when every function a `RET` can belong to has `returns=0` or
   `returns=1`, R2 and R3 are no longer live at that `RET` (v32lua's callers read them only after checking `[RET_COUNT]`),
