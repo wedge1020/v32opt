@@ -385,7 +385,7 @@ __vircon32_btn_prev_state_zero_done:
 ;; arena's release keeps the heap up to the end of it (arena.s), so the
 ;; owner never ends up pointing at freed memory.
 ;; ---------------------------------------------------------------------------
-    ;@fn __malloc_owned clobbers=R0-R3,R6
+    ;@fn __malloc_owned clobbers=R0-R3,R6 nonzero
 __malloc_owned:
 
 ;; ---------------------------------------------------------------------------
@@ -399,7 +399,7 @@ __malloc_owned:
 ;;          callers' old `IEQ Rn, 0 / JT Rn, __oom_handler` checks are now
 ;;          dead but harmless.
 ;; ---------------------------------------------------------------------------
-    ;@fn __malloc clobbers=R0-R3,R6
+    ;@fn __malloc clobbers=R0-R3,R6 nonzero
 __malloc:
     PUSH  BP
     MOV   BP, SP
@@ -4653,6 +4653,7 @@ __table_unary_meta_no:
 ;; rawget(t, k)  rawset(t, k, v) -> t  rawlen(v)  rawequal(a, b)
 ;; Arguments pushed in order: the last one at [BP+2]. Preserve R1-R13.
 ;; ---------------------------------------------------------------------------
+    ;@fn __builtin_setmetatable clobbers=R0
 __builtin_setmetatable: ; [BP+3] = t, [BP+2] = mt
     PUSH  BP
     MOV   BP, SP
@@ -4679,6 +4680,7 @@ __builtin_setmetatable_done:
     POP   BP
     RET  
 
+    ;@fn __builtin_getmetatable clobbers=R0,R6-R13
 __builtin_getmetatable: ; [BP+2] = v
     PUSH  BP
     MOV   BP, SP
@@ -4712,6 +4714,7 @@ __builtin_getmetatable_done:
     POP   BP
     RET  
 
+    ;@fn __builtin_rawget clobbers=R0,R6-R13
 __builtin_rawget: ; [BP+3] = t, [BP+2] = k
     PUSH  BP
     MOV   BP, SP
@@ -4732,6 +4735,7 @@ __builtin_rawget_done:
     POP   BP
     RET  
 
+    ;@fn __builtin_rawset clobbers=R0,R9-R13
 __builtin_rawset: ; [BP+4] = t, [BP+3] = k, [BP+2] = v
     PUSH  BP
     MOV   BP, SP
@@ -4765,6 +4769,7 @@ __builtin_rawset_done:
     POP   BP
     RET  
 
+    ;@fn __builtin_rawlen clobbers=R0,R3-R13
 __builtin_rawlen: ; [BP+2] = v
     PUSH  BP
     MOV   BP, SP

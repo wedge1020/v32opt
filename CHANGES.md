@@ -23,14 +23,14 @@ older than the `--gc` work; v32lua output from before it failed the same way):
 * Not a v32opt bug: `MOV R1, __const_str_err_for_initial / JMP __for_number` losing its MOV. `__runtime_error_for`
   (v32lua `src/runtime/exec.s`) reads R1 as the message after a `CALL __builtin_print`, which overwrites R1 (the X
   coordinate) and does not restore it, so the MOV is dead and the panic screen shows the wrong text with or without
-  v32opt (on the oracle, unoptimized: R1 = 0x20002AFB after the MOV, 0x7FC0008C at the print). The fix is in v32lua:
-  keep the message in the frame, as the value already is in `[BP-1]`. The three tests that passed with
+  v32opt (on the oracle, unoptimized: R1 = 0x20002AFB after the MOV, 0x7FC0008C at the print). Fixed in v32lua
+  20261124-dev (the message is kept in the frame beside the value). The three tests that passed with
   `-fno-peephole-dead-regs` were the liveness bug above.
 * With both fixes the whole suite gives the same result at `-O1`, `-O2`, `-O3` and `-Os` as without v32opt, test for
   test, in the default heap mode and with `--gc arena --gc-check` (146 of 162 files pass; the other 16 fail the same
   way unoptimized).
-* New `;@fn` attribute **`nonzero`**: R0 is never 0 when the call returns (v32lua's 20261124-dev hint update puts it on
-  `__malloc` and `__malloc_owned`; the first 20261124-dev build does not have it yet). peephole-lua-checks then drops any zero test of the result, whatever it jumps to. A file without
+* New `;@fn` attribute **`nonzero`**: R0 is never 0 when the call returns (v32lua 20261124-dev puts it on `__malloc` and
+  `__malloc_owned`). peephole-lua-checks then drops any zero test of the result, whatever it jumps to. A file without
   the hint keeps the rule below (tests that go to `__oom_handler`, after `__malloc` / `__malloc_owned`, in a file that
   defines `__malloc_owned`).
 * New test `testing/lua-regs` (both fixes; 6 cases, all failing on 20261119-dev), part of `make tests`.
@@ -57,8 +57,8 @@ What v32lua's `--gc` work (20261120-dev onwards) changed in its output, and what
   reads `__malloc_owned`'s body and sees R0 used. The `PUSH Rv / CALL __arena_check_global|store / IADD SP,1` sequences
   stay, with `clobbers=none` honoured. The `;#if` blocks never reach v32opt. `__arena_release` had no `clobbers=` hint
   (v32lua's `tools/check_clobbers.py` only found call targets written as a literal `CALL __name` in the compiler's C,
-  and it is called through `emit_runtime_call_intrinsic`), so it was treated as clobbering everything; v32lua's
-  20261124-dev hint update gives it `clobbers=R0-R2`, which v32opt reads with no change.
+  and it is called through `emit_runtime_call_intrinsic`), so it was treated as clobbering everything; v32lua
+  20261124-dev gives it `clobbers=R0-R2`, which v32opt reads with no change.
 * The man pages now list exit status 3 (`--check-src` / `--check-vars` found a problem; it was missing) and 4.
 * New test `testing/lua-alloc` (v32lua output in both GC modes plus a hand-written unit; with teeth: 8 of its first
   16 cases fail on 20261119-dev), part of `make tests`.

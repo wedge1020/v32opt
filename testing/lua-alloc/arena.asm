@@ -359,7 +359,7 @@ __vircon32_btn_prev_state_zero_done:
 ;; arena's release keeps the heap up to the end of it (arena.s), so the
 ;; owner never ends up pointing at freed memory.
 ;; ---------------------------------------------------------------------------
-    ;@fn __malloc_owned clobbers=R0-R3,R6
+    ;@fn __malloc_owned clobbers=R0-R3,R6 nonzero
 __malloc_owned:
     MOV   R1, [ARENA_FLOOR]
     JF    R1, __malloc            ; no arena open: a plain allocation
@@ -388,7 +388,7 @@ __malloc_owned:
 ;;          callers' old `IEQ Rn, 0 / JT Rn, __oom_handler` checks are now
 ;;          dead but harmless.
 ;; ---------------------------------------------------------------------------
-    ;@fn __malloc clobbers=R0-R3,R6
+    ;@fn __malloc clobbers=R0-R3,R6 nonzero
 __malloc:
     PUSH  BP
     MOV   BP, SP
@@ -922,6 +922,7 @@ __arena_err_depth:
 ;; ---------------------------------------------------------------------------
 ;; __arena_release: [BP+2] = m (a value arena.mark() returned) -> R0 = nil
 ;; ---------------------------------------------------------------------------
+    ;@fn __arena_release clobbers=R0-R2
 __arena_release:
     PUSH  BP
     MOV   BP, SP
@@ -1045,10 +1046,11 @@ __arena_check_global:
 __arena_check_core:
     MOV   R2, [ARENA_FLOOR]
     JF    R2, __arena_check_ok    ; no arena open
-    PUSH  R1
     CALL  __arena_value_addr      ; R0 = object address, 0 = not a heap object
-    POP   R1
-    JF    R0, __arena_check_ok
+    JF    R0, __arena_check_ok    ; (R1 is not touched: no PUSH/POP R1 around
+                                 ; the call, which v32opt 20261124 misread as
+                                 ; "R1 is not an input" and dropped the
+                                 ; caller's MOV R1, [BP+3])
     MOV   R2, [ARENA_FLOOR]
     IGT   R2, R0                  ; value older than the arena?
     JT    R2, __arena_check_ok
@@ -1064,28 +1066,28 @@ __arena_check_ok:
 
 ;; __arena_value_addr: R0 = boxed value -> R0 = RAW address of the heap
 ;; object it refers to (table header, RAM string, closure record), or 0.
-;; Clobbers R0-R1.
-    ;@fn __arena_value_addr clobbers=R0-R1
+;; Clobbers R0 and R2 (not R1: __arena_check_core keeps the container there).
+    ;@fn __arena_value_addr clobbers=R0,R2
 __arena_value_addr:
-    MOV   R1, R0
-    AND   R1, BOXED_DATA
-    IEQ   R1, BOXED_TABLE
-    JT    R1, __arena_value_payload
-    MOV   R1, R0
-    AND   R1, BOXED_DATA
-    IEQ   R1, BOXED_RAMSTRING
-    JT    R1, __arena_value_ramstring
-    MOV   R1, R0
-    AND   R1, 0xFFE00000
-    IEQ   R1, 0x7FA00000          ; BOXED_FUNCTION | BOXED_CLOSURE_FLAG
-    JT    R1, __arena_value_closure
+    MOV   R2, R0
+    AND   R2, BOXED_DATA
+    IEQ   R2, BOXED_TABLE
+    JT    R2, __arena_value_payload
+    MOV   R2, R0
+    AND   R2, BOXED_DATA
+    IEQ   R2, BOXED_RAMSTRING
+    JT    R2, __arena_value_ramstring
+    MOV   R2, R0
+    AND   R2, 0xFFE00000
+    IEQ   R2, 0x7FA00000          ; BOXED_FUNCTION | BOXED_CLOSURE_FLAG
+    JT    R2, __arena_value_closure
     MOV   R0, 0                   ; number, ROM string, plain function
     RET  
 __arena_value_ramstring:
-    MOV   R1, R0
-    AND   R1, BOXED_PAYLOAD
-    ILT   R1, 4                   ; nil / false / true / tombstone
-    JF    R1, __arena_value_payload
+    MOV   R2, R0
+    AND   R2, BOXED_PAYLOAD
+    ILT   R2, 4                   ; nil / false / true / tombstone
+    JF    R2, __arena_value_payload
     MOV   R0, 0
     RET  
 __arena_value_closure:
@@ -5005,6 +5007,7 @@ __table_unary_meta_no:
 ;; rawget(t, k)  rawset(t, k, v) -> t  rawlen(v)  rawequal(a, b)
 ;; Arguments pushed in order: the last one at [BP+2]. Preserve R1-R13.
 ;; ---------------------------------------------------------------------------
+    ;@fn __builtin_setmetatable clobbers=R0
 __builtin_setmetatable: ; [BP+3] = t, [BP+2] = mt
     PUSH  BP
     MOV   BP, SP
@@ -5035,6 +5038,7 @@ __builtin_setmetatable_done:
     POP   BP
     RET  
 
+    ;@fn __builtin_getmetatable clobbers=R0,R6-R13
 __builtin_getmetatable: ; [BP+2] = v
     PUSH  BP
     MOV   BP, SP
@@ -5068,6 +5072,7 @@ __builtin_getmetatable_done:
     POP   BP
     RET  
 
+    ;@fn __builtin_rawget clobbers=R0,R6-R13
 __builtin_rawget: ; [BP+3] = t, [BP+2] = k
     PUSH  BP
     MOV   BP, SP
@@ -5088,6 +5093,7 @@ __builtin_rawget_done:
     POP   BP
     RET  
 
+    ;@fn __builtin_rawset clobbers=R0,R9-R13
 __builtin_rawset: ; [BP+4] = t, [BP+3] = k, [BP+2] = v
     PUSH  BP
     MOV   BP, SP
@@ -5121,6 +5127,7 @@ __builtin_rawset_done:
     POP   BP
     RET  
 
+    ;@fn __builtin_rawlen clobbers=R0,R3-R13
 __builtin_rawlen: ; [BP+2] = v
     PUSH  BP
     MOV   BP, SP
