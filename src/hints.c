@@ -254,6 +254,7 @@ static void parse_fn_line(char *rest) {
         else if (strcmp(tok, "noreturn") == 0) h->noreturn = true;
         else if (strcmp(tok, "leaf")     == 0) h->leaf     = true;
         else if (strcmp(tok, "naked")    == 0) h->naked    = true;
+        else if (strcmp(tok, "nonzero")  == 0) h->nonzero  = true;
         else if (strncmp(tok, "escapes=", 8) == 0) {
             const char *v = tok + 8;
             h->escapes_known = true;

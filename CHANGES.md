@@ -2,6 +2,40 @@
 
 ## 20261124-dev
 
+Two code-generation fixes, found by running v32lua 20261124-dev's `testing/` suite on v32sim's oracle (both bugs were
+older than the `--gc` work; v32lua output from before it failed the same way):
+
+* **Fix (liveness): a register a callee saves around a call and reads afterwards is an input.** In a callee, a save
+  `PUSH Rn ... POP Rn` made the walk stop at the POP, so `PUSH R1 / CALL f / POP R1 / PUSH R1` (R1 passed on after
+  the save) was not seen as reading the caller's R1, and the caller's `MOV R1, ...` was deleted as dead
+  (peephole-dead-regs, and everything else that asks `reg_dead_from()`). v32lua's `__table_index_miss` has this
+  shape: a metatable's `__index` was looked up with a garbage key (`special/13_metatables`,
+  `tables/19_index_computed_key`, `tables/20_index_known_number_key` failed at `-O1` and up, `gc/03_arena_check_clean`
+  too). The walk now goes on after the POP, with the register holding the caller's value again; it reaches the RET
+  untouched only if it really does.
+* **Fix (promote-loops / promote): a POP into a register is a write of it unless it gives back what its PUSH saved.**
+  The region scan skipped every PUSH and POP as save/restore bookkeeping, but peephole-copies turns
+  `MOV R2, R0 / PUSH R2 ... POP R2` into `PUSH R0 ... POP R2`, and that POP overwrites R2. A loop counter was kept in
+  R2 across such a body (`special/26_pico8_stat` at `-O2` and up; it passed with `-fno-peephole-lua-checks` only
+  because that left another use of R2 in the loop). The scan now follows the region's own stack: a POP that does not
+  match its PUSH's register, or pops a word pushed before the region, or comes after an SP change it can't follow,
+  marks the register used. On the whole suite this refuses exactly that one promotion (17 -> 16 at `-O3`).
+* Not a v32opt bug: `MOV R1, __const_str_err_for_initial / JMP __for_number` losing its MOV. `__runtime_error_for`
+  (v32lua `src/runtime/exec.s`) reads R1 as the message after a `CALL __builtin_print`, which overwrites R1 (the X
+  coordinate) and does not restore it, so the MOV is dead and the panic screen shows the wrong text with or without
+  v32opt (on the oracle, unoptimized: R1 = 0x20002AFB after the MOV, 0x7FC0008C at the print). The fix is in v32lua:
+  keep the message in the frame, as the value already is in `[BP-1]`. The three tests that passed with
+  `-fno-peephole-dead-regs` were the liveness bug above.
+* With both fixes the whole suite gives the same result at `-O1`, `-O2`, `-O3` and `-Os` as without v32opt, test for
+  test, in the default heap mode and with `--gc arena --gc-check` (146 of 162 files pass; the other 16 fail the same
+  way unoptimized).
+* New `;@fn` attribute **`nonzero`**: R0 is never 0 when the call returns (v32lua's 20261124-dev hint update puts it on
+  `__malloc` and `__malloc_owned`; the first 20261124-dev build does not have it yet). peephole-lua-checks then drops any zero test of the result, whatever it jumps to. A file without
+  the hint keeps the rule below (tests that go to `__oom_handler`, after `__malloc` / `__malloc_owned`, in a file that
+  defines `__malloc_owned`).
+* New test `testing/lua-regs` (both fixes; 6 cases, all failing on 20261119-dev), part of `make tests`.
+  `testing/lua-alloc` gains the `nonzero` cases (18 now) and its fixtures are v32lua 20261124-dev output.
+
 What v32lua's `--gc` work (20261120-dev onwards) changed in its output, and what v32opt does about it:
 
 * `peephole-lua-checks` (`-L lua`, `-O1` and up) deletes the dead out-of-memory test after an allocation. `__malloc`
@@ -21,14 +55,13 @@ What v32lua's `--gc` work (20261120-dev onwards) changed in its output, and what
   appends a `RET` to the end of the program before the comparison, so the test can show the check works.
 * Checked, no change needed: the `MOV R0, owner` before `CALL __malloc_owned` in arena mode stays, because liveness
   reads `__malloc_owned`'s body and sees R0 used. The `PUSH Rv / CALL __arena_check_global|store / IADD SP,1` sequences
-  stay, with `clobbers=none` honoured. The `;#if` blocks never reach v32opt. `__arena_release` has no `clobbers=` hint,
-  so it is treated as clobbering everything. That only matters to the promote passes, and it is called about once a
-  frame, not in loops. The missing hint is on v32lua's side: `tools/check_clobbers.py` only finds call targets written
-  as a literal `CALL __name` in the compiler's C, and `__arena_release` is called through `emit_runtime_call_intrinsic`
-  (its clobbers are R0-R2).
+  stay, with `clobbers=none` honoured. The `;#if` blocks never reach v32opt. `__arena_release` had no `clobbers=` hint
+  (v32lua's `tools/check_clobbers.py` only found call targets written as a literal `CALL __name` in the compiler's C,
+  and it is called through `emit_runtime_call_intrinsic`), so it was treated as clobbering everything; v32lua's
+  20261124-dev hint update gives it `clobbers=R0-R2`, which v32opt reads with no change.
 * The man pages now list exit status 3 (`--check-src` / `--check-vars` found a problem; it was missing) and 4.
-* New test `testing/lua-alloc` (v32lua 20261123-dev output in both GC modes plus a hand-written unit; with teeth:
-  16 cases, 8 of which fail on 20261119-dev), part of `make tests`.
+* New test `testing/lua-alloc` (v32lua output in both GC modes plus a hand-written unit; with teeth: 8 of its first
+  16 cases fail on 20261119-dev), part of `make tests`.
 
 ## 20261119-dev
 

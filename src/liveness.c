@@ -473,9 +473,19 @@ static int flow(AsmNode *node, const char *reg, int ridx, int depth, int stamp) 
 
         // inside a callee: "PUSH Rn ... POP Rn" saves and restores the caller's register, so the register
         // passes through; but the code up to the POP may still read the caller's value (a register argument)
-        if (depth > 0 && n->type == OP_PUSH && is_register_save(n, reg, NULL)) {
-            int sub = flow(n->next, reg, ridx, depth, stamp);
-            return result | (sub & LV_LIVE) | LV_PASSTHRU;
+        // After the POP the register holds the caller's value again, so the code that follows is walked as
+        // well: a read there is a read of the input ("PUSH R1 / CALL f / POP R1 / PUSH R1" passes R1 on),
+        // and the register passes through only if a RET is reached with it untouched. The walk up to the POP
+        // stops at the POP (a POP Rn is a write); the walk after it gets its own stamp, since the first may
+        // have visited labels on the way out of the range in a different state.
+        if (depth > 0 && n->type == OP_PUSH) {
+            const AsmNode *pop = NULL;
+            if (is_register_save(n, reg, &pop) && pop) {
+                int sub = flow(n->next, reg, ridx, depth, stamp);
+                if (sub & LV_LIVE) return result | LV_LIVE;
+                int after = flow((AsmNode *)pop->next, reg, ridx, depth, ++g_stamp_id);
+                return result | sub | after;
+            }
         }
 
         // POP Rd / IN Rd, port overwrite Rd without reading it.

@@ -64,6 +64,7 @@ typedef struct {
     unsigned        clobbers;        // ... bit n = Rn may be written by a call to this function (and what it calls)
     bool            returns_known;   // a 'returns=' attribute was given (v32lua: at most N values come back, R0/R2/R3 first)
     int             returns;         // ... N, the most values any return of the function produces (0 or more)
+    bool            nonzero;         // 'nonzero': R0 is never 0 when the call returns (v32lua's __malloc)
     int             line_lo, line_hi;    // 'lines=A..B': the function's source range (0: not given)
 } FnHints;
 

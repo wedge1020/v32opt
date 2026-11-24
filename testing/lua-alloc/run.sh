@@ -8,14 +8,16 @@
 ##                 (__malloc's own heap/stack test) stay. TEETH: without the __malloc_owned label (an older
 ##                 v32lua, whose __malloc returned 0), with -L c, and with -fno-peephole-lua-checks every check
 ##                 stays. none.asm / arena.asm (v32lua output, plain and --gc arena --gc-check): only
-##                 __malloc's own test is left at -O1..-O3.
+##                 __malloc's own test is left at -O1..-O3. oom_hint.asm: with 'nonzero' on __malloc's ;@fn line
+##                 (v32lua 20261124-dev) CHECK-H goes though it jumps elsewhere and the file has no __malloc_owned;
+##                 CHECK-N (after an unhinted call) stays. TEETH: without the hint CHECK-H stays.
 ##   owner         arena.asm: the "MOV R0, <owner>" before each CALL __malloc_owned is an input of the call
 ##                 (liveness reads __malloc_owned's body) and stays at -O3.
 ##   gc-check      every "PUSH Rv / CALL __arena_check_global|store" stays.
 ##   layout        __v32lua_code_end .. __v32lua_rom_end (labels, instructions, directives) is unchanged at
 ##                 -O3. TEETH: V32OPT_LAYOUT_SELFTEST=1 (a RET appended after the string pool) makes v32opt
 ##                 exit 4 and write nothing; a file without __v32lua_code_end is not checked.
-## The .asm files are v32lua 20261123-dev output of alloc_none.lua / alloc.lua (-w --no-build-scripts, the
+## none.asm / arena.asm are v32lua 20261124-dev output of alloc_none.lua / alloc.lua (-w --no-build-scripts, the
 ## second with --gc arena --gc-check). Needs no Vircon32 tools.
 ## Usage: ./run.sh [path/to/v32opt]     (or V32OPT=path, default ../../bin/v32opt)
 ##
@@ -52,6 +54,17 @@ for v in "old:${TMP}/old.asm:-O1" "c:${U}:-O1 -L c" "off:${U}:-O3 -fno-peephole-
     n="$(oomjumps "${TMP}/t.asm")"
     [ "${n}" -ge 3 ] || fail "oom_unit ${name} (${args}): ${n} __oom_handler jumps left, expected all 3"
 done
+
+# ---- the 'nonzero' hint
+H="${HERE}/oom_hint.asm"
+ncases=$((ncases + 1))
+"${OPT}" "${H}" -O1 -o "${TMP}/h.asm" >/dev/null 2>&1 || fail "oom_hint: v32opt failed"
+has "${TMP}/h.asm" "CHECK-H" && fail "oom_hint -O1: CHECK-H (dead by the nonzero hint) is still there"
+has "${TMP}/h.asm" "CHECK-N" || fail "oom_hint -O1: CHECK-N (after an unhinted call) was removed"
+ncases=$((ncases + 1))
+sed 's/ nonzero$//' "${H}" > "${TMP}/nohint.asm"
+"${OPT}" "${TMP}/nohint.asm" -O1 -o "${TMP}/h2.asm" >/dev/null 2>&1 || fail "oom_hint without the hint: v32opt failed"
+has "${TMP}/h2.asm" "CHECK-H" || fail "oom_hint without the hint: CHECK-H was removed"
 
 # ---- v32lua output
 for a in none arena; do

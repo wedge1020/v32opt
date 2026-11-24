@@ -42,15 +42,17 @@
 %define  var_PRINT_EX_ADV         0x00000006
 %define  func_main                0x0000007B
 %define  var_g                    0x0000007C
-%define  ARENA_FLOOR              0x0000007D
-%define  ARENA_PIN_TOP            0x0000007E
-%define  ARENA_DEPTH              0x0000007F
-%define  ARENA_STACK              0x00000080
+%define  FREE_MASK                0x0000007D
+%define  FREE_BINS                0x0000007E
+%define  ARENA_FLOOR              0x00000094
+%define  ARENA_PIN_TOP            0x00000095
+%define  ARENA_DEPTH              0x00000096
+%define  ARENA_STACK              0x00000097
 %define  ARENA_MAX_DEPTH          16
-%define  HEAP_START               0x00000090
+%define  HEAP_START               0x000000A7
 
-;; Highest used global RAM address: 0x0000008F
-;; Dynamic heap will start at runtime address: 0x00000090
+;; Highest used global RAM address: 0x000000A6
+;; Dynamic heap will start at runtime address: 0x000000A7
 
 
     ;@hints 1 abi=caller-save lang=lua
@@ -261,6 +263,8 @@ __global_scope_initialization:
     MOV   [FTOA_SCRATCH_PTR_A], R0 ; must start at 0 -- see generate_global_setup() comment
     MOV   [FTOA_SCRATCH_PTR_B], R0 ; must start at 0 -- see generate_global_setup() comment
     MOV   R0, 0
+    MOV   [FREE_MASK], R0 ; no freed blocks yet (memory.s __mfree)
+    MOV   R0, 0
     MOV   [ARENA_FLOOR], R0   ; --gc arena: no arena open
     MOV   [ARENA_PIN_TOP], R0 ; nothing pinned
     MOV   [ARENA_DEPTH], R0
@@ -388,7 +392,10 @@ __malloc_owned:
 __malloc:
     PUSH  BP
     MOV   BP, SP
-         
+    MOV   R1, [FREE_MASK]
+    JT    R1, __malloc_reuse  ; a freed block may fit (see __mfree below)
+
+__malloc_bump:
     MOV   R1, [BP+2]          ; R1 = Requested size in words
     MOV   R0, [HEAP_POINTER]  ; R0 = Address of new allocation block
          
@@ -412,6 +419,175 @@ __malloc_oom:
     JMP   __oom_handler       ; fatal: halts, never returns
 
 __malloc_done:
+    MOV   SP, BP
+    POP   BP
+    RET  
+
+;; --- Reuse a freed block -------------------------------------------------
+;; R1 = FREE_MASK (non-zero). Registers: R0-R3 and R6 only (the __malloc
+;; contract). Size classes ("bins"): bin k holds free blocks of 2^k to
+;; 2^(k+1)-1 words; FREE_MASK bit k is set while bin k is not empty.
+;; floor(log2 n) is three instructions: CIF makes n a float, whose
+;; exponent field is it (n < 2^22, so exact).
+;;   1. first fit among the first 4 blocks of n's own bin (they may be
+;;      smaller than n -- the table blocks freed in practice are 8, 16, ...
+;;      array words and 18, 34, ... hash words, so this is where an equal
+;;      size is found);
+;;   2. otherwise the head of the smallest non-empty bin above it: every
+;;      block there is >= 2^(k+1) > n;
+;;   3. otherwise a fresh block from the heap top (__malloc_bump).
+;; A taken block is split: a remainder of 2 words or more goes back into
+;; its own bin. The block's old contents are left as they are -- every
+;; allocation site initialises what it allocates.
+__malloc_reuse:
+    MOV   R2, [ARENA_DEPTH]
+    JT    R2, __malloc_bump   ; inside an arena: fresh memory only (arena.s)
+    MOV   R0, [BP+2]          ; R0 = n
+    MOV   R2, R0
+    ILT   R2, 2
+    JF    R2, __malloc_reuse_n
+    MOV   R0, 2               ; a 1-word request takes a 2-word block
+__malloc_reuse_n:
+    MOV   R3, R0
+    CIF   R3
+    SHL   R3, -23
+    ISUB  R3, 127             ; R3 = k = floor(log2 n)
+    IADD  R3, FREE_BINS       ; R3 = the link to follow: &bin[k]
+    MOV   R6, 4               ; blocks to look at in bin k
+__malloc_fit_loop:
+    MOV   R1, [R3]            ; R1 = candidate block
+    JF    R1, __malloc_fit_none
+    MOV   R2, [R1+1]          ; its size
+    IGE   R2, R0
+    JT    R2, __malloc_fit_take
+    MOV   R3, R1              ; the next link is this block's word 0
+    ISUB  R6, 1
+    JT    R6, __malloc_fit_loop
+    JMP   __malloc_fit_none
+__malloc_fit_take:
+    MOV   R2, [R1]
+    MOV   [R3], R2            ; unlink it
+    MOV   R2, R0
+    CIF   R2
+    SHL   R2, -23
+    ISUB  R2, 127             ; R2 = the bin it came from
+    JMP   __malloc_took
+
+__malloc_fit_none:
+    MOV   R2, R0
+    CIF   R2
+    SHL   R2, -23
+    ISUB  R2, 127             ; k
+    MOV   R3, 2
+    SHL   R3, R2
+    ISUB  R3, 1               ; bits 0..k
+    NOT   R3                  ; bits above k
+    MOV   R1, [FREE_MASK]
+    AND   R1, R3
+    JF    R1, __malloc_bump   ; nothing big enough: fresh memory
+    MOV   R3, R1
+    ISGN  R3
+    AND   R1, R3              ; lowest set bit: the smallest bin that fits
+    CIF   R1
+    SHL   R1, -23
+    ISUB  R1, 127
+    MOV   R2, R1              ; R2 = j
+    MOV   R3, R2
+    IADD  R3, FREE_BINS
+    MOV   R1, [R3]            ; its first block
+    MOV   R6, [R1]
+    MOV   [R3], R6            ; unlink it
+
+;; R1 = the block, R0 = n, R2 = the bin it was in
+__malloc_took:
+    MOV   R3, R2
+    IADD  R3, FREE_BINS
+    MOV   R3, [R3]
+    JT    R3, __malloc_split  ; the bin still has blocks
+    MOV   R3, 1
+    SHL   R3, R2
+    NOT   R3
+    MOV   R6, [FREE_MASK]
+    AND   R6, R3
+    MOV   [FREE_MASK], R6     ; bin now empty
+__malloc_split:
+    MOV   R2, [R1+1]
+    ISUB  R2, R0              ; R2 = what is left over
+    MOV   R3, R2
+    ILT   R3, 2
+    JT    R3, __malloc_reuse_done
+    MOV   R3, R1
+    IADD  R3, R0              ; R3 = the remainder block
+    MOV   [R3+1], R2
+    CIF   R2
+    SHL   R2, -23
+    ISUB  R2, 127             ; its bin
+    MOV   R6, R2
+    IADD  R6, FREE_BINS
+    MOV   R0, [R6]
+    MOV   [R3], R0
+    MOV   [R6], R3            ; pushed on its bin
+    MOV   R0, 1
+    SHL   R0, R2
+    MOV   R6, [FREE_MASK]
+    OR    R6, R0
+    MOV   [FREE_MASK], R6
+__malloc_reuse_done:
+    MOV   R0, R1
+    JMP   __malloc_done
+
+;; ---------------------------------------------------------------------------
+;; __mfree: give a block back for __malloc to reuse.
+;; Incoming Stack: [BP+3] = RAW block address, [BP+2] = its size in words
+;; (exactly what was allocated, or the tail of it). Preserves every register.
+;; Used where the runtime KNOWS a block is garbage: the array or hash part a
+;; table has just outgrown (table.s), the unused tail of a number's text
+;; (string.s). Blocks under 2 words are dropped (a free block keeps its
+;; next pointer and its size in its first two words).
+;; With --gc arena, a block inside an open arena is not kept (the release
+;; frees it anyway, and a list entry above the heap top after the release
+;; would be handed out twice), and __malloc does not reuse blocks while an
+;; arena is open (an object made there must lie above the mark, or the
+;; release would not free it and --gc-check would take it for an old one).
+;; ---------------------------------------------------------------------------
+    ;@fn __mfree clobbers=none
+__mfree:
+    PUSH  BP
+    MOV   BP, SP
+    PUSH  R0
+    PUSH  R1
+    PUSH  R2
+    PUSH  R3
+    MOV   R1, [BP+2]          ; size
+    MOV   R0, R1
+    ILT   R0, 2
+    JT    R0, __mfree_done
+    MOV   R0, [BP+3]          ; block
+    MOV   R2, [ARENA_DEPTH]
+    JF    R2, __mfree_keep
+    MOV   R2, [ARENA_STACK]   ; the outermost open mark
+    IGT   R2, R0              ; is the block below every arena?
+    JF    R2, __mfree_done    ; no: it goes with the arena
+__mfree_keep:
+    MOV   [R0+1], R1
+    CIF   R1
+    SHL   R1, -23
+    ISUB  R1, 127             ; its bin
+    MOV   R2, R1
+    IADD  R2, FREE_BINS
+    MOV   R3, [R2]
+    MOV   [R0], R3
+    MOV   [R2], R0            ; pushed on its bin
+    MOV   R2, 1
+    SHL   R2, R1
+    MOV   R3, [FREE_MASK]
+    OR    R3, R2
+    MOV   [FREE_MASK], R3
+__mfree_done:
+    POP   R3
+    POP   R2
+    POP   R1
+    POP   R0
     MOV   SP, BP
     POP   BP
     RET  
@@ -2440,6 +2616,16 @@ __table_hash_grow_next:
     ISUB  R7, 1
     JMP   __table_hash_grow_loop
 __table_hash_grow_done:
+    ;; The old block is garbage now (nothing keeps a pointer into it: the
+    ;; header points at the new one): back to __malloc for reuse. R6 ran to
+    ;; its end; its size is 2 + 2 * old capacity = 2 + new capacity.
+    MOV   R7, [R5]
+    IADD  R7, 2
+    ISUB  R6, R7              ; R6 = the old block
+    PUSH  R6
+    PUSH  R7
+    CALL  __mfree
+    IADD  SP, 2
     POP   R8
     POP   R7
     POP   R6
@@ -2643,6 +2829,14 @@ __table_array_grow_copied:
     AND   R7, 0xFFFF0000
     OR    R7, R6
     MOV   [R1], R7
+    ;; The old array (R2, R5 words; none when the capacity was 0) is
+    ;; garbage now: back to __malloc for reuse
+    JF    R2, __table_array_grow_freed
+    PUSH  R2
+    PUSH  R5
+    CALL  __mfree
+    IADD  SP, 2
+__table_array_grow_freed:
     ;; migrate keys old_capacity+1 .. new_capacity out of the hash part
     MOV   R8, [R1+3]
     MOV   R7, R8
@@ -5855,8 +6049,9 @@ __tostring_done:
 ;; Returns: R0 = Raw Heap Pointer to null-terminated ASCII string
 ;; Registers: R0-R13 (R14/BP and R15/SP preserved)
 ;;
-;; This allocates a FRESH, permanent 48-word heap block on every call --
-;; correct and necessary when the resulting string genuinely becomes a
+;; This allocates a FRESH 48-word heap block on every call (the unused
+;; tail is given back at __ftoa_terminate, so the string keeps only its
+;; length + 1 words) -- correct and necessary when the resulting string genuinely becomes a
 ;; Lua value the program may keep (e.g. tostring()'s return value). Where
 ;; the result is instead immediately copied elsewhere or displayed and
 ;; never needed again, use __builtin_ftoa_scratch_a or _scratch_b below
@@ -6216,6 +6411,33 @@ __ftoa_trim_dot:
 __ftoa_terminate:
     MOV   R10, 0
     MOV   [R9], R10               ; null terminator
+
+    ;; A fresh buffer (__builtin_ftoa: tostring() and friends, not the two
+    ;; shared scratch buffers) gives back what the text did not use -- 48
+    ;; words were taken for the longest possible text, "12.5" needs 5. Was
+    ;; 48 words of garbage on every tostring(number).
+    MOV   R10, [FTOA_SCRATCH_PTR_A]
+    IEQ   R10, R2
+    JT    R10, __ftoa_tail_done
+    MOV   R10, [FTOA_SCRATCH_PTR_B]
+    IEQ   R10, R2
+    JT    R10, __ftoa_tail_done
+    MOV   R10, R9
+    IADD  R10, 1                  ; R10 = first unused word
+    MOV   R11, R2
+    IADD  R11, 48                 ; R11 = end of the buffer
+    MOV   R12, [HEAP_POINTER]
+    IEQ   R12, R11
+    JF    R12, __ftoa_free_tail
+    MOV   [HEAP_POINTER], R10     ; the newest block: just lower the heap top
+    JMP   __ftoa_tail_done
+__ftoa_free_tail:
+    ISUB  R11, R10                ; it came from a free list: free the tail
+    PUSH  R10
+    PUSH  R11
+    CALL  __mfree
+    IADD  SP, 2
+__ftoa_tail_done:
     MOV   R0, R2                  ; return base pointer
     MOV   SP, BP
     POP   BP

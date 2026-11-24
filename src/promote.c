@@ -685,10 +685,44 @@ static void note_reg(RegionInfo *ri, const Operand *op) {
 }
 
 // weights[i] is the weight of the i-th node of the region, or NULL for 1.
+// The stack the region's own PUSHes build, in text order (register number, or -1 for a word that is not a
+// register's): a POP is bookkeeping only when it gives back the register its PUSH saved. Any other POP Rn --
+// "PUSH R0 ... POP R2", which peephole-copies makes of "MOV R2, R0 / PUSH R2 ... POP R2", or a POP of a word
+// pushed before the region -- is a write of Rn like any other, and Rn is used. After an SP change the walk
+// can't follow (MOV SP, BP, an SP read, ...) every POP counts as a write.
+#define SCAN_STACK_MAX 256
+static void scan_pushpop(AsmNode *n, int *stk, int *depth, bool *lost, RegionInfo *ri) {
+    bool sp_dst = n->has_dst && n->dst_op.mode == MODE_REG && str_case_eq(n->dst_op.reg, "SP");
+    if (n->type == OP_PUSH) {
+        int r = (n->has_dst && n->dst_op.mode == MODE_REG) ? get_reg_index(n->dst_op.reg) : -1;
+        if (*depth < SCAN_STACK_MAX) stk[(*depth)++] = r; else *lost = true;
+        return;
+    }
+    if (n->type == OP_POP) {
+        int r = (n->has_dst && n->dst_op.mode == MODE_REG) ? get_reg_index(n->dst_op.reg) : -1;
+        bool matched = !*lost && *depth > 0 && stk[*depth - 1] == r;
+        if (*depth > 0) (*depth)--; else *lost = true;
+        if (!matched && r >= 0 && r < 16) ri->reg_used[r] = true;
+        return;
+    }
+    if (sp_dst && (n->type == OP_IADD || n->type == OP_ISUB) && n->has_src && n->src_op.mode == MODE_IMMEDIATE &&
+        !n->src_op.is_float) {
+        long k = n->src_op.immediate;
+        if (n->type == OP_ISUB) k = -k;                                  // ISUB SP, k: k words pushed
+        if (k > 0) { if (k > *depth) *lost = true; *depth = k > *depth ? 0 : *depth - (int)k; }
+        else for (long j = 0; j < -k; j++) { if (*depth < SCAN_STACK_MAX) stk[(*depth)++] = -1; else *lost = true; }
+        return;
+    }
+    if (sp_dst) *lost = true;
+}
+
 static void scan_region(AsmNode *from, AsmNode *to, const int *weights, RegionInfo *ri) {
     memset(ri, 0, sizeof(*ri));
     int i = 0;
+    int stk[SCAN_STACK_MAX], depth = 0;
+    bool lost = false;
     for (AsmNode *n = from; n && n != to; n = n->next, i++) {
+        scan_pushpop(n, stk, &depth, &lost, ri);
         int w = weights ? weights[i] : 1;
         if (n->type == OP_CALL && node_in_cold_block(n)) {
             ri->cold_calls++;

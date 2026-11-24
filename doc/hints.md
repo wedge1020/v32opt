@@ -82,6 +82,7 @@ needs no line unless a function `X` also exists.
 | `alwaysinline` | `-finline` takes the body whatever its length (up to 32), even with `-finline-max=0`, even if the function is also `cold` | the source said `always_inline` |
 | `hot` | like `inline` for the inliner; every loop in the function counts as hot (below) | the source said `hot` |
 | `cold` | never inlined (unless `alwaysinline`); every loop in the function counts as cold (below) | the source said `cold` |
+| `nonzero` | (`-L lua`) R0 is never 0 when a call to the function returns: `peephole-lua-checks` drops a zero test of the result (`IEQ Rn, 0` / `JT Rn, ...`, `JF Rn, ...` on R0 or a copy of it) | v32lua: `__malloc` and `__malloc_owned`, which go to `__oom_handler` themselves instead of returning 0 |
 | `noreturn`, `leaf`, `naked` | recorded, not used yet | |
 
 `noinline` beats `inline`, `alwaysinline` and `hot`. A function that is both `hot` and

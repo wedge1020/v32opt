@@ -733,14 +733,23 @@ out:
 // label, branch, CALL, RET, directive or volatile instruction, after 32 instructions, or when no register holds the
 // result any more.
 //
-// Older v32lua's __malloc returned 0 on out-of-memory, and a C program's __malloc may too, so the rule applies only
-// to a file that defines `__malloc_owned` (added in the same v32lua release) and only in -L lua mode.
+// Which calls: those whose ';@fn' line says 'nonzero' (v32lua 20261124-dev and later puts it on __malloc and
+// __malloc_owned); for them any zero test of the result is dead, whatever it jumps to. A file without the
+// hint (v32lua 20261120-dev .. 20261123-dev) gets the rule for CALL __malloc / __malloc_owned and tests that go to
+// __oom_handler only, and only when it defines __malloc_owned, which came with the never-0 __malloc: an older
+// v32lua's __malloc returned 0, and a C program's __malloc may too. -L lua mode only.
 // One trigger slot per check removed.
 // ---------------------------------------------------------------------------
 #define OOM_SCAN_MAX 32
 
-static bool is_malloc_call(const AsmNode *n) {
-    return n->type == OP_CALL && n->has_dst && n->dst_op.mode == MODE_IMMEDIATE &&
+// A call whose result is known to be non-zero: hinted 'nonzero', or (fallback) __malloc / __malloc_owned.
+// *any_target: every zero test of the result is dead (the hint); otherwise only one that goes to __oom_handler.
+static bool is_nonzero_call(const AsmNode *n, bool fallback, bool *any_target) {
+    *any_target = false;
+    if (n->type != OP_CALL) return false;
+    const FnHints *h = hints_fn_of_call(n);
+    if (h && h->nonzero) { *any_target = true; return true; }
+    return fallback && n->has_dst && n->dst_op.mode == MODE_IMMEDIATE &&
            (name_eq(n->dst_op.raw, "__malloc") || name_eq(n->dst_op.raw, "__malloc_owned"));
 }
 
@@ -764,10 +773,11 @@ static AsmNode *next_insn(AsmNode *n) {
 }
 
 static int drop_oom_checks(AsmNode *head) {
-    if (!defines_label(head, "__malloc_owned")) return 0;
+    bool fallback = defines_label(head, "__malloc_owned");
     int done = 0;
     for (AsmNode *c = head; c; c = c->next) {
-        if (!is_malloc_call(c)) continue;
+        bool any_target;
+        if (!is_nonzero_call(c, fallback, &any_target)) continue;
         unsigned nz = 1u;                                   // bit r: Rr holds the (non-zero) result
         AsmNode *x = c;
         for (int steps = 0; nz && steps < OOM_SCAN_MAX; steps++) {
@@ -780,7 +790,7 @@ static int drop_oom_checks(AsmNode *head) {
                 parse_imm_val(x->src_op.raw) == 0) {
                 AsmNode *j = next_insn(x);
                 if (j && j->type == OP_JT && j->has_dst && j->dst_op.mode == MODE_REG &&
-                    get_reg_index(j->dst_op.reg) == rd && j->has_src && sym_is(&j->src_op, "__oom_handler") &&
+                    get_reg_index(j->dst_op.reg) == rd && j->has_src && (any_target || sym_is(&j->src_op, "__oom_handler")) &&
                     !node_is_volatile(j) && trigger_allowed()) {
                     insert_debug_comment(x->prev, OPT_PEEPHOLE_LUA_CHECKS, x->raw);
                     insert_debug_comment(j->prev, OPT_PEEPHOLE_LUA_CHECKS, j->raw);
@@ -795,7 +805,7 @@ static int drop_oom_checks(AsmNode *head) {
             }
             // the shape peephole-zero-test leaves: "JF R0, __oom_handler" is taken only when R0 is 0
             if (x->type == OP_JF && rd >= 0 && rd < 14 && ((nz >> rd) & 1u) && x->has_src &&
-                sym_is(&x->src_op, "__oom_handler")) {
+                (any_target || sym_is(&x->src_op, "__oom_handler"))) {
                 AsmNode *list[1] = { x };
                 AsmNode *cur = x;
                 if (remove_with_debug(&cur, list, 1, OPT_PEEPHOLE_LUA_CHECKS)) done++;

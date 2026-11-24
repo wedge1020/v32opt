@@ -148,6 +148,7 @@ tests: bin/$(TARGET)
 	bash testing/lua-returns/run.sh bin/$(TARGET)
 	bash testing/zero-test-comment/run.sh bin/$(TARGET)
 	bash testing/lua-alloc/run.sh bin/$(TARGET)
+	bash testing/lua-regs/run.sh bin/$(TARGET)
 	V32OPT=$(CURDIR)/bin/$(TARGET) sh testing/hints/run.sh
 	V32OPT=$(CURDIR)/bin/$(TARGET) sh testing/case-sensitive/run.sh
 	V32OPT=$(CURDIR)/bin/$(TARGET) sh testing/return-label/run.sh
