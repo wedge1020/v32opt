@@ -208,6 +208,7 @@ int main(int argc, char **argv) {
     }
     // Source markers (';@src'): taken out of the list, carried on the instructions
     bool have_src = srcmarks_attach(program_ast);
+    layout_snapshot(program_ast);      // v32lua's __v32lua_code_end .. end of file, compared before writing
     if (config.check_vars) varloc_snapshot(program_ast);       // which slots each function uses, before the passes touch them
     if (config.verbose && have_src)
         printf("Source markers found%s.\n", config.strip_src ? " (will be removed: --strip-src)" : "");
@@ -565,6 +566,7 @@ int main(int argc, char **argv) {
     int src_problems = config.check_src ? srcmarks_check(program_ast) : 0;
     int var_problems = config.check_vars ? varloc_check(program_ast) : 0;
     srcmarks_emit(program_ast);
+    if (layout_verify(program_ast)) return 4;   // a cart whose boot-time layout check would be wrong: no output
     write_vircon32_asm(outFile, program_ast);
 
     // --- Cleanup ---

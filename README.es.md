@@ -461,7 +461,7 @@ v32opt <entrada.asm> [-o salida.asm] [opciones]
 | Opción | Descripción | Pasadas Incluidas |
 | --- | --- | --- |
 | `-O0` | **Sin Optimización** | Desactiva todas las pasadas de optimización (por defecto). |
-| `-O1` | **Mirilla Local** | Activa las 16 optimizaciones locales (14 de mirilla sobre ventana, más la **escritura muerta de registro** y la **limpieza de copias**, guiadas por vida de registros); `-L lua` añade `peephole-lua-checks`, 17 en total. |
+| `-O1` | **Mirilla Local** | Activa las 16 optimizaciones locales (14 de mirilla sobre ventana, más la **escritura muerta de registro** y la **limpieza de copias**, guiadas por vida de registros); `-L lua` añade `peephole-lua-checks`, 17 en total (con la salida de v32lua 20261120-dev o posterior elimina también la prueba muerta de memoria agotada tras `CALL __malloc` / `__malloc_owned`). |
 | `-O2` | **Análisis Global** | Activa todas las pasadas de `-O1` + **CSE**, **Eliminación de Código Muerto (DCE)**, **Plegado Global de Constantes**, **Eliminación del Puntero de Marco** y **Promoción de Memoria a Registros** (`promote-regs`, `promote-leaf`, `promote-loops`) y, con `-L lua`, **Lecturas de la Variable de Bucle** (`lua-loop-var`). |
 | `-O3` | **Agresivo** | Activa todas las pasadas de `-O2` + **Inserción de Funciones en Línea** + **Inversión de Bucles** + **Desenrollado de Bucles** (completo y parcial) + **Plegado del Índice** + **Reducción de Fuerza de Punteros** (`loop-strength`) + **Cargas Repetidas de Inmediatos** (`peephole-repeat-imm`). |
 | `-Os` | **Ahorro de Espacio** | `-O3` sin las pasadas de bucle (que duplican código o gastan un registro) y sin `peephole-repeat-imm` (que solo limpia tras ellas); marcador de posición para un nivel dedicado al tamaño. |

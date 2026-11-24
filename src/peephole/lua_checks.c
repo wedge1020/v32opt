@@ -712,10 +712,117 @@ out:
     return total;
 }
 
+// ---------------------------------------------------------------------------
+// The dead out-of-memory checks after an allocation.
+//
+// Since v32lua 20261120-dev `__malloc` never returns 0: when the heap would run into the stack it jumps to
+// `__oom_handler` itself and halts. The runtime still tests the result after many of its calls:
+//
+//     CALL __malloc            (or __malloc_owned)
+//     IADD SP, 1               any number of: stack adjusts, PUSH, POP of another register,
+//     POP  R6                  copies of the result, instructions that write other registers
+//     MOV  R4, R0
+//     IEQ  R4, 0          ->   MOV R4, 0        (exactly what IEQ leaves in a register known to be non-zero)
+//     JT   R4, __oom_handler   (deleted)
+//
+// and "JF Rn, __oom_handler" (the form peephole-zero-test makes of the same test) on a register holding the result
+// is deleted.
+//
+// The copy and the MOV are usually dead after that; peephole-dead-regs removes them. A register is known to be
+// non-zero from the CALL on while nothing writes it; MOV Rd, Rs passes the fact on. The walk stops at the first
+// label, branch, CALL, RET, directive or volatile instruction, after 32 instructions, or when no register holds the
+// result any more.
+//
+// Older v32lua's __malloc returned 0 on out-of-memory, and a C program's __malloc may too, so the rule applies only
+// to a file that defines `__malloc_owned` (added in the same v32lua release) and only in -L lua mode.
+// One trigger slot per check removed.
+// ---------------------------------------------------------------------------
+#define OOM_SCAN_MAX 32
+
+static bool is_malloc_call(const AsmNode *n) {
+    return n->type == OP_CALL && n->has_dst && n->dst_op.mode == MODE_IMMEDIATE &&
+           (name_eq(n->dst_op.raw, "__malloc") || name_eq(n->dst_op.raw, "__malloc_owned"));
+}
+
+static bool defines_label(AsmNode *head, const char *name) {
+    char lbl[128];
+    for (AsmNode *n = head; n; n = n->next) {
+        if (n->type != OP_LABEL) continue;
+        get_label_name(n, lbl, sizeof(lbl));
+        if (name_eq(lbl, name)) return true;
+    }
+    return false;
+}
+
+// The next node that is an instruction or a label; NULL at a directive (data, %define, ...) or the end.
+static AsmNode *next_insn(AsmNode *n) {
+    for (n = n->next; n; n = n->next) {
+        if (n->type != OP_OTHER) return n;
+        if (is_directive_node(n) || is_preprocessor_node(n)) return NULL;
+    }
+    return NULL;
+}
+
+static int drop_oom_checks(AsmNode *head) {
+    if (!defines_label(head, "__malloc_owned")) return 0;
+    int done = 0;
+    for (AsmNode *c = head; c; c = c->next) {
+        if (!is_malloc_call(c)) continue;
+        unsigned nz = 1u;                                   // bit r: Rr holds the (non-zero) result
+        AsmNode *x = c;
+        for (int steps = 0; nz && steps < OOM_SCAN_MAX; steps++) {
+            x = next_insn(x);
+            if (!x || x->type == OP_LABEL || node_is_volatile(x)) break;
+            int rd = (x->has_dst && x->dst_op.mode == MODE_REG) ? get_reg_index(x->dst_op.reg) : -1;
+
+            if (x->type == OP_IEQ && rd >= 0 && rd < 14 && ((nz >> rd) & 1u) && x->has_src &&
+                x->src_op.mode == MODE_IMMEDIATE && !x->src_op.is_float && is_numeric_immediate(&x->src_op) &&
+                parse_imm_val(x->src_op.raw) == 0) {
+                AsmNode *j = next_insn(x);
+                if (j && j->type == OP_JT && j->has_dst && j->dst_op.mode == MODE_REG &&
+                    get_reg_index(j->dst_op.reg) == rd && j->has_src && sym_is(&j->src_op, "__oom_handler") &&
+                    !node_is_volatile(j) && trigger_allowed()) {
+                    insert_debug_comment(x->prev, OPT_PEEPHOLE_LUA_CHECKS, x->raw);
+                    insert_debug_comment(j->prev, OPT_PEEPHOLE_LUA_CHECKS, j->raw);
+                    x->type = OP_MOV;
+                    safe_str_copy(x->mnemonic, "MOV", sizeof(x->mnemonic));
+                    x->src_op = parse_operand("0");
+                    node_set_rawf(x, "    MOV %s, 0", x->dst_op.raw);
+                    remove_node(j);
+                    done++;
+                }
+                break;                                      // one check per allocation
+            }
+            // the shape peephole-zero-test leaves: "JF R0, __oom_handler" is taken only when R0 is 0
+            if (x->type == OP_JF && rd >= 0 && rd < 14 && ((nz >> rd) & 1u) && x->has_src &&
+                sym_is(&x->src_op, "__oom_handler")) {
+                AsmNode *list[1] = { x };
+                AsmNode *cur = x;
+                if (remove_with_debug(&cur, list, 1, OPT_PEEPHOLE_LUA_CHECKS)) done++;
+                break;
+            }
+            if (is_branch_or_call(x) || x->type == OP_RET || x->type == OP_HLT || x->type == OP_WAIT) break;
+            if (x->type == OP_MOV && rd >= 0 && rd < 14) {
+                int rs = (x->has_src && x->src_op.mode == MODE_REG) ? get_reg_index(x->src_op.reg) : -1;
+                bool keep = rs >= 0 && rs < 14 && ((nz >> rs) & 1u);
+                nz = keep ? (nz | (1u << rd)) : (nz & ~(1u << rd));
+                continue;
+            }
+            char rn[8];
+            for (int r = 0; r < 14; r++) {
+                if (!((nz >> r) & 1u)) continue;
+                snprintf(rn, sizeof(rn), "R%d", r);
+                if (modifies_register(x, rn)) nz &= ~(1u << r);
+            }
+        }
+    }
+    return done;
+}
+
 int peephole_lua_checks(AsmNode *head)
 {
     if (!is_lua_mode() || !head) return 0;
-    int total = 0;
+    int total = drop_oom_checks(head);
     liveness_begin(head);
     promote_bounds_begin(head);
     for (AsmNode *n = head->next; n; n = n->next) {

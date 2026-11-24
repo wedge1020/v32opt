@@ -448,7 +448,7 @@ v32opt <input.asm> [-o output.asm] [options]
 | Flag | Description | Included Passes |
 | --- | --- | --- |
 | `-O0` | **No Optimization** | Disables all optimization passes (default). |
-| `-O1` | **Local Peephole** | Enables all 16 local peephole optimizations (14 window passes, plus the liveness-driven **dead register write** and **copy cleanup**); `-L lua` adds `peephole-lua-checks`, 17 in all. |
+| `-O1` | **Local Peephole** | Enables all 16 local peephole optimizations (14 window passes, plus the liveness-driven **dead register write** and **copy cleanup**); `-L lua` adds `peephole-lua-checks`, 17 in all (with v32lua 20261120-dev or later output it also drops the dead out-of-memory test after `CALL __malloc` / `__malloc_owned`). |
 | `-O2` | **Global Analysis** | Enables all `-O1` passes + **CSE**, **Dead Code Elimination (DCE)**, **Global Constant Folding**, **Frame Pointer Elimination** & **Memory-to-Register Promotion** (`promote-regs`, `promote-leaf`, `promote-loops`), and with `-L lua` **Loop Variable Reads** (`lua-loop-var`). |
 | `-O3` | **Aggressive** | Enables all `-O2` passes + **Function Inlining** + **Loop Inversion** + **Loop Unrolling** (full and partial) + **Loop Index Folding** + **Pointer Strength Reduction** (`loop-strength`) + **Repeated Immediates** (`peephole-repeat-imm`). |
 | `-Os` | **Space Saving** | `-O3` without the loop passes (which duplicate code, or spend a register) and without `peephole-repeat-imm` (which only cleans up after them); a placeholder for a dedicated size-focused tier. |

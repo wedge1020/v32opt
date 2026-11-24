@@ -26,11 +26,11 @@
 // reads it directly; the CMake build reads it at configure time (for its
 // package metadata); the man page's .TH header is stamped from it by
 // `make version` in the base Makefile, which parses the line below with
-// sed -- so keep it on one line, in this exact `#define VERSION "..."`
+// sed -- so keep it on one line, in this exact `#define VERSION "YYYYMMDD-dev"`
 // shape. To release: edit the string and run `make version`, or run
 // `make version VERSION=YYYYMMDD-release` to have make edit it for you.
 // ---------------------------------------------------------------------------
-#define  VERSION                      "20261119-dev"
+#define  VERSION                      "20261124-dev"
 #define  AUTHOR                       "Matthew Haas"
 #define  URL                          "https://github.com/wedge1020/v32opt"
 
@@ -104,6 +104,10 @@ typedef enum {
 bool  is_lua_mode          (void);
 bool  is_boxed_type_operand(const Operand *);
 bool  is_boxed_tagging     (AsmNode *);
+
+// v32lua's layout labels (__v32lua_code_end / __v32lua_rom_end) stay put: layout.c
+void  layout_snapshot      (AsmNode *);
+int   layout_verify        (AsmNode *);
 
 // ---------------------------------------------------------------------------
 // Optimization configuration (set by process_args, read by main.c and

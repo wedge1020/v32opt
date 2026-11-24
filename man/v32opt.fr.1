@@ -1,7 +1,7 @@
 .\" -*- coding: UTF-8 -*-
 .\" Traduction française de man/v32opt.1. `make version` met à jour la
 .\" date et la version de la ligne .TH ci-dessous.
-.TH V32OPT 1 "novembre 2026" "v32opt 20261119-dev" "Commandes de l'utilisateur"
+.TH V32OPT 1 "novembre 2026" "v32opt 20261124-dev" "Commandes de l'utilisateur"
 .SH NOM
 v32opt \- optimise du code assembleur Vircon32
 .SH SYNOPSIS
@@ -828,6 +828,31 @@ reconnaissent et protègent ces tournures d'emballage, et la passe
 d'algèbre supprime en outre la moitié \(dqest-ce Nil ?\(dq,
 manifestement morte, du test de vérité fixe de six instructions du
 compilateur après un producteur de booléen emballé.
+.PP
+Avec la sortie de v32lua 20261120-dev ou ultérieur (le fichier définit
+.IR __malloc_owned ),
+.I peephole\-lua\-checks
+supprime aussi le test de mémoire épuisée après un appel à
+.I __malloc
+ou
+.IR __malloc_owned :
+ces routines ne renvoient plus jamais 0, elles sautent elles-mêmes à
+.IR __oom_handler .
+Une sortie plus ancienne, dont le
+.I __malloc
+peut renvoyer 0, garde ses tests.
+.PP
+La vérification de disposition que v32lua fait au démarrage compare les
+étiquettes
+.I __v32lua_code_end
+(après tout le code) et
+.I __v32lua_rom_end
+(après la réserve de chaînes, en fin de fichier). v32opt ne déplace rien
+au-delà de l'une ou l'autre et n'ajoute rien après la réserve de
+chaînes ; il compare tout ce qui va de
+.I __v32lua_code_end
+à la fin du fichier avant et après l'optimisation, et s'arrête avec le
+code de retour 4 si quelque chose a changé.
 .SH "CODE DE RETOUR"
 .TP
 .B 0
@@ -838,6 +863,17 @@ Aucun fichier d'entrée (ou plus d'un) n'a été indiqué ; une option n'a
 pas été reconnue ou était mal formée ; le niveau d'optimisation ou le
 mode de langage demandé n'existe pas ; le fichier d'entrée n'a pas pu
 être ouvert ; ou le fichier de sortie n'a pas pu être écrit.
+.TP
+.B 3
+.B \-\-check\-src
+ou
+.B \-\-check\-vars
+a trouvé un problème (la sortie a été écrite).
+.TP
+.B 4
+Erreur interne : le code ou les données après l'étiquette
+.I __v32lua_code_end
+de v32lua ont changé pendant l'optimisation. Aucune sortie n'est écrite.
 .SH EXEMPLES
 Optimiser un fichier produit par un compilateur au niveau le plus sûr,
 en écrivant

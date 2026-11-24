@@ -1,4 +1,4 @@
-.TH V32OPT 1 "November 2026" "v32opt 20261119-dev" "User Commands"
+.TH V32OPT 1 "November 2026" "v32opt 20261124-dev" "User Commands"
 .SH NAME
 v32opt \- optimize Vircon32 assembly code
 .SH SYNOPSIS
@@ -816,6 +816,30 @@ recognize and protect the boxing idioms, and the algebra pass
 additionally drops the provably-dead \(dqis it Nil?\(dq half of
 the compiler's fixed six-instruction truthiness test after a
 boxed-boolean producer.
+.PP
+With v32lua 20261120-dev or later output (the file defines
+.IR __malloc_owned ),
+.I peephole\-lua\-checks
+also deletes the out-of-memory test after a call to
+.I __malloc
+or
+.IR __malloc_owned :
+those routines never return 0 any more, they go to
+.I __oom_handler
+themselves. Older output, whose
+.I __malloc
+can return 0, keeps its tests.
+.PP
+v32lua's boot-time layout check compares the labels
+.I __v32lua_code_end
+(after all code) and
+.I __v32lua_rom_end
+(after the string pool, last in the file). v32opt moves nothing
+past either label and appends nothing after the string pool; it
+compares everything from
+.I __v32lua_code_end
+to the end of the file before and after optimizing, and stops
+with exit status 4 if anything changed.
 .SH EXIT STATUS
 .TP
 .B 0
@@ -827,6 +851,17 @@ No input file (or more than one) was given; an option was
 unrecognized or malformed; the requested optimization level or
 language mode does not exist; the input file could not be opened;
 or the output file could not be written.
+.TP
+.B 3
+.B \-\-check\-src
+or
+.B \-\-check\-vars
+found a problem (the output was written).
+.TP
+.B 4
+Internal error: the code or data after v32lua's
+.I __v32lua_code_end
+label changed during optimization. No output is written.
 .SH EXAMPLES
 Optimize a compiler-emitted file at the safest level, writing
 .IR gameOpt.asm :

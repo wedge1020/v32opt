@@ -1,7 +1,7 @@
 .\" -*- coding: UTF-8 -*-
 .\" Traducción al español de man/v32opt.1. `make version` actualiza la
 .\" fecha y la versión de la línea .TH siguiente.
-.TH V32OPT 1 "noviembre de 2026" "v32opt 20261119-dev" "Órdenes de usuario"
+.TH V32OPT 1 "noviembre de 2026" "v32opt 20261124-dev" "Órdenes de usuario"
 .SH NOMBRE
 v32opt \- optimiza código ensamblador de Vircon32
 .SH SINOPSIS
@@ -830,6 +830,31 @@ reconocen y protegen estas construcciones de empaquetado, y la pasada de
 álgebra elimina además la mitad \(dq¿es Nil?\(dq, demostrablemente
 muerta, de la prueba fija de veracidad de seis instrucciones del
 compilador tras un productor de booleanos empaquetados.
+.PP
+Con la salida de v32lua 20261120-dev o posterior (el archivo define
+.IR __malloc_owned ),
+.I peephole\-lua\-checks
+elimina también la prueba de memoria agotada tras una llamada a
+.I __malloc
+o
+.IR __malloc_owned :
+esas rutinas ya no devuelven nunca 0, saltan ellas mismas a
+.IR __oom_handler .
+La salida antigua, cuyo
+.I __malloc
+puede devolver 0, conserva sus pruebas.
+.PP
+La comprobación de disposición que v32lua hace al arrancar compara las
+etiquetas
+.I __v32lua_code_end
+(tras todo el código) y
+.I __v32lua_rom_end
+(tras el almacén de cadenas, al final del archivo). v32opt no mueve nada
+más allá de ninguna de las dos ni añade nada tras el almacén de cadenas;
+compara todo lo que va de
+.I __v32lua_code_end
+al final del archivo antes y después de optimizar, y se detiene con
+estado de salida 4 si algo cambió.
 .SH "ESTADO DE SALIDA"
 .TP
 .B 0
@@ -841,6 +866,17 @@ No se indicó ningún archivo de entrada (o se indicó más de uno); una
 opción no se reconoció o estaba mal formada; el nivel de optimización o
 el modo de lenguaje pedido no existe; no se pudo abrir el archivo de
 entrada; o no se pudo escribir el archivo de salida.
+.TP
+.B 3
+.B \-\-check\-src
+o
+.B \-\-check\-vars
+encontró un problema (la salida se escribió).
+.TP
+.B 4
+Error interno: el código o los datos tras la etiqueta
+.I __v32lua_code_end
+de v32lua cambiaron durante la optimización. No se escribe salida.
 .SH EJEMPLOS
 Optimizar un archivo generado por un compilador con el nivel más seguro,
 escribiendo

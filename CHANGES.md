@@ -1,5 +1,35 @@
 # v32opt changes
 
+## 20261124-dev
+
+What v32lua's `--gc` work (20261120-dev onwards) changed in its output, and what v32opt does about it:
+
+* `peephole-lua-checks` (`-L lua`, `-O1` and up) deletes the dead out-of-memory test after an allocation. `__malloc`
+  never returns 0 any more (it jumps to `__oom_handler` and halts), so `CALL __malloc` / `CALL __malloc_owned` ...
+  `MOV Rn, R0 / IEQ Rn, 0 / JT Rn, __oom_handler` becomes `... MOV Rn, 0` with the jump gone (the copy and the `MOV`
+  are then dead and peephole-dead-regs takes them), and the `JF R0, __oom_handler` that peephole-zero-test makes of
+  the same test is deleted. The result is followed through stack adjusts, PUSH/POP of other registers, copies and
+  writes to other registers, up to the first label, branch, CALL or directive. Applied only to a file that defines
+  `__malloc_owned` (added in the same v32lua release): an older v32lua's `__malloc` returned 0. `__malloc`'s own
+  heap/stack test stays. All 11 tests in the runtime go: 17 instructions per program, 1-3 per allocation at run time.
+* New layout guard (`src/layout.c`). Every v32lua cart now checks `__v32lua_code_end` (after all code) and
+  `__v32lua_rom_end` (after the string pool, last in the file) at boot. No pass moved code past them or appended
+  anything, and now that is checked: the labels, instructions and directives from `__v32lua_code_end` to the end of
+  the file are recorded before the passes and compared before the output is written. A difference is an internal
+  error: v32opt says what changed, writes no output, and exits with status **4**. Not checked: files without the
+  label, and input that already has instructions after it (v32lua never writes that). `V32OPT_LAYOUT_SELFTEST=1`
+  appends a `RET` to the end of the program before the comparison, so the test can show the check works.
+* Checked, no change needed: the `MOV R0, owner` before `CALL __malloc_owned` in arena mode stays, because liveness
+  reads `__malloc_owned`'s body and sees R0 used. The `PUSH Rv / CALL __arena_check_global|store / IADD SP,1` sequences
+  stay, with `clobbers=none` honoured. The `;#if` blocks never reach v32opt. `__arena_release` has no `clobbers=` hint,
+  so it is treated as clobbering everything. That only matters to the promote passes, and it is called about once a
+  frame, not in loops. The missing hint is on v32lua's side: `tools/check_clobbers.py` only finds call targets written
+  as a literal `CALL __name` in the compiler's C, and `__arena_release` is called through `emit_runtime_call_intrinsic`
+  (its clobbers are R0-R2).
+* The man pages now list exit status 3 (`--check-src` / `--check-vars` found a problem; it was missing) and 4.
+* New test `testing/lua-alloc` (v32lua 20261123-dev output in both GC modes plus a hand-written unit; with teeth:
+  16 cases, 8 of which fail on 20261119-dev), part of `make tests`.
+
 ## 20261119-dev
 
 * BUG FIX (`peephole-copies`, immediate propagation): a LABEL was pasted into integer ALU operands --
