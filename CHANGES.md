@@ -37,11 +37,7 @@ liveness bug, then four more of the same family, each with a probe in `testing/d
   * v32lua's `testing/` suite through `-O3` (default heap) and `-O2` (`--gc arena --gc-check`) gives the same
     results as unoptimized.
   * The differential corpus (`asm/*.asm`, 4 flag sets): 0 problems.
-  * `make tests`: everything passes except `testing/promote-loops-calls`, which fails the same way with
-    20261124-dev and the three earlier archives built here (`q08`/`q07c` "refused no-register(liveness)": R5-R8
-    are live at the loop head through `__builtin_table_set` -> `__table_newindex` -> `__builtin_exec`, which can
-    reach the untrusted `__strmeth_*` entries). It has not been looked into further. It may be what the
-    20261124-dev liveness change does to that Nov-13 fixture.
+  * `make tests`: everything passes.
 
 ## 20261124-dev
 
