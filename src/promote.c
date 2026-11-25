@@ -575,7 +575,35 @@ static bool function_frame_escapes(AsmNode *first, AsmNode *last) {
 // -------------------------------------------------------------------
 static const FnHints *g_fh = NULL;
 
+// The [BP-k] words the prologue's register saves were pushed into ("MOV BP, SP" [ISUB SP, N] PUSH Rx ...):
+// k in [g_save_lo, g_save_hi]. They are not locals: the epilogue's POP reads them, so a value written there
+// through [BP-k] reaches the caller's register, and a promotion that drops the store loses it.
+static int g_save_lo = 1, g_save_hi = 0;
+
+static void find_prologue_saves(AsmNode *first) {
+    g_save_lo = 1; g_save_hi = 0;
+    AsmNode *p = first;
+    while (p && p->type == OP_OTHER) p = p->next;
+    for (int i = 0; p && i < 4 && p->type != OP_LABEL; i++, p = p->next) {
+        if (p->type == OP_MOV && p->has_dst && p->has_src &&
+            str_case_eq(p->dst_op.reg, "BP") && str_case_eq(p->src_op.reg, "SP")) break;
+    }
+    if (!p || p->type != OP_MOV) return;
+    int base = 0, n = 0;
+    for (AsmNode *q = p->next; q; q = q->next) {
+        if (q->type == OP_OTHER) continue;
+        if (n == 0 && base == 0 && str_case_eq(q->mnemonic, "ISUB") && q->has_dst && str_case_eq(q->dst_op.reg, "SP") &&
+            q->has_src && q->src_op.mode == MODE_IMMEDIATE && !q->src_op.is_float && q->src_op.immediate > 0) {
+            base = (int)q->src_op.immediate; continue;
+        }
+        if (q->type == OP_PUSH && q->has_dst && q->dst_op.mode == MODE_REG) { n++; continue; }
+        break;
+    }
+    if (n) { g_save_lo = base + 1; g_save_hi = base + n; }
+}
+
 static void set_fn_hints(AsmNode *first) {
+    find_prologue_saves(first);
     g_fh = NULL;
     AsmNode *e = first ? first->prev : NULL;
     while (e && e->type != OP_LABEL) e = e->prev;
@@ -657,6 +685,7 @@ static int eff_refs(const RegionInfo *ri, int idx) {
 // today, saves nothing (the register copy that replaces each read still
 // executes). [BP+0] / [BP+1] are the saved BP and the return address.
 static bool slot_promotable(int off) {
+    if (-off >= g_save_lo && -off <= g_save_hi) return false;
     return off <= -1 && off >= -SLOT_MAX_ABS && !hints_fn_slot_escapes(g_fh, off);
 }
 
@@ -1044,6 +1073,24 @@ static void frame_info(FrameInfo *fi, AsmNode *anchor, AsmNode *first, AsmNode *
         fi->epi_first[fi->n_epi++] = ins;
     }
     if (fi->can_save && !sp_operands_clear_of_saves(fi, limit)) fi->can_save = false;
+    // BUG FIX: the new PUSH goes right after the existing saves, so a word addressed below them through BP --
+    // locals from an ISUB that comes after the saves, or a word the body pushes and reads as [BP-k] -- would
+    // now be the saved register's word. Only frames with nothing below the saves can take one.
+    if (fi->can_save) {
+        int below = 0;                                   // words between BP and the end of the saves
+        for (AsmNode *n = anchor; ; n = n->next) {
+            if (n->type == OP_ISUB && n->has_src && n->src_op.mode == MODE_IMMEDIATE) below += (int)n->src_op.immediate;
+            else if (n->type == OP_PUSH) below++;
+            if (n == fi->entry_end) break;
+        }
+        for (AsmNode *n = first; n && n != limit && fi->can_save; n = n->next) {
+            for (int k = 0; k < 2; k++) {
+                const Operand *op = k == 0 ? (n->has_dst ? &n->dst_op : NULL) : (n->has_src ? &n->src_op : NULL);
+                if (op && (op->mode == MODE_INDIRECT || n->type == OP_LEA) && str_case_eq(op->reg, "BP") &&
+                    -op->offset > below) { fi->can_save = false; break; }
+            }
+        }
+    }
     // BUG FIX (same kind as the frame-cleanup shared-tail one): a label of the function that is
     // reached from elsewhere -- another function jumping into this one's epilogue -- would run the
     // added POP on a stack that never got the PUSH.

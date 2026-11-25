@@ -58,7 +58,7 @@ static bool is_computable_expression(AsmNode *node) {
 //
 // Rules:
 //   - register operand: clobbered iff the node modifies that register
-//   - indirect operand: clobbered by ANY memory write (any indirect
+//   - indirect operand: clobbered when its base register changes, and by ANY memory write (any indirect
 //     destination, MOVS/SETS dynamic writes, PUSH/POP/CALL stack
 //     traffic) -- we cannot prove non-aliasing through other bases
 //   - immediate/symbolic operand: never clobbered
@@ -70,6 +70,10 @@ static bool operand_value_clobbered(AsmNode *node, const Operand *op) {
         return modifies_register(node, op->reg);
     }
     if (op->mode == MODE_INDIRECT) {
+        // the base register changing makes it another word: "[SP+1]" after
+        // "IADD SP, 1", "[R2]" after "IADD R2, 1" (modifies_register counts
+        // PUSH/POP/CALL/RET as SP writes)
+        if (op->reg[0] && modifies_register(node, op->reg)) return true;
         if (node->has_dst && node->dst_op.mode == MODE_INDIRECT) return true;
         if (node->type == OP_MOVS || node->type == OP_SETS) return true;
         if (node->type == OP_PUSH || node->type == OP_POP || node->type == OP_CALL) return true;

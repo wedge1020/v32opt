@@ -10,6 +10,51 @@
 // register inside the span is fine: nothing here overwrites it, so a
 // read sees the same value with or without the push/pop.
 // ---------------------------------------------------------------
+// Words of locals the function's frame reserves below BP: the N of the
+// prologue "MOV BP, SP / ISUB SP, N" found walking back from `from`
+// (labels included, up to the function's start). 0 when the prologue has
+// no ISUB; -1 when no "MOV BP, SP" is found before a RET / HLT or the start
+// of the file (BP is then not known to be this function's frame).
+static int frame_locals_before(const AsmNode *from)
+{
+    int steps = 0;
+    for (const AsmNode *q = from ? from->prev : NULL; q && steps < 20000; q = q->prev, steps++) {
+        if (q->type == OP_RET || q->type == OP_HLT) return -1;
+        if (q->type == OP_MOV && q->has_dst && q->has_src &&
+            q->dst_op.mode == MODE_REG && q->src_op.mode == MODE_REG &&
+            str_case_eq(q->dst_op.reg, "BP") && str_case_eq(q->src_op.reg, "SP")) {
+            const AsmNode *n = q->next;
+            while (n && n->type == OP_OTHER) n = n->next;
+            if (n && n->type == OP_ISUB && n->has_dst && n->dst_op.mode == MODE_REG &&
+                str_case_eq(n->dst_op.reg, "SP") && n->has_src &&
+                n->src_op.mode == MODE_IMMEDIATE && !n->src_op.is_float && n->src_op.immediate >= 0)
+                return n->src_op.immediate;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+// Can `node` reach the word a PUSH put below the frame's locals through BP:
+// a [BP-k] below the `locals` words the prologue reserved (any [BP-k] when
+// that is unknown, locals < 0), or BP copied to another register? A callee
+// that keeps its register arguments in its frame ("PUSH R1 ; [BP-1]", then
+// "MOV R7, [BP-1]") reads the pushed word as data: removing the PUSH / POP
+// loses the argument. (v32lua's __tic80_circ_run; found as broken TIC-80
+// circ() in an optimized build of witchem_up.)
+static bool reads_pushed_word_via_bp(const AsmNode *node, int locals)
+{
+    for (int k = 0; k < 2; k++) {
+        const Operand *op = k == 0 ? &node->dst_op : &node->src_op;
+        if (!(k == 0 ? node->has_dst : node->has_src)) continue;
+        if (!str_case_eq(op->reg, "BP")) continue;
+        if (op->mode == MODE_REG && k == 1) return true;          // BP copied: could reach anything
+        if (node->type == OP_LEA && k == 1) return true;          // a pointer from BP: likewise
+        if (op->mode == MODE_INDIRECT && op->offset < 0 && (locals < 0 || -op->offset > locals)) return true;
+    }
+    return false;
+}
+
 static bool blocks_push_pop_removal(AsmNode *node, const char *reg_name)
 {
     if (!node) return true;
@@ -185,6 +230,7 @@ int peephole_pairs(AsmNode *head)
             char *reg_name = n1->dst_op.reg;
             AsmNode *scan = n1->next;
             AsmNode *match = NULL;
+            int locals = -2;                     // frame_locals_before(n1), looked up when first needed
 
             while (scan)
             {
@@ -198,6 +244,11 @@ int peephole_pairs(AsmNode *head)
                 }
 
                 if (blocks_push_pop_removal(scan, reg_name)) break;
+                if ((scan->has_dst && str_case_eq(scan->dst_op.reg, "BP")) ||
+                    (scan->has_src && str_case_eq(scan->src_op.reg, "BP"))) {
+                    if (locals == -2) locals = frame_locals_before(n1);
+                    if (reads_pushed_word_via_bp(scan, locals)) break;
+                }
 
                 scan = scan->next;
             }

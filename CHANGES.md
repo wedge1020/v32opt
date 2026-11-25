@@ -1,5 +1,48 @@
 # v32opt changes
 
+## 20261125-dev
+
+Found from a corrupted title screen in an optimized build of witchem_up (a TIC-80 cart through v32lua): one
+liveness bug, then four more of the same family, each with a probe in `testing/differential/asm/` that fails on
+20261124-dev and passes now (harness `STRICT=1` at `-O1`, `-O2`, `-O3`, `-Os`).
+
+* **Fix (liveness): a pushed register whose stack word is read is not a save.** `is_register_save()` took
+  `PUSH Rn ... POP Rn` as a save without looking at the code in between, so the register was not an input. v32lua's
+  `__tic80_circ_run` does `PUSH R1` and later reads that word as data (`MOV R7, [BP-1]`): its R1 argument. Then
+  peephole-dead-regs deleted the caller's `MOV R1, [BP-14]` in `_tic80_circ_last`, and TIC-80 `circ()` drew at
+  garbage X (witchem_up's title screen). The pair is no longer a save when the span touches `[BP-depth]`, copies BP,
+  or makes a pointer from BP (`LEA`). The same check runs on code that a jump in the span leaves for outside it,
+  up to its next JMP/RET/HLT (a body moved out of line). Panic and error tails don't touch the word, so they are
+  unaffected. Probes: `live_saveread_bp`, `live_saveread_jump`, `live_saveread_lea`.
+* **Fix (peephole-pairs): a PUSH/POP pair is kept when the code between reads the pushed word through BP.**
+  This is the same shape as above: `[BP-k]` below the frame's locals, a BP copy, or an `LEA` from BP.
+* **Fix (cse): an indirect operand whose base register changes is another word.** `MOV R1, [SP+1] / IADD R1, R6 /
+  IADD SP, 1 / MOV R3, [SP+1] / IADD R3, R6` had its second load replaced by `MOV R3, R1`. The check
+  covered memory writes only, not a change of SP, R2 or any other base. Probes: `cse_base_sp`, `cse_base_sp_copy`,
+  `cse_base_reg`.
+* **Fix (promote): the words the prologue's saves were pushed into are not locals.** In `PUSH R1 / MOV [BP-1], R0
+  ... POP R1` the slot was promoted to a register. The store was dropped and the POP gave the caller the old R1.
+  `[BP-k]` inside the save area is no longer a candidate. Probe: `promote_save_word`.
+* **Fix (promote, non-caller-save ABI): no new save PUSH when something is addressed below the saves.** The added
+  `PUSH Rn` goes right after the existing saves. A local from an `ISUB SP, N` that comes after the saves (or a word
+  the body pushes and reads as `[BP-k]`) then sat on the new save's word. This doesn't apply to v32lua or v32cc
+  output: their caller-save ABI never adds saves, and their layout is `ISUB` first. Probe:
+  `promote_save_below_locals`.
+* `promote_loops_saveword_hint` checks the out-of-line case through promote-loops: a callee whose `clobbers=` hint
+  is right only if the save is real. It passes now because liveness no longer takes that save as one. A wrong
+  `clobbers=` list is still trusted as given.
+* Verified:
+  * witchem_up at `-L lua -O3`: the GPU log over 400 frames, and over 3000 frames with scripted random input, is
+    identical to the unoptimized cart.
+  * v32lua's `testing/` suite through `-O3` (default heap) and `-O2` (`--gc arena --gc-check`) gives the same
+    results as unoptimized.
+  * The differential corpus (`asm/*.asm`, 4 flag sets): 0 problems.
+  * `make tests`: everything passes except `testing/promote-loops-calls`, which fails the same way with
+    20261124-dev and the three earlier archives built here (`q08`/`q07c` "refused no-register(liveness)": R5-R8
+    are live at the loop head through `__builtin_table_set` -> `__table_newindex` -> `__builtin_exec`, which can
+    reach the untrusted `__strmeth_*` entries). It has not been looked into further. It may be what the
+    20261124-dev liveness change does to that Nov-13 fixture.
+
 ## 20261124-dev
 
 Two code-generation fixes, found by running v32lua 20261124-dev's `testing/` suite on v32sim's oracle (both bugs were

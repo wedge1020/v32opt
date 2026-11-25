@@ -361,6 +361,35 @@ static int callee_summary(int lbl, const char *reg, int ridx, int depth) {
 // Nor is it one when the pushed word may be read as a stack argument: a CALL made while the word lies within
 // the callee's reach (g_reach), or to a callee that is not a known label. On success *pop_out (if given) is
 // the matching POP.
+// Does code that a jump in PUSH..POP leaves for (outside the range) touch the pushed word [BP-mine], or make
+// a pointer from BP, before it ends in a JMP/RET/HLT? Panic and error tails (the usual out-of-range jumps)
+// don't; a body moved out of line ("JMP _g_out" ... "_g_out: MOV R0, [BP-1] / JMP _g_back") does.
+static bool out_of_line_reach(const AsmNode *push, const AsmNode *pop, long mine) {
+    for (const AsmNode *q = push->next; q && q != pop; q = q->next) {
+        if (q->type != OP_JMP && q->type != OP_JT && q->type != OP_JF) continue;
+        int li = target_label(q);
+        if (li < 0) return true;                         // through a register: anywhere
+        const AsmNode *t = g_labels[li].node;
+        bool inside = false;
+        for (const AsmNode *r = push->next; r && r != pop && !inside; r = r->next) inside = r == t;
+        if (inside) continue;
+        int steps = 0;
+        for (const AsmNode *r = t ? t->next : NULL; r && steps < 200; r = r->next, steps++) {
+            if (r->type == OP_OTHER || r->type == OP_LABEL) continue;
+            if (r->type == OP_LEA && r->has_src && str_case_eq(r->src_op.reg, "BP")) return true;
+            for (int k = 0; k < 2; k++) {
+                const Operand *op = k == 0 ? &r->dst_op : &r->src_op;
+                if (!(k == 0 ? r->has_dst : r->has_src)) continue;
+                if (op->mode == MODE_INDIRECT && str_case_eq(op->reg, "BP") && op->offset == -mine) return true;
+            }
+            if (r->has_src && r->src_op.mode == MODE_REG && str_case_eq(r->src_op.reg, "BP") &&
+                !(r->has_dst && r->dst_op.mode == MODE_REG && str_case_eq(r->dst_op.reg, "SP"))) return true;
+            if (r->type == OP_JMP || r->type == OP_RET || r->type == OP_HLT) break;
+        }
+    }
+    return false;
+}
+
 static bool is_register_save(const AsmNode *push, const char *reg, const AsmNode **pop_out) {
     if (!push->has_dst || push->dst_op.mode != MODE_REG || !str_case_eq(push->dst_op.reg, reg)) return false;
 
@@ -395,6 +424,9 @@ static bool is_register_save(const AsmNode *push, const char *reg, const AsmNode
         if (q->type == OP_POP) {
             if (depth == mine) {
                 bool ok = q->has_dst && q->dst_op.mode == MODE_REG && str_case_eq(q->dst_op.reg, reg);
+                // Only the straight-line text is read: a jump out of the range runs code this walk never
+                // sees, which may read or write the word ("JMP _g_out" ... "_g_out: MOV R0, [BP-1]").
+                if (ok && have_bp && out_of_line_reach(push, q, mine)) return false;
                 if (ok && pop_out) *pop_out = q;
                 return ok;
             }
@@ -411,6 +443,22 @@ static bool is_register_save(const AsmNode *push, const char *reg, const AsmNode
                 if (depth - mine < (long)g_reach[li]) return false;
             }
             continue;
+        }
+        // The pushed word used as DATA, not only given back by the POP: a callee that stores its register
+        // arguments in its frame and reads them from there (v32lua's __tic80_circ_run: "PUSH R1 ; [BP-1] X"
+        // ... "MOV R7, [BP-1]") does read the register, and a write to the word changes what the POP gives
+        // back. Either way it is not a save. The word is [BP - mine] once the frame is set up; a copy of BP
+        // in another register could reach it too.
+        // A pointer made from BP ("LEA R2, [BP-2]", then "[R2+1]") can be stepped onto the word too.
+        if (q->type == OP_LEA && q->has_src && str_case_eq(q->src_op.reg, "BP")) return false;
+        if (have_bp) {
+            for (int k = 0; k < 2; k++) {
+                const Operand *op = k == 0 ? &q->dst_op : &q->src_op;
+                if (!(k == 0 ? q->has_dst : q->has_src)) continue;
+                if (op->mode == MODE_INDIRECT && str_case_eq(op->reg, "BP") && op->offset == -mine) return false;
+            }
+            if (q->has_src && q->src_op.mode == MODE_REG && str_case_eq(q->src_op.reg, "BP") &&
+                !(q->has_dst && q->dst_op.mode == MODE_REG && str_case_eq(q->dst_op.reg, "SP"))) return false;
         }
         bool sp_dst = q->has_dst && q->dst_op.mode == MODE_REG && str_case_eq(q->dst_op.reg, "SP");
         bool sp_src = q->has_src && ((q->src_op.mode == MODE_REG || q->src_op.mode == MODE_INDIRECT) &&
@@ -896,7 +944,7 @@ static bool save_range_closed(const AsmNode *push, const AsmNode *pop) {
         if (!q) return false;
         if (q->type != OP_LABEL) continue;
         int li = label_index_of((AsmNode *)q);
-        if (li < 0 || g_is_entry[li] || nlab == LV_MAX_SAVE_LABELS) return false;
+        if (li < 0 || (g_is_entry && g_is_entry[li]) || nlab == LV_MAX_SAVE_LABELS) return false;
         labels[nlab++] = li;
     }
     for (const AsmNode *q = push->next; q != pop; q = q->next) {
