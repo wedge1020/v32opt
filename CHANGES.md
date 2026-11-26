@@ -1,5 +1,16 @@
 # v32opt changes
 
+## 20261126-dev
+
+Release prep; no change to the optimizer's output.
+
+* New top-level `.gitignore` (build outputs, `*.zip`, `*.patch`); the committed `testing/` fixtures (`*.asm`, `*.xml`, `*.debug`) are not ignored.
+* `make archive` now writes `../v32opt-project-<YYYYMMDD>.zip`, the date being the first 8 characters of `VERSION`, and includes `.gitignore` and `.github`; `make clean` removes `*.zip`, `*.patch` and any older `../v32opt-project*.zip`.
+* `make install` creates `~/bin` when it does not exist, instead of skipping silently.
+* `make version VERSION=20261126-dev` re-stamped `inc/v32opt.h` and the three man pages; `.github/release-notes.md` mentions this round's liveness fixes.
+* Fix (CMake): configuring failed with "add_test given test NAME \"O3-c-known_peephole_movs\" which already exists", because two `testing/` subdirectories hold a `known_peephole_movs.asm`; the ctest names (and their output files) now include the subdirectory, e.g. `O3-c-string-ops-known_peephole_movs`.
+* Release packages use the v32lua / v32c++ layout: `v32opt` and `LICENSE` at the top, the READMEs, `USAGE.md`, `doc/*.md` and the manual pages under `docs/v32opt/`, so a zip unpacks straight into the `v32tools` folder.
+
 ## 20261125-dev
 
 Found from a corrupted title screen in an optimized build of witchem_up (a TIC-80 cart through v32lua): one

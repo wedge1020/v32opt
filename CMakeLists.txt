@@ -340,10 +340,14 @@ if(BUILD_TESTING)
         if(unit MATCHES "Opt$")
             continue()
         endif()
+        # The same file name can appear in two testing/ subdirectories
+        # (known_peephole_movs.asm does), so the directory is part of the name.
+        get_filename_component(dir "${input}" DIRECTORY)
+        get_filename_component(dir "${dir}" NAME)
         foreach(mode c lua)
-            add_test(NAME "O3-${mode}-${unit}"
+            add_test(NAME "O3-${mode}-${dir}-${unit}"
                      COMMAND v32opt "${input}" -O3 -L ${mode}
-                             -o "${CMAKE_CURRENT_BINARY_DIR}/testing/${unit}.${mode}.asm")
+                             -o "${CMAKE_CURRENT_BINARY_DIR}/testing/${dir}-${unit}.${mode}.asm")
         endforeach()
     endforeach()
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/testing")

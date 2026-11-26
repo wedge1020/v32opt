@@ -66,7 +66,7 @@ bin/$(TARGET):
 
 # Clean both the build files in src/ and the generated assembly in testing/
 clean:
-	rm -f err.txt put/* *.zip ../v32opt-project.zip
+	rm -f err.txt put/* *.zip *.patch ../v32opt-project.zip ../v32opt-project-[0-9]*.zip
 	$(MAKE) -C src clean
 	$(MAKE) -C testing clean
 	-rmdir bin 2>/dev/null
@@ -83,7 +83,8 @@ install: bin/$(TARGET)
 		echo "Installing $(TARGET) to ~/bin/"; \
 		install -m 755 bin/$(TARGET) ~/bin/$(TARGET); \
 	else \
-		echo "Skipping: neither ~/bin/bin.$(ARCH) nor ~/bin exist"; \
+		echo "Installing $(TARGET) to ~/bin/ (created)"; \
+		mkdir -p ~/bin && install -m 755 bin/$(TARGET) ~/bin/$(TARGET); \
 	fi
 
 uninstall:
@@ -156,7 +157,8 @@ tests: bin/$(TARGET)
 	V32OPT=$(CURDIR)/bin/$(TARGET) sh testing/vars/run.sh
 
 archive: clean
-	zip -r ../v32opt-project.zip .github *
+	zip -r ../v32opt-project-$(shell echo '$(VERSION)' | cut -c1-8).zip .github .gitignore * \
+	    -x '*.zip' '*.patch' '*.DS_Store' 'build/*'
 
 put: clean
 	@mkdir -p put

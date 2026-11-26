@@ -344,12 +344,23 @@ jobs:
           fi
           echo "Packaging: $ZIP_NAME"
 
-          mkdir package
-          cp bin/${{ env.PROJECT_NAME }}* package/
-          cp README*.md package/
-          cp man/*.1 package/
+          # Same layout as v32lua and v32c++: unpacks straight into
+          # <Program Files>/Vircon32/v32tools (or /usr/local/Vircon32/v32tools):
+          #     v32opt[.exe]
+          #     LICENSE
+          #     docs/v32opt/README*.md, USAGE.md, doc/*.md, v32opt*.1
+          PKG=package
+          DOCS="$PKG/docs/${{ env.PROJECT_NAME }}"
+          rm -rf "$PKG"
+          mkdir -p "$DOCS/doc"
+          cp bin/${{ env.PROJECT_NAME }}* "$PKG/"
+          cp README*.md "$DOCS/"
+          if [ -f USAGE.md ]; then cp USAGE*.md "$DOCS/"; fi
+          cp doc/*.md "$DOCS/doc/" 2>/dev/null || true
+          cp man/*.1 "$DOCS/"
+          if [ -f LICENSE ]; then cp LICENSE "$PKG/"; fi
 
-          cd package
+          cd "$PKG"
           zip -r "../$ZIP_NAME" ./*
           cd ..
           unzip -l "$ZIP_NAME"

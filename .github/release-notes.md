@@ -7,6 +7,7 @@
 - **Experimental register promotion.** Stack slots and loop values can be promoted into registers (`-fpromote-leaf`, `-fpromote-loops`); these are not part of any `-O` level.
 - **Made for bisecting.** `-d` marks every transformation in the output as a `; [DEBUG <pass>]` comment, `--trigger-max=N` stops after the Nth transformation, and `-finline-call-limit` / `-finline-exclude` narrow down inlining, so a miscompile can be traced to the one change that caused it.
 - **Careful with your data.** Directives and data lines are never deleted or altered, input lines can be any length, folded constants that would not fit a 32-bit literal are left alone, and float literals are never mistaken for integers.
+- **Checked against the simulator.** The optimizer's passes are exercised by a differential harness (unoptimized against optimized output at `-O1` to `-Os`), and this release fixes a family of liveness bugs found on optimized v32lua output (a pushed register whose stack word is read as data is no longer treated as a save).
 - **See the control flow.** `--dot` exports the control flow graph for Graphviz.
 - **Documented.** A manual page, and the README, in English, Spanish and French.
 
@@ -21,7 +22,7 @@ Pick the zip for your system: `v32opt-@VERSION@-<os>-<arch>.zip`.
 | Linux | x86_64, arm64, armv7 and armv8 (Raspberry Pi) |
 | OpenBSD, Haiku | included when their (optional) builds succeeded |
 
-Each zip holds the `v32opt` program, the README in each language and the manual pages (`v32opt.1`, `v32opt.es.1`, `v32opt.fr.1`). Put `v32opt` somewhere on your `PATH` (for example the `v32tools` folder beside the Vircon32 DevTools). Check a download against `SHA256SUMS.txt`.
+Each zip unpacks straight into your `v32tools` folder (`/usr/local/Vircon32/v32tools`, or `C:\Program Files\Vircon32\v32tools` on Windows), beside v32lua and v32c++: `v32opt` at the top, `LICENSE`, and under `docs/v32opt/` the README in each language, `USAGE.md`, the technical notes (`doc/`) and the manual pages (`v32opt.1`, `v32opt.es.1`, `v32opt.fr.1`). Keep that folder on your `PATH`. Check a download against `SHA256SUMS.txt`.
 
 ## Quick start
 
